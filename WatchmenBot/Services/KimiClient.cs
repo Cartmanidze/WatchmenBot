@@ -1,11 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace WatchmenBot.Services
 {
@@ -32,7 +28,11 @@ namespace WatchmenBot.Services
 
         public async Task<string> CreateDailySummaryAsync(string systemPrompt, string userPrompt, CancellationToken ct)
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions");
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions")
+            {
+                Version = HttpVersion.Version11,
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+            };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
             req.Headers.Add("HTTP-Referer", "https://local.tool");
             req.Headers.Add("X-Title", "WatchmenBot");

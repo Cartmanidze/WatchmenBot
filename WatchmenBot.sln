@@ -1,16 +1,25 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WatchmenBot", "WatchmenBot\WatchmenBot.csproj", "{0414B798-0F4F-4582-BC87-049AEAA2AE40}"
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31912.275
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WatchmenBot", "WatchmenBot\WatchmenBot.csproj", "{A55C2C35-9115-4F2B-9274-4D41C2C16504}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WatchmenBot.Tests", "WatchmenBot.Tests\WatchmenBot.Tests.csproj", "{3B7F2C65-6C6D-40F1-9B95-F57A1B3A3E6C}"
 EndProject
 Global
-	GlobalSection(SolutionConfigurationPlatforms) = preSolution
-		Debug|Any CPU = Debug|Any CPU
-		Release|Any CPU = Release|Any CPU
-	EndGlobalSection
-	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{0414B798-0F4F-4582-BC87-049AEAA2AE40}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{0414B798-0F4F-4582-BC87-049AEAA2AE40}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{0414B798-0F4F-4582-BC87-049AEAA2AE40}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{0414B798-0F4F-4582-BC87-049AEAA2AE40}.Release|Any CPU.Build.0 = Release|Any CPU
-	EndGlobalSection
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|Any CPU = Debug|Any CPU
+        Release|Any CPU = Release|Any CPU
+    EndGlobalSection
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {A55C2C35-9115-4F2B-9274-4D41C2C16504}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {A55C2C35-9115-4F2B-9274-4D41C2C16504}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {A55C2C35-9115-4F2B-9274-4D41C2C16504}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {A55C2C35-9115-4F2B-9274-4D41C2C16504}.Release|Any CPU.Build.0 = Release|Any CPU
+        {3B7F2C65-6C6D-40F1-9B95-F57A1B3A3E6C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {3B7F2C65-6C6D-40F1-9B95-F57A1B3A3E6C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {3B7F2C65-6C6D-40F1-9B95-F57A1B3A3E6C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {3B7F2C65-6C6D-40F1-9B95-F57A1B3A3E6C}.Release|Any CPU.Build.0 = Release|Any CPU
+    EndGlobalSection
 EndGlobal

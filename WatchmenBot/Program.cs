@@ -22,13 +22,24 @@ services.AddSingleton(sp =>
     return new MessageStore(dbPath);
 });
 
-services.AddHttpClient<KimiClient>().AddTypedClient((http, sp) =>
-{
-    var apiKey = configuration["Kimi:ApiKey"] ?? string.Empty;
-    var baseUrl = configuration["Kimi:BaseUrl"] ?? "https://openrouter.ai/api";
-    var model = configuration["Kimi:Model"] ?? "moonshotai/kimi-k2";
-    return new KimiClient(http, apiKey, baseUrl, model);
-});
+services.AddHttpClient<KimiClient>()
+    .ConfigurePrimaryHttpMessageHandler(sp =>
+    {
+        var useProxy = bool.TryParse(configuration["Kimi:UseProxy"], out var v) ? v : true;
+        return new HttpClientHandler
+        {
+            AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+            SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
+            UseProxy = useProxy
+        };
+    })
+    .AddTypedClient((http, sp) =>
+    {
+        var apiKey = configuration["Kimi:ApiKey"] ?? string.Empty;
+        var baseUrl = configuration["Kimi:BaseUrl"] ?? "https://openrouter.ai/api";
+        var model = configuration["Kimi:Model"] ?? "moonshotai/kimi-k2";
+        return new KimiClient(http, apiKey, baseUrl, model);
+    });
 
 services.AddHostedService<TelegramBotRunner>();
 services.AddHostedService<DailySummaryService>();
