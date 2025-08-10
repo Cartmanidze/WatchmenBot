@@ -1,0 +1,47 @@
+# Build artifacts
+**/bin/
+**/obj/
+**/out/
+
+# Rider
+.idea/
+*.sln.iml
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+project.lock.json
+.nuget/NuGet.Config
+
+# Logs & test results
+*.log
+logs/
+TestResult*/
+TestResults/
+
+# Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+# ReSharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# Local data & secrets
+**/Data/
+*.db
+WatchmenBot/WatchmenBot/appsettings.Development.json
+
+# OS files
+.DS_Store
+Thumbs.db 
