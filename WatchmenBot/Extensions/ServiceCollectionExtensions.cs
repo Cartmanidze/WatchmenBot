@@ -1,4 +1,5 @@
 using System.Security.Authentication;
+using Microsoft.OpenApi.Models;
 using Telegram.Bot;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
@@ -78,6 +79,17 @@ public static class ServiceCollectionExtensions
 
         // Controllers
         services.AddControllers();
+
+        // Swagger / OpenAPI
+        services.AddEndpointsApiExplorer();
+        services.AddSwaggerGen(options =>
+        {
+            options.SwaggerDoc("v1", new OpenApiInfo
+            {
+                Title = "WatchmenBot API",
+                Version = "v1"
+            });
+        });
 
         return services;
     }

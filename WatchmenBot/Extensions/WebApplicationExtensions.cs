@@ -4,6 +4,13 @@ public static class WebApplicationExtensions
 {
     public static WebApplication ConfigureWatchmenBot(this WebApplication app)
     {
+        // Swagger middleware & UI
+        app.UseSwagger();
+        app.UseSwaggerUI(options =>
+        {
+            options.SwaggerEndpoint("/swagger/v1/swagger.json", "WatchmenBot API v1");
+        });
+        
         // Health check endpoints
         app.MapGet("/", () => new { 
             service = "WatchmenBot", 
