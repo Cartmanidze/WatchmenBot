@@ -22,11 +22,6 @@ public class KimiClientIntegrationTests
             apiKey = config["Kimi:ApiKey"];
         }
 
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            return;
-        }
-
         var handler = new HttpClientHandler
         {
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
@@ -38,7 +33,7 @@ public class KimiClientIntegrationTests
         var client = new KimiClient(http, apiKey!, "https://openrouter.ai/api", "moonshotai/kimi-k2");
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var (credits, usage) = await client.GetCreditsAsync(cts.Token);
+        var (credits, _) = await client.GetCreditsAsync(cts.Token);
         Assert.True(credits >= 0);
 
         var system = "Ты — Kimi2, кратко отвечай на русском";

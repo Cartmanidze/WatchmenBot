@@ -1,0 +1,74 @@
+using System.Security.Authentication;
+using Telegram.Bot;
+using WatchmenBot.Features.Admin;
+using WatchmenBot.Features.Messages;
+using WatchmenBot.Features.Webhook;
+using WatchmenBot.Services;
+
+namespace WatchmenBot.Extensions;
+
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddWatchmenBotServices(this IServiceCollection services, IConfiguration configuration)
+    {
+        // Telegram Bot Client
+        services.AddSingleton<ITelegramBotClient>(sp =>
+        {
+            var token = configuration["Telegram:BotToken"] ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new InvalidOperationException("Telegram:BotToken is required");
+            }
+            return new TelegramBotClient(token);
+        });
+
+        // Message Store
+        services.AddSingleton<MessageStore>(sp =>
+        {
+            var dbPath = configuration["Storage:LiteDbPath"] ?? "Data/bot.db";
+            return new MessageStore(dbPath);
+        });
+
+        // Kimi Client with HttpClient
+        services.AddHttpClient<KimiClient>()
+            .ConfigurePrimaryHttpMessageHandler(sp =>
+            {
+                var useProxy = configuration.GetValue<bool>("Kimi:UseProxy", true);
+                return new HttpClientHandler
+                {
+                    AutomaticDecompression = System.Net.DecompressionMethods.GZip | 
+                                           System.Net.DecompressionMethods.Deflate,
+                    SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    UseProxy = useProxy
+                };
+            })
+            .AddTypedClient<KimiClient>((httpClient, serviceProvider) =>
+            {
+                var apiKey = configuration["Kimi:ApiKey"] ?? string.Empty;
+                var baseUrl = configuration["Kimi:BaseUrl"] ?? "https://openrouter.ai/api";
+                var model = configuration["Kimi:Model"] ?? "moonshotai/kimi-k2";
+                
+                if (string.IsNullOrWhiteSpace(apiKey))
+                {
+                    throw new InvalidOperationException("Kimi:ApiKey is required");
+                }
+                
+                return new KimiClient(httpClient, apiKey, baseUrl, model);
+            });
+
+        // Background Services
+        services.AddHostedService<DailySummaryService>();
+
+        // Feature Handlers
+        services.AddScoped<ProcessTelegramUpdateHandler>();
+        services.AddScoped<SaveMessageHandler>();
+        services.AddScoped<SetWebhookHandler>();
+        services.AddScoped<DeleteWebhookHandler>();
+        services.AddScoped<GetWebhookInfoHandler>();
+
+        // Controllers
+        services.AddControllers();
+
+        return services;
+    }
+}
