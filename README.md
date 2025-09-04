@@ -5,12 +5,13 @@
 ## Возможности
 - Чтение сообщений из групп/супергрупп через **вебхуки** (HTTPS)
 - Безопасная валидация запросов от Telegram (secret token + IP фильтрация)
-- Хранение сообщений в LiteDB (`Data/bot.db`)
+- Хранение сообщений в **PostgreSQL** с использованием **Dapper**
 - Ежедневная сводка за прошедший день в 00:05 по локальному времени
 - Краткие выводы, забавные наблюдения и статистика активности
 
 ## Требования
 - .NET 9 SDK
+- **PostgreSQL** сервер
 - Токен Telegram бота
 - API ключ Kimi2 (например, OpenRouter). По умолчанию используется модель `moonshotai/kimi-k2` и базовый URL `https://openrouter.ai/api`
 - **Публичный HTTPS-домен** для вебхука (порты 443, 80, 88, 8443)
@@ -20,22 +21,29 @@
    ```bash
    cd WatchmenBot/WatchmenBot
    ```
-2. Укажите настройки в `appsettings.json`:
+2. Настройте PostgreSQL и создайте базу данных:
+   ```sql
+   CREATE DATABASE watchmenbot;
+   ```
+3. Укажите настройки в `appsettings.json`:
+   - `Database:ConnectionString` — строка подключения к PostgreSQL
    - `Telegram:BotToken` — токен от @BotFather
    - `Telegram:WebhookUrl` — ваш публичный HTTPS URL (например, `https://yourdomain.com/telegram/update`)
    - `Telegram:WebhookSecret` — случайная строка 1-256 символов (A-Z, a-z, 0-9, _, -)
    - `Kimi:ApiKey` — ключ API
    - при необходимости `Kimi:BaseUrl`, `Kimi:Model`
-3. В BotFather отключите Group Privacy (чтобы бот видел сообщения в группе).
-4. Добавьте бота в тестовую группу.
-5. **Деплой на HTTPS-сервер** (Azure, AWS, VPS с SSL/TLS).
-6. Запустите бота и установите вебхук через админ эндпоинт:
+4. В BotFather отключите Group Privacy (чтобы бот видел сообщения в группе).
+5. Добавьте бота в тестовую группу.
+6. **Деплой на HTTPS-сервер** (Azure, AWS, VPS с SSL/TLS).
+7. Запустите бота — он автоматически создаст таблицы в PostgreSQL.
+8. Установите вебхук через админ эндпоинт:
    ```bash
    curl -X POST "https://yourdomain.com/admin/set-webhook"
    ```
 
 **Эндпоинты:**
 - `/` — health check (`WatchmenBot is running`)
+- `/health` — health check с проверкой PostgreSQL
 - `/telegram/update` — приём апдейтов от Telegram (POST)
 - `/admin/set-webhook` — установить вебхук (POST)
 - `/admin/delete-webhook` — удалить вебхук (POST)
@@ -50,6 +58,9 @@
 Файл `WatchmenBot/appsettings.json`:
 ```json
 {
+  "Database": {
+    "ConnectionString": "Host=localhost;Database=watchmenbot;Username=postgres;Password=your_password"
+  },
   "Telegram": {
     "BotToken": "YOUR_TELEGRAM_BOT_TOKEN",
     "WebhookUrl": "https://your-domain.com/telegram/update",
@@ -62,9 +73,6 @@
     "BaseUrl": "https://openrouter.ai/api",
     "Model": "moonshotai/kimi-k2"
   },
-  "Storage": {
-    "LiteDbPath": "Data/bot.db"
-  }
 }
 ```
 
@@ -75,7 +83,7 @@
 - `Models/MessageRecord.cs` — модель сообщения
 
 ### Services
-- `Services/MessageStore.cs` — хранилище LiteDB
+- `Services/MessageStore.cs` — хранилище PostgreSQL с Dapper
 - `Services/DailySummaryService.cs` — ежедневная сводка
 - `Services/KimiClient.cs` — клиент Kimi2 (OpenAI‑совместимый Chat Completions)
 
@@ -93,6 +101,7 @@
 - `Extensions/WebApplicationExtensions.cs` — конфигурация приложения
 - `Extensions/TelegramSecurityExtensions.cs` — валидация безопасности
 - `Extensions/TelegramUpdateParserExtensions.cs` — парсинг апдейтов
+- `Infrastructure/Database/` — PostgreSQL подключение и инициализация
 
 ## Деплой и безопасность
 
@@ -135,7 +144,23 @@ curl -X POST "https://yourdomain.com/admin/delete-webhook"
 - Неавторизованные запросы логируются как Warning
 - Ошибки обработки — как Error
 
+## PostgreSQL Setup
+
+### Local Development:
+```bash
+# Docker
+docker run --name watchmenbot-postgres -e POSTGRES_PASSWORD=dev_password -e POSTGRES_DB=watchmenbot_dev -p 5432:5432 -d postgres:16
+
+# Or install PostgreSQL locally and create database
+psql -U postgres -c "CREATE DATABASE watchmenbot_dev;"
+```
+
+### Production:
+- Use managed PostgreSQL (Azure Database, AWS RDS, Google Cloud SQL)
+- Or self-hosted with proper backup strategy
+
 ## Примечания
 - `appsettings.Development.json` игнорируется Git и может содержать локальные секреты.
-- База `Data/bot.db` не коммитится.
+- Таблицы создаются автоматически при первом запуске (`DatabaseInitializer`).
+- Используется составной PRIMARY KEY (`chat_id`, `id`) для уникальности сообщений.
 - По умолчанию используется OpenRouter (`moonshotai/kimi-k2`). При желании можно указать свой эндпоинт Kimi. 

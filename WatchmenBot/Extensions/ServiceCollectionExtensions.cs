@@ -3,6 +3,7 @@ using Telegram.Bot;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Webhook;
+using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Extensions;
@@ -22,12 +23,21 @@ public static class ServiceCollectionExtensions
             return new TelegramBotClient(token);
         });
 
-        // Message Store
-        services.AddSingleton<MessageStore>(sp =>
+        // Database
+        services.AddSingleton<IDbConnectionFactory>(sp =>
         {
-            var dbPath = configuration["Storage:LiteDbPath"] ?? "Data/bot.db";
-            return new MessageStore(dbPath);
+            var connectionString = configuration.GetConnectionString("Default") ?? 
+                                 configuration["Database:ConnectionString"] ?? 
+                                 throw new InvalidOperationException("Database connection string is required");
+            return new PostgreSqlConnectionFactory(connectionString);
         });
+
+        services.AddScoped<MessageStore>();
+        services.AddHostedService<DatabaseInitializer>();
+        
+        // Health checks
+        services.AddHealthChecks()
+            .AddCheck<DatabaseHealthCheck>("postgresql");
 
         // Kimi Client with HttpClient
         services.AddHttpClient<KimiClient>()
