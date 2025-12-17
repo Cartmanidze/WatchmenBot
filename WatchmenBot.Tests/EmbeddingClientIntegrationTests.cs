@@ -1,0 +1,90 @@
+using WatchmenBot.Tests.Fixtures;
+using Xunit;
+
+namespace WatchmenBot.Tests;
+
+[Collection("Integration")]
+public class EmbeddingClientIntegrationTests
+{
+    private readonly TestConfiguration _config;
+
+    public EmbeddingClientIntegrationTests(TestConfiguration config)
+    {
+        _config = config;
+    }
+
+    [Fact]
+    public async Task GetEmbedding_Works_WhenApiKeyProvided()
+    {
+        if (!_config.HasOpenAiKey)
+            return; // Skip if no API key
+
+        var client = _config.CreateEmbeddingClient();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var embedding = await client.GetEmbeddingAsync("Привет, это тест embeddings!", cts.Token);
+
+        Assert.NotNull(embedding);
+        Assert.Equal(1536, embedding.Length);
+        Assert.Contains(embedding, x => x != 0);
+    }
+
+    [Fact]
+    public async Task GetEmbeddings_Batch_Works()
+    {
+        if (!_config.HasOpenAiKey)
+            return;
+
+        var client = _config.CreateEmbeddingClient();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var texts = new[]
+        {
+            "Первое сообщение о погоде",
+            "Второе сообщение о работе",
+            "Третье сообщение о еде"
+        };
+
+        var embeddings = await client.GetEmbeddingsAsync(texts, cts.Token);
+
+        Assert.Equal(3, embeddings.Count);
+        Assert.All(embeddings, e => Assert.Equal(1536, e.Length));
+    }
+
+    [Fact]
+    public async Task SimilarTexts_HaveHigherCosineSimilarity()
+    {
+        if (!_config.HasOpenAiKey)
+            return;
+
+        var client = _config.CreateEmbeddingClient();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var texts = new[]
+        {
+            "Сегодня хорошая погода, светит солнце",  // 0: о погоде
+            "На улице тепло и солнечно",              // 1: о погоде (похоже на 0)
+            "Нужно купить молоко и хлеб"              // 2: о покупках (не похоже)
+        };
+
+        var embeddings = await client.GetEmbeddingsAsync(texts, cts.Token);
+
+        var sim01 = CosineSimilarity(embeddings[0], embeddings[1]); // погода-погода
+        var sim02 = CosineSimilarity(embeddings[0], embeddings[2]); // погода-покупки
+
+        // Похожие тексты должны иметь большее сходство
+        Assert.True(sim01 > sim02, $"Expected weather texts to be more similar. sim01={sim01:F4}, sim02={sim02:F4}");
+    }
+
+    private static double CosineSimilarity(float[] a, float[] b)
+    {
+        double dot = 0, normA = 0, normB = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+        }
+        return dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
+    }
+}

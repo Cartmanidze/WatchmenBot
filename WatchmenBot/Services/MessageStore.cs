@@ -88,4 +88,58 @@ public class MessageStore
         var pattern = @"https?://\S+";
         return Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase);
     }
+
+    /// <summary>
+    /// Get messages that don't have embeddings yet (for background indexing)
+    /// </summary>
+    public async Task<List<MessageRecord>> GetMessagesWithoutEmbeddingsAsync(int limit = 100)
+    {
+        const string sql = """
+            SELECT m.id, m.chat_id, m.thread_id, m.from_user_id, m.username, m.display_name,
+                   m.text, m.date_utc, m.has_links, m.has_media, m.reply_to_message_id, m.message_type
+            FROM messages m
+            LEFT JOIN message_embeddings e ON m.chat_id = e.chat_id AND m.id = e.message_id
+            WHERE e.id IS NULL
+              AND m.text IS NOT NULL
+              AND LENGTH(m.text) > 5
+            ORDER BY m.date_utc DESC
+            LIMIT @Limit;
+            """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var results = await connection.QueryAsync<MessageRecord>(sql, new { Limit = limit });
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get messages without embeddings");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Get count of messages pending embedding indexing
+    /// </summary>
+    public async Task<(long total, long indexed, long pending)> GetEmbeddingStatsAsync()
+    {
+        const string sql = """
+            SELECT
+                (SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND LENGTH(text) > 5) as total,
+                (SELECT COUNT(DISTINCT (chat_id, message_id)) FROM message_embeddings) as indexed;
+            """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var result = await connection.QuerySingleAsync<(long total, long indexed)>(sql);
+            return (result.total, result.indexed, result.total - result.indexed);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get embedding stats");
+            return (0, 0, 0);
+        }
+    }
 }

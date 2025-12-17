@@ -3,6 +3,7 @@ using Microsoft.OpenApi.Models;
 using Telegram.Bot;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
+using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Services;
@@ -27,52 +28,85 @@ public static class ServiceCollectionExtensions
         // Database
         services.AddSingleton<IDbConnectionFactory>(sp =>
         {
-            var connectionString = configuration.GetConnectionString("Default") ?? 
-                                 configuration["Database:ConnectionString"] ?? 
+            var connectionString = configuration.GetConnectionString("Default") ??
+                                 configuration["Database:ConnectionString"] ??
                                  throw new InvalidOperationException("Database connection string is required");
             return new PostgreSqlConnectionFactory(connectionString);
         });
 
         services.AddScoped<MessageStore>();
         services.AddHostedService<DatabaseInitializer>();
-        
+
         // Health checks
         services.AddHealthChecks()
             .AddCheck<DatabaseHealthCheck>("postgresql");
 
-        // Kimi Client with HttpClient
-        services.AddHttpClient<KimiClient>()
+        // OpenRouter Client (DeepSeek V3.2 via OpenRouter)
+        services.AddHttpClient<OpenRouterClient>()
             .ConfigurePrimaryHttpMessageHandler(sp =>
             {
-                var useProxy = configuration.GetValue<bool>("Kimi:UseProxy", true);
+                var useProxy = configuration.GetValue<bool>("OpenRouter:UseProxy", true);
                 return new HttpClientHandler
                 {
-                    AutomaticDecompression = System.Net.DecompressionMethods.GZip | 
+                    AutomaticDecompression = System.Net.DecompressionMethods.GZip |
                                            System.Net.DecompressionMethods.Deflate,
                     SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
                     UseProxy = useProxy
                 };
             })
-            .AddTypedClient<KimiClient>((httpClient, serviceProvider) =>
+            .AddTypedClient<OpenRouterClient>((httpClient, serviceProvider) =>
             {
-                var apiKey = configuration["Kimi:ApiKey"] ?? string.Empty;
-                var baseUrl = configuration["Kimi:BaseUrl"] ?? "https://openrouter.ai/api";
-                var model = configuration["Kimi:Model"] ?? "moonshotai/kimi-k2";
-                
+                var apiKey = configuration["OpenRouter:ApiKey"] ?? string.Empty;
+                var baseUrl = configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api";
+                var model = configuration["OpenRouter:Model"] ?? "deepseek/deepseek-chat";
+                var logger = serviceProvider.GetRequiredService<ILogger<OpenRouterClient>>();
+
                 if (string.IsNullOrWhiteSpace(apiKey))
                 {
-                    throw new InvalidOperationException("Kimi:ApiKey is required");
+                    throw new InvalidOperationException("OpenRouter:ApiKey is required");
                 }
-                
-                return new KimiClient(httpClient, apiKey, baseUrl, model);
+
+                return new OpenRouterClient(httpClient, apiKey, baseUrl, model, logger);
             });
+
+        // Embedding Client (OpenAI text-embedding-3-small)
+        services.AddHttpClient<EmbeddingClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip |
+                                       System.Net.DecompressionMethods.Deflate,
+                SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+            })
+            .AddTypedClient<EmbeddingClient>((httpClient, serviceProvider) =>
+            {
+                var apiKey = configuration["Embeddings:ApiKey"] ?? string.Empty;
+                var baseUrl = configuration["Embeddings:BaseUrl"] ?? "https://api.openai.com/v1";
+                var model = configuration["Embeddings:Model"] ?? "text-embedding-3-small";
+                var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+                var logger = serviceProvider.GetRequiredService<ILogger<EmbeddingClient>>();
+
+                // Embeddings are optional - if no API key, RAG will be disabled
+                if (string.IsNullOrWhiteSpace(apiKey))
+                {
+                    serviceProvider.GetRequiredService<ILogger<EmbeddingClient>>()
+                        .LogWarning("Embeddings:ApiKey not configured. RAG features will be disabled.");
+                }
+
+                return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, logger);
+            });
+
+        // Embedding Service for RAG
+        services.AddScoped<EmbeddingService>();
 
         // Background Services
         services.AddHostedService<DailySummaryService>();
+        services.AddHostedService<BackgroundEmbeddingService>();
+        services.AddHostedService<TelegramPollingService>();
 
         // Feature Handlers
         services.AddScoped<ProcessTelegramUpdateHandler>();
         services.AddScoped<SaveMessageHandler>();
+        services.AddScoped<GenerateSummaryHandler>();
         services.AddScoped<SetWebhookHandler>();
         services.AddScoped<DeleteWebhookHandler>();
         services.AddScoped<GetWebhookInfoHandler>();
@@ -87,7 +121,8 @@ public static class ServiceCollectionExtensions
             options.SwaggerDoc("v1", new OpenApiInfo
             {
                 Title = "WatchmenBot API",
-                Version = "v1"
+                Version = "v1",
+                Description = "Telegram bot for group chat analytics with AI-powered daily summaries and RAG support"
             });
         });
 

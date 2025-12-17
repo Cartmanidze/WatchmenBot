@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: watchmenbot-db
+    environment:
+      POSTGRES_DB: watchmenbot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-watchmen_secret_123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"  # External 5433 to avoid conflict with local PostgreSQL
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d watchmenbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # WatchmenBot application
+  watchmenbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: watchmenbot-app
+    environment:
+      # Database
+      Database__ConnectionString: "Host=postgres;Database=watchmenbot;Username=postgres;Password=${POSTGRES_PASSWORD:-watchmen_secret_123}"
+
+      # Telegram
+      Telegram__BotToken: ${TELEGRAM_BOT_TOKEN}
+      Telegram__WebhookUrl: ${TELEGRAM_WEBHOOK_URL:-}
+      Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET:-}
+      Telegram__UsePolling: ${TELEGRAM_USE_POLLING:-false}
+
+      # OpenRouter (DeepSeek)
+      OpenRouter__ApiKey: ${OPENROUTER_API_KEY}
+      OpenRouter__BaseUrl: https://openrouter.ai/api
+      OpenRouter__Model: deepseek/deepseek-chat
+      OpenRouter__UseProxy: "false"
+
+      # Embeddings (OpenAI)
+      Embeddings__ApiKey: ${OPENAI_API_KEY:-}
+      Embeddings__BaseUrl: https://api.openai.com/v1
+      Embeddings__Model: text-embedding-3-small
+      Embeddings__Dimensions: "1536"
+
+      # Daily Summary
+      DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}
+
+      # ASP.NET
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

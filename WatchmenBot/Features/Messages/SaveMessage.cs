@@ -56,10 +56,10 @@ public class SaveMessageHandler
 
             var record = CreateMessageRecord(message);
             await _messageStore.SaveAsync(record);
-            
-            _logger.LogInformation("Saved message {MessageId} from chat {ChatId} by user {UserId}", 
-                message.MessageId, message.Chat.Id, message.From?.Id);
-                
+
+            _logger.LogDebug("[DB] Saved msg #{MessageId} to chat {ChatId}",
+                message.MessageId, message.Chat.Id);
+
             return SaveMessageResponse.Success(message.MessageId, message.Chat.Id);
         }
         catch (Exception ex)

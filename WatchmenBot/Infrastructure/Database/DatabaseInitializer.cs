@@ -6,11 +6,16 @@ public class DatabaseInitializer : IHostedService
 {
     private readonly IDbConnectionFactory _connectionFactory;
     private readonly ILogger<DatabaseInitializer> _logger;
+    private readonly IConfiguration _configuration;
 
-    public DatabaseInitializer(IDbConnectionFactory connectionFactory, ILogger<DatabaseInitializer> logger)
+    public DatabaseInitializer(
+        IDbConnectionFactory connectionFactory,
+        ILogger<DatabaseInitializer> logger,
+        IConfiguration configuration)
     {
         _connectionFactory = connectionFactory;
         _logger = logger;
+        _configuration = configuration;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -18,9 +23,18 @@ public class DatabaseInitializer : IHostedService
         try
         {
             using var connection = await _connectionFactory.CreateConnectionAsync();
-            await CreateTablesAsync(connection);
+
+            // Enable pgvector extension
+            await EnablePgVectorAsync(connection);
+
+            // Create tables
+            await CreateMessagesTableAsync(connection);
+            await CreateEmbeddingsTableAsync(connection);
+
+            // Create indexes
             await CreateIndexesAsync(connection);
-            _logger.LogInformation("Database initialized successfully");
+
+            _logger.LogInformation("Database initialized successfully with pgvector support");
         }
         catch (Exception ex)
         {
@@ -31,7 +45,21 @@ public class DatabaseInitializer : IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    private static async Task CreateTablesAsync(System.Data.IDbConnection connection)
+    private async Task EnablePgVectorAsync(System.Data.IDbConnection connection)
+    {
+        try
+        {
+            await connection.ExecuteAsync("CREATE EXTENSION IF NOT EXISTS vector;");
+            _logger.LogInformation("pgvector extension enabled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not enable pgvector extension. RAG features will be disabled. " +
+                                   "Install pgvector: https://github.com/pgvector/pgvector");
+        }
+    }
+
+    private static async Task CreateMessagesTableAsync(System.Data.IDbConnection connection)
     {
         const string createTableSql = """
             CREATE TABLE IF NOT EXISTS messages (
@@ -55,9 +83,39 @@ public class DatabaseInitializer : IHostedService
         await connection.ExecuteAsync(createTableSql);
     }
 
-    private static async Task CreateIndexesAsync(System.Data.IDbConnection connection)
+    private async Task CreateEmbeddingsTableAsync(System.Data.IDbConnection connection)
     {
-        var indexes = new[]
+        var dimensions = _configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+
+        var createTableSql = $"""
+            CREATE TABLE IF NOT EXISTS message_embeddings (
+                id BIGSERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL,
+                chunk_index INT NOT NULL DEFAULT 0,
+                chunk_text TEXT NOT NULL,
+                embedding vector({dimensions}),
+                metadata JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(chat_id, message_id, chunk_index)
+            );
+            """;
+
+        try
+        {
+            await connection.ExecuteAsync(createTableSql);
+            _logger.LogInformation("Embeddings table created with {Dimensions} dimensions", dimensions);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not create embeddings table. pgvector may not be installed");
+        }
+    }
+
+    private async Task CreateIndexesAsync(System.Data.IDbConnection connection)
+    {
+        // Messages indexes
+        var messagesIndexes = new[]
         {
             "CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id);",
             "CREATE INDEX IF NOT EXISTS idx_messages_date_utc ON messages (date_utc);",
@@ -65,9 +123,42 @@ public class DatabaseInitializer : IHostedService
             "CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages (chat_id, date_utc);"
         };
 
-        foreach (var indexSql in indexes)
+        foreach (var indexSql in messagesIndexes)
         {
             await connection.ExecuteAsync(indexSql);
+        }
+
+        // Embeddings indexes
+        try
+        {
+            var embeddingsIndexes = new[]
+            {
+                // Index for filtering by chat
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_chat_id ON message_embeddings (chat_id);",
+
+                // Index for looking up by message
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_chat_message ON message_embeddings (chat_id, message_id);",
+
+                // Vector similarity search index (IVFFlat for approximate nearest neighbors)
+                // lists = sqrt(n) where n is expected number of rows, 100 is good for up to 10K rows
+                """
+                CREATE INDEX IF NOT EXISTS idx_embeddings_vector
+                ON message_embeddings
+                USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 100);
+                """
+            };
+
+            foreach (var indexSql in embeddingsIndexes)
+            {
+                await connection.ExecuteAsync(indexSql);
+            }
+
+            _logger.LogInformation("Embeddings indexes created");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not create embeddings indexes. pgvector may not be installed");
         }
     }
 }
