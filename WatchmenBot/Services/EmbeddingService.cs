@@ -152,6 +152,103 @@ public class EmbeddingService
     }
 
     /// <summary>
+    /// Search for messages similar to a topic/query within a date range
+    /// </summary>
+    public async Task<List<SearchResult>> SearchSimilarInRangeAsync(
+        long chatId,
+        string query,
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        int limit = 20,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var queryEmbedding = await _embeddingClient.GetEmbeddingAsync(query, ct);
+            if (queryEmbedding.Length == 0)
+                return new List<SearchResult>();
+
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
+
+            var results = await connection.QueryAsync<SearchResult>(
+                """
+                SELECT
+                    me.chat_id as ChatId,
+                    me.message_id as MessageId,
+                    me.chunk_index as ChunkIndex,
+                    me.chunk_text as ChunkText,
+                    me.metadata as MetadataJson,
+                    1 - (me.embedding <=> @Embedding::vector) as Similarity
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND m.date_utc >= @StartUtc
+                  AND m.date_utc < @EndUtc
+                ORDER BY me.embedding <=> @Embedding::vector
+                LIMIT @Limit
+                """,
+                new { ChatId = chatId, Embedding = embeddingString, StartUtc = startUtc.UtcDateTime, EndUtc = endUtc.UtcDateTime, Limit = limit });
+
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to search similar messages in range for query: {Query}", query);
+            return new List<SearchResult>();
+        }
+    }
+
+    /// <summary>
+    /// Get diverse representative messages by sampling across time buckets
+    /// </summary>
+    public async Task<List<SearchResult>> GetDiverseMessagesAsync(
+        long chatId,
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        int limit = 50,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            // Simple approach: sample messages evenly across time period
+            // This avoids loading vectors into memory
+            var results = await connection.QueryAsync<SearchResult>(
+                """
+                WITH numbered AS (
+                    SELECT
+                        me.chat_id as ChatId,
+                        me.message_id as MessageId,
+                        me.chunk_index as ChunkIndex,
+                        me.chunk_text as ChunkText,
+                        me.metadata as MetadataJson,
+                        ROW_NUMBER() OVER (ORDER BY m.date_utc) as rn,
+                        COUNT(*) OVER () as total
+                    FROM message_embeddings me
+                    JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                    WHERE me.chat_id = @ChatId
+                      AND m.date_utc >= @StartUtc
+                      AND m.date_utc < @EndUtc
+                )
+                SELECT ChatId, MessageId, ChunkIndex, ChunkText, MetadataJson, 1.0 as Similarity
+                FROM numbered
+                WHERE total <= @Limit OR rn % GREATEST(1, total / @Limit) = 0
+                LIMIT @Limit
+                """,
+                new { ChatId = chatId, StartUtc = startUtc.UtcDateTime, EndUtc = endUtc.UtcDateTime, Limit = limit });
+
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get diverse messages for chat {ChatId}", chatId);
+            return new List<SearchResult>();
+        }
+    }
+
+    /// <summary>
     /// Check if embedding exists for a message
     /// </summary>
     public async Task<bool> HasEmbeddingAsync(long chatId, long messageId, CancellationToken ct = default)
@@ -293,3 +390,4 @@ public class EmbeddingStats
     public DateTimeOffset? OldestEmbedding { get; set; }
     public DateTimeOffset? NewestEmbedding { get; set; }
 }
+

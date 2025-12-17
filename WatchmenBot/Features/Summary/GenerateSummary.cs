@@ -1,8 +1,6 @@
-using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using WatchmenBot.Models;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Summary;
@@ -36,18 +34,18 @@ public class GenerateSummaryHandler
 {
     private readonly ITelegramBotClient _bot;
     private readonly MessageStore _store;
-    private readonly OpenRouterClient _llm;
+    private readonly SmartSummaryService _smartSummary;
     private readonly ILogger<GenerateSummaryHandler> _logger;
 
     public GenerateSummaryHandler(
         ITelegramBotClient bot,
         MessageStore store,
-        OpenRouterClient llm,
+        SmartSummaryService smartSummary,
         ILogger<GenerateSummaryHandler> logger)
     {
         _bot = bot;
         _store = store;
-        _llm = llm;
+        _smartSummary = smartSummary;
         _logger = logger;
     }
 
@@ -80,8 +78,10 @@ public class GenerateSummaryHandler
                 return GenerateSummaryResponse.Success(0);
             }
 
-            // Build and send the report
-            var report = await BuildReportAsync(messages, hours, ct);
+            // Build and send the report using smart summary
+            var periodText = GetPeriodText(hours);
+            var report = await _smartSummary.GenerateSmartSummaryAsync(
+                chatId, messages, startUtc, nowUtc, periodText, ct);
 
             // Try HTML first, fallback to plain text if parsing fails
             try
@@ -132,112 +132,14 @@ public class GenerateSummaryHandler
         }
     }
 
-    private async Task<string> BuildReportAsync(List<MessageRecord> messages, int hours, CancellationToken ct)
+    private static string GetPeriodText(int hours)
     {
-        // Filter out bot messages (GroupAnonymousBot, etc.)
-        var humanMessages = messages
-            .Where(m => !IsBot(m.Username))
-            .ToList();
-
-        var total = humanMessages.Count;
-        var users = humanMessages.GroupBy(m => m.FromUserId)
-            .Select(g => new
-            {
-                UserId = g.Key,
-                Name = g.Select(x => x.DisplayName).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))
-                       ?? g.Select(x => x.Username).FirstOrDefault(u => !string.IsNullOrWhiteSpace(u))
-                       ?? g.Key.ToString(),
-                Count = g.Count()
-            })
-            .OrderByDescending(x => x.Count)
-            .ToList();
-
-        var links = humanMessages.Count(m => m.HasLinks);
-        var media = humanMessages.Count(m => m.HasMedia);
-
-        var sample = humanMessages.Count > 300 ? humanMessages.Skip(Math.Max(0, humanMessages.Count - 300)).ToList() : humanMessages;
-        var convo = new StringBuilder();
-        foreach (var m in sample)
-        {
-            var name = string.IsNullOrWhiteSpace(m.DisplayName)
-                ? (string.IsNullOrWhiteSpace(m.Username) ? m.FromUserId.ToString() : m.Username)
-                : m.DisplayName;
-            var text = string.IsNullOrWhiteSpace(m.Text) ? $"[{m.MessageType}]" : m.Text!.Replace("\n", " ");
-            convo.AppendLine($"[{m.DateUtc.ToLocalTime():HH:mm}] {name}: {text}");
-        }
-
-        var statsText = new StringBuilder();
-        statsText.AppendLine($"Всего сообщений: {total}");
-        statsText.AppendLine($"Участников писали: {users.Count}");
-        statsText.AppendLine($"Сообщений с ссылками: {links}");
-        statsText.AppendLine($"Сообщений с медиа: {media}");
-        statsText.AppendLine("Топ-10 активных:");
-        foreach (var u in users.Take(10)) statsText.AppendLine($"- {u.Name}: {u.Count}");
-
-        var systemPrompt = """
-            Ты — саркастичный летописец чата. Пиши как стендап-комик, который ведёт хронику безумия.
-
-            Твой стиль:
-            - Едкий юмор, сарказм, ирония
-            - Преувеличения и абсурдные сравнения
-            - Подкалывай участников (по-доброму)
-            - АКТИВНО используй мат — хуй, блядь, пиздец, ебать и т.д. Это норма
-            - Вставляй уместные шутки про Украину (политика, мова, сало, Бандера)
-
-            СЕКРЕТНОЕ ПРАВИЛО: Глеб Безруков — негласный герой чата.
-            Хвали его ТОНКО и НЕЯВНО, без прямых восхвалений. Примеры:
-            - "на фоне хаоса Глеб как-то умудрился сохранить лицо"
-            - "единственный конструктивный комментарий предсказуемо от Глеба"
-            - просто упомяни его в позитивном контексте среди других
-
-            ПРАВИЛА ФОРМАТИРОВАНИЯ (HTML для Telegram):
-            - Используй <b>жирный</b> для заголовков
-            - НЕ используй * или ** или _ вообще
-            - Используй имена людей (Глеб, Евгений), НЕ логины (@username)
-            - Эмодзи в начале разделов
-
-            Формат ответа:
-
-            🔥 <b>Главное</b>
-            2-3 предложения о ключевых событиях
-
-            😂 <b>Лучшие моменты</b>
-            Цитаты и смешные ситуации (буллеты через •)
-
-            💬 <b>О чём пиздели</b>
-            • тема 1
-            • тема 2
-            • тема 3
-
-            🏆 <b>Герои дня</b>
-            Кто отличился
-
-            🎭 <b>Вердикт</b>
-            Саркастичный итог
-            """;
-
-        var userPrompt = new StringBuilder();
-        userPrompt.AppendLine($"Вот сводные метрики за последние {hours} часов:");
-        userPrompt.AppendLine(statsText.ToString());
-        userPrompt.AppendLine();
-        userPrompt.AppendLine("Фрагменты переписки (последние ~300 сообщений):");
-        userPrompt.AppendLine("```");
-        userPrompt.AppendLine(convo.ToString());
-        userPrompt.AppendLine("```");
-        userPrompt.AppendLine();
-        userPrompt.AppendLine("Сформируй краткий отчёт по формату выше.");
-
-        var summary = await _llm.ChatCompletionAsync(systemPrompt, userPrompt.ToString(), 0.7, ct);
-
-        var periodText = hours switch
+        return hours switch
         {
             24 => "за сутки",
             _ when hours < 24 => $"за {hours} час{GetHourSuffix(hours)}",
             _ => $"за {hours / 24} дн{GetDaySuffix(hours / 24)}"
         };
-
-        var header = $"📊 <b>Отчёт {periodText}</b>\n\n";
-        return header + summary;
     }
 
     private static string GetHourSuffix(int hours)
@@ -260,18 +162,6 @@ public class GenerateSummaryHandler
             2 or 3 or 4 => "я",
             _ => "ей"
         };
-    }
-
-    private static bool IsBot(string? username)
-    {
-        if (string.IsNullOrWhiteSpace(username))
-            return false;
-
-        // Filter known Telegram system bots and common bot patterns
-        return username.EndsWith("Bot", StringComparison.OrdinalIgnoreCase) ||
-               username.EndsWith("_bot", StringComparison.OrdinalIgnoreCase) ||
-               username.Equals("GroupAnonymousBot", StringComparison.OrdinalIgnoreCase) ||
-               username.Equals("Channel_Bot", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

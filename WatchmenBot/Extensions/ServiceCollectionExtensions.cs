@@ -98,6 +98,9 @@ public static class ServiceCollectionExtensions
         // Embedding Service for RAG
         services.AddScoped<EmbeddingService>();
 
+        // Smart Summary Service (uses embeddings for topic extraction)
+        services.AddScoped<SmartSummaryService>();
+
         // Background Services
         services.AddHostedService<DailySummaryService>();
         services.AddHostedService<BackgroundEmbeddingService>();
