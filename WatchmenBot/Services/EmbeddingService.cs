@@ -75,7 +75,9 @@ public class EmbeddingService
             var texts = messageList.Select(FormatMessageForEmbedding).ToList();
             var embeddings = await _embeddingClient.GetEmbeddingsAsync(texts, ct);
 
-            var stored = 0;
+            // Prepare batch data
+            var batchData = new List<(long ChatId, long MessageId, int ChunkIndex, string ChunkText, float[] Embedding, string MetadataJson)>();
+
             for (var i = 0; i < messageList.Count && i < embeddings.Count; i++)
             {
                 var message = messageList[i];
@@ -83,22 +85,74 @@ public class EmbeddingService
 
                 if (embedding.Length == 0) continue;
 
-                await StoreEmbeddingAsync(
-                    message.ChatId,
-                    message.Id,
-                    0,
-                    texts[i],
-                    embedding,
-                    new { message.FromUserId, message.Username, message.DisplayName, message.DateUtc },
-                    ct);
-                stored++;
+                var metadata = new { message.FromUserId, message.Username, message.DisplayName, message.DateUtc };
+                var metadataJson = JsonSerializer.Serialize(metadata);
+
+                batchData.Add((message.ChatId, message.Id, 0, texts[i], embedding, metadataJson));
             }
 
-            _logger.LogDebug("[Embeddings] Stored {Stored}/{Total} embeddings to DB", stored, messageList.Count);
+            // Batch insert to DB
+            if (batchData.Count > 0)
+            {
+                await StoreBatchEmbeddingsAsync(batchData, ct);
+            }
+
+            _logger.LogDebug("[Embeddings] Stored {Stored}/{Total} embeddings to DB", batchData.Count, messageList.Count);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[Embeddings] Failed to store batch of {Count} messages", messageList.Count);
+            throw;
+        }
+    }
+
+    private async Task StoreBatchEmbeddingsAsync(
+        List<(long ChatId, long MessageId, int ChunkIndex, string ChunkText, float[] Embedding, string MetadataJson)> batch,
+        CancellationToken ct)
+    {
+        using var connection = await _connectionFactory.CreateConnectionAsync();
+
+        // Build batch insert SQL with VALUES
+        var sb = new StringBuilder();
+        sb.AppendLine("""
+            INSERT INTO message_embeddings (chat_id, message_id, chunk_index, chunk_text, embedding, metadata)
+            VALUES
+            """);
+
+        var parameters = new DynamicParameters();
+        for (var i = 0; i < batch.Count; i++)
+        {
+            var (chatId, messageId, chunkIndex, chunkText, embedding, metadataJson) = batch[i];
+
+            if (i > 0) sb.Append(',');
+            sb.AppendLine($"(@ChatId{i}, @MessageId{i}, @ChunkIndex{i}, @ChunkText{i}, @Embedding{i}::vector, @Metadata{i}::jsonb)");
+
+            parameters.Add($"ChatId{i}", chatId);
+            parameters.Add($"MessageId{i}", messageId);
+            parameters.Add($"ChunkIndex{i}", chunkIndex);
+            parameters.Add($"ChunkText{i}", chunkText);
+            parameters.Add($"Embedding{i}", "[" + string.Join(",", embedding) + "]");
+            parameters.Add($"Metadata{i}", metadataJson);
+        }
+
+        sb.AppendLine("""
+            ON CONFLICT (chat_id, message_id, chunk_index)
+            DO UPDATE SET
+                chunk_text = EXCLUDED.chunk_text,
+                embedding = EXCLUDED.embedding,
+                metadata = EXCLUDED.metadata,
+                created_at = NOW()
+            """);
+
+        try
+        {
+            var affected = await connection.ExecuteAsync(sb.ToString(), parameters);
+            _logger.LogDebug("[Embeddings] Batch INSERT: {Affected} rows affected", affected);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Embeddings] Batch INSERT FAILED for {Count} embeddings. SQL length: {SqlLength}",
+                batch.Count, sb.Length);
             throw;
         }
     }
@@ -114,11 +168,33 @@ public class EmbeddingService
     {
         try
         {
+            // First check how many embeddings exist for this chat
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var embeddingCount = await connection.ExecuteScalarAsync<long>(
+                "SELECT COUNT(*) FROM message_embeddings WHERE chat_id = @ChatId",
+                new { ChatId = chatId });
+
+            _logger.LogInformation("[Search] Chat {ChatId} has {Count} embeddings", chatId, embeddingCount);
+
+            if (embeddingCount == 0)
+            {
+                _logger.LogWarning("[Search] No embeddings found for chat {ChatId}", chatId);
+                return new List<SearchResult>();
+            }
+
             var queryEmbedding = await _embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
+            {
+                _logger.LogWarning("[Search] Failed to get embedding for query: {Query}", query);
                 return new List<SearchResult>();
+            }
 
-            return await SearchByVectorAsync(chatId, queryEmbedding, limit, ct);
+            _logger.LogDebug("[Search] Got query embedding with {Dims} dimensions", queryEmbedding.Length);
+
+            var results = await SearchByVectorAsync(chatId, queryEmbedding, limit, ct);
+            _logger.LogInformation("[Search] Found {Count} results for query in chat {ChatId}", results.Count, chatId);
+
+            return results;
         }
         catch (Exception ex)
         {

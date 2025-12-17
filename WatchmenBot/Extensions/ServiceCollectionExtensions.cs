@@ -3,6 +3,7 @@ using Microsoft.OpenApi.Models;
 using Telegram.Bot;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
+using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
@@ -101,18 +102,30 @@ public static class ServiceCollectionExtensions
         // Smart Summary Service (uses embeddings for topic extraction)
         services.AddScoped<SmartSummaryService>();
 
+        // Admin Services
+        services.AddSingleton<LogCollector>();
+        services.AddScoped<AdminSettingsStore>();
+
         // Background Services
         services.AddHostedService<DailySummaryService>();
         services.AddHostedService<BackgroundEmbeddingService>();
         services.AddHostedService<TelegramPollingService>();
+        services.AddSingleton<DailyLogReportService>();
+        services.AddHostedService(sp => sp.GetRequiredService<DailyLogReportService>());
 
         // Feature Handlers
         services.AddScoped<ProcessTelegramUpdateHandler>();
         services.AddScoped<SaveMessageHandler>();
         services.AddScoped<GenerateSummaryHandler>();
+        services.AddScoped<AdminCommandHandler>();
         services.AddScoped<SetWebhookHandler>();
         services.AddScoped<DeleteWebhookHandler>();
         services.AddScoped<GetWebhookInfoHandler>();
+
+        // Search Handlers (embedding-based)
+        services.AddScoped<SearchHandler>();
+        services.AddScoped<AskHandler>();
+        services.AddScoped<RecallHandler>();
 
         // Controllers
         services.AddControllers();

@@ -12,10 +12,11 @@ public class BackgroundEmbeddingService : BackgroundService
     private readonly ILogger<BackgroundEmbeddingService> _logger;
     private readonly IConfiguration _configuration;
 
-    // Configuration defaults
-    private const int DefaultBatchSize = 50;
-    private const int DefaultDelayBetweenBatchesSeconds = 30;
-    private const int DefaultMaxBatchesPerRun = 100;
+    // Configuration defaults - optimized for speed
+    // OpenAI embedding API has 3,000 RPM limit for most tiers
+    private const int DefaultBatchSize = 100;
+    private const int DefaultDelayBetweenBatchesSeconds = 2;
+    private const int DefaultMaxBatchesPerRun = 500;
 
     public BackgroundEmbeddingService(
         IServiceProvider serviceProvider,
@@ -29,8 +30,8 @@ public class BackgroundEmbeddingService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("[Embeddings] Waiting 30s for app startup...");
-        await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        _logger.LogInformation("[Embeddings] Waiting 10s for app startup...");
+        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
 
         var enabled = _configuration.GetValue<bool>("Embeddings:BackgroundIndexing:Enabled", true);
         if (!enabled)
@@ -46,32 +47,47 @@ public class BackgroundEmbeddingService : BackgroundService
             return;
         }
 
-        var intervalMinutes = _configuration.GetValue<int>("Embeddings:BackgroundIndexing:IntervalMinutes", 5);
-        _logger.LogInformation("[Embeddings] Background service STARTED (interval: {Interval}min)", intervalMinutes);
+        var idleIntervalMinutes = _configuration.GetValue<int>("Embeddings:BackgroundIndexing:IntervalMinutes", 2);
+        _logger.LogInformation("[Embeddings] Background service STARTED (idle interval: {Interval}min)", idleIntervalMinutes);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await ProcessBatchesAsync(stoppingToken);
+                var hasMoreWork = await ProcessBatchesAsync(stoppingToken);
+
+                // If there's more work, continue immediately with a short pause
+                // If caught up, wait longer before checking again
+                if (hasMoreWork)
+                {
+                    _logger.LogDebug("[Embeddings] More work available, continuing in 5s...");
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                }
+                else
+                {
+                    _logger.LogDebug("[Embeddings] All caught up, sleeping {Minutes}min...", idleIntervalMinutes);
+                    await Task.Delay(TimeSpan.FromMinutes(idleIntervalMinutes), stoppingToken);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "[Embeddings] Error during indexing run");
+                await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
             }
-
-            _logger.LogDebug("[Embeddings] Sleeping {Minutes}min until next run...", intervalMinutes);
-            await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
         }
 
         _logger.LogInformation("[Embeddings] Background service STOPPED");
     }
 
-    private async Task ProcessBatchesAsync(CancellationToken ct)
+    /// <summary>
+    /// Process batches and return true if there's more work to do
+    /// </summary>
+    private async Task<bool> ProcessBatchesAsync(CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var messageStore = scope.ServiceProvider.GetRequiredService<MessageStore>();
         var embeddingService = scope.ServiceProvider.GetRequiredService<EmbeddingService>();
+        var logCollector = scope.ServiceProvider.GetRequiredService<LogCollector>();
 
         // Get current stats
         var (total, indexed, pending) = await messageStore.GetEmbeddingStatsAsync();
@@ -79,7 +95,7 @@ public class BackgroundEmbeddingService : BackgroundService
         if (pending == 0)
         {
             _logger.LogInformation("[Embeddings] All caught up! {Indexed}/{Total} messages indexed", indexed, total);
-            return;
+            return false;
         }
 
         _logger.LogInformation("[Embeddings] Starting indexing run: {Pending} pending, {Indexed}/{Total} already indexed",
@@ -110,6 +126,7 @@ public class BackgroundEmbeddingService : BackgroundService
 
                 totalProcessed += messages.Count;
                 batchesProcessed++;
+                logCollector.IncrementEmbeddings(messages.Count);
 
                 var remainingEstimate = pending - totalProcessed;
                 _logger.LogInformation("[Embeddings] Batch {Batch}: +{Count} messages in {Ms}ms | Progress: {Done}/{Pending} ({Percent:F1}%)",
@@ -140,5 +157,9 @@ public class BackgroundEmbeddingService : BackgroundService
             _logger.LogInformation("[Embeddings] Run complete: {Total} messages in {Batches} batches, {Elapsed:F1}s ({Rate:F1} msg/s)",
                 totalProcessed, batchesProcessed, sw.Elapsed.TotalSeconds, rate);
         }
+
+        // Return true if there's more work (we hit max batches or batch was full)
+        var hasMore = batchesProcessed >= maxBatches || (pending - totalProcessed) > 0;
+        return hasMore;
     }
 }

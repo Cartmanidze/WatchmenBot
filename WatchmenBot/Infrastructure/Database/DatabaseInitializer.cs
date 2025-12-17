@@ -30,6 +30,7 @@ public class DatabaseInitializer : IHostedService
             // Create tables
             await CreateMessagesTableAsync(connection);
             await CreateEmbeddingsTableAsync(connection);
+            await CreateAdminSettingsTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -110,6 +111,19 @@ public class DatabaseInitializer : IHostedService
         {
             _logger.LogWarning(ex, "Could not create embeddings table. pgvector may not be installed");
         }
+    }
+
+    private static async Task CreateAdminSettingsTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS admin_settings (
+                key VARCHAR(100) PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
     }
 
     private async Task CreateIndexesAsync(System.Data.IDbConnection connection)

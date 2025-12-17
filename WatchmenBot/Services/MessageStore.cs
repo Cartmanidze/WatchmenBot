@@ -82,6 +82,50 @@ public class MessageStore
         }
     }
 
+    public async Task<List<MessageRecord>> GetMessagesByUsernameAsync(long chatId, string username, DateTimeOffset startUtc, DateTimeOffset endUtc)
+    {
+        const string sql = """
+            SELECT
+                id as Id,
+                chat_id as ChatId,
+                thread_id as ThreadId,
+                from_user_id as FromUserId,
+                username as Username,
+                display_name as DisplayName,
+                text as Text,
+                date_utc as DateUtc,
+                has_links as HasLinks,
+                has_media as HasMedia,
+                reply_to_message_id as ReplyToMessageId,
+                message_type as MessageType
+            FROM messages
+            WHERE chat_id = @ChatId
+              AND date_utc >= @StartUtc
+              AND date_utc < @EndUtc
+              AND (LOWER(username) = LOWER(@Username) OR LOWER(display_name) LIKE LOWER(@DisplayNamePattern))
+            ORDER BY date_utc DESC;
+            """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var results = await connection.QueryAsync<MessageRecord>(sql, new
+            {
+                ChatId = chatId,
+                StartUtc = startUtc,
+                EndUtc = endUtc,
+                Username = username,
+                DisplayNamePattern = $"%{username}%"
+            });
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get messages for username {Username} in chat {ChatId}", username, chatId);
+            throw;
+        }
+    }
+
     public static bool DetectLinks(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;

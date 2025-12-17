@@ -34,11 +34,19 @@ public class SaveMessageResponse
 public class SaveMessageHandler
 {
     private readonly MessageStore _messageStore;
+    private readonly EmbeddingService _embeddingService;
+    private readonly LogCollector _logCollector;
     private readonly ILogger<SaveMessageHandler> _logger;
 
-    public SaveMessageHandler(MessageStore messageStore, ILogger<SaveMessageHandler> logger)
+    public SaveMessageHandler(
+        MessageStore messageStore,
+        EmbeddingService embeddingService,
+        LogCollector logCollector,
+        ILogger<SaveMessageHandler> logger)
     {
         _messageStore = messageStore;
+        _embeddingService = embeddingService;
+        _logCollector = logCollector;
         _logger = logger;
     }
 
@@ -47,7 +55,7 @@ public class SaveMessageHandler
         try
         {
             var message = request.Message;
-            
+
             // Only process group/supergroup messages
             if (message.Chat.Type is not ChatType.Group and not ChatType.Supergroup)
             {
@@ -60,11 +68,29 @@ public class SaveMessageHandler
             _logger.LogDebug("[DB] Saved msg #{MessageId} to chat {ChatId}",
                 message.MessageId, message.Chat.Id);
 
+            // Create embedding immediately (fire and forget, don't block message saving)
+            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length > 5)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _embeddingService.StoreMessageEmbeddingAsync(record, cancellationToken);
+                        _logCollector.IncrementEmbeddings();
+                        _logger.LogDebug("[Embedding] Created embedding for msg #{MessageId}", message.MessageId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Embedding] Failed to create embedding for msg #{MessageId}", message.MessageId);
+                    }
+                }, cancellationToken);
+            }
+
             return SaveMessageResponse.Success(message.MessageId, message.Chat.Id);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to save message {MessageId} from chat {ChatId}", 
+            _logger.LogError(ex, "Failed to save message {MessageId} from chat {ChatId}",
                 request.Message.MessageId, request.Message.Chat.Id);
             return SaveMessageResponse.Error($"Failed to save message: {ex.Message}");
         }

@@ -51,6 +51,12 @@ services:
       # Daily Summary
       DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}
 
+      # Admin
+      Admin__UserId: ${ADMIN_USER_ID:-0}
+      Admin__Username: ${ADMIN_USERNAME:-}
+      Admin__ReportTime: ${ADMIN_REPORT_TIME:-10:00}
+      Admin__TimezoneOffset: ${ADMIN_TIMEZONE:-+06:00}
+
       # ASP.NET
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
