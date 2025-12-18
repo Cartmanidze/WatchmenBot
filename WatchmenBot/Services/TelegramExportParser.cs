@@ -104,10 +104,24 @@ public class TelegramExportParser
         var messages = new List<ImportedMessage>();
         var currentFromName = lastFromName;
 
-        var messageNodes = doc.DocumentNode.SelectNodes("//div[contains(@class, 'message') and contains(@class, 'default')]");
+        // Select messages with class containing "message default" (regular messages, not service messages)
+        var messageNodes = doc.DocumentNode.SelectNodes("//div[contains(@class, 'message default')]");
 
         if (messageNodes == null)
-            return messages;
+        {
+            _logger.LogWarning("[Import] No message nodes found in {File}. Trying alternative selector...", Path.GetFileName(filePath));
+
+            // Fallback: try finding any div with id starting with "message"
+            messageNodes = doc.DocumentNode.SelectNodes("//div[starts-with(@id, 'message') and not(contains(@class, 'service'))]");
+
+            if (messageNodes == null)
+            {
+                _logger.LogWarning("[Import] Alternative selector also found no messages in {File}", Path.GetFileName(filePath));
+                return messages;
+            }
+        }
+
+        _logger.LogDebug("[Import] Found {Count} message nodes in {File}", messageNodes.Count, Path.GetFileName(filePath));
 
         foreach (var node in messageNodes)
         {
