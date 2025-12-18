@@ -1,0 +1,13 @@
+version: '3.8'
+
+# Development configuration - uses polling mode
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  watchmenbot:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Telegram__UsePolling: "true"
+    # Expose port for local debugging
+    ports:
+      - "8080:8080"

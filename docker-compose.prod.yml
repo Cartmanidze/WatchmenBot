@@ -1,0 +1,33 @@
+version: '3.8'
+
+# Production configuration - uses webhooks with nginx reverse proxy
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    # Don't expose port externally in production
+    ports: []
+
+  watchmenbot:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Telegram__UsePolling: "false"
+    # Don't expose port directly - nginx will proxy
+    ports: []
+    expose:
+      - "8080"
+
+  # Nginx reverse proxy with SSL
+  nginx:
+    image: nginx:alpine
+    container_name: watchmenbot-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/certbot:/var/www/certbot:ro
+    depends_on:
+      - watchmenbot
+    restart: unless-stopped

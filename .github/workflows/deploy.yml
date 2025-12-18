@@ -1,0 +1,119 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          CR_PAT: ${{ secrets.CR_PAT }}
+          IMAGE: ghcr.io/${{ github.repository }}:latest
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: CR_PAT,IMAGE
+          script: |
+            cd /opt/watchmenbot
+
+            # Login to GitHub Container Registry
+            echo $CR_PAT | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Pull latest image
+            docker pull $IMAGE
+
+            # Set image for docker-compose
+            export DOCKER_IMAGE=$IMAGE
+
+            # Restart services using server compose file
+            docker compose -f docker-compose.server.yml down
+            DOCKER_IMAGE=$IMAGE docker compose -f docker-compose.server.yml up -d
+
+            # Wait for app to start
+            sleep 10
+
+            # Cleanup old images
+            docker image prune -f
+
+            echo "Deployment completed!"
+
+      - name: Set Telegram Webhook
+        if: success()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /opt/watchmenbot
+            set -a && source .env && set +a
+            curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${TELEGRAM_WEBHOOK_URL}&secret_token=${TELEGRAM_WEBHOOK_SECRET}"
+
+      - name: Health check
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            # Check if containers are running
+            docker ps | grep watchmenbot-app || exit 1
+            docker ps | grep watchmenbot-db || exit 1
+            echo "All containers are healthy!"

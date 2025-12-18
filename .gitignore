@@ -42,6 +42,16 @@ _ReSharper*/
 *.db
 WatchmenBot/WatchmenBot/appsettings.Development.json
 
+# Environment files (keep templates)
+.env
+!.env.development
+!.env.production
+!.env.example
+
+# SSL certificates
+nginx/ssl/*.pem
+nginx/certbot/
+
 # OS files
 .DS_Store
 Thumbs.db 

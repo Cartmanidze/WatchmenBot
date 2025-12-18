@@ -1,0 +1,68 @@
+version: '3.8'
+
+# Production configuration - pulls pre-built image
+# Usage: docker compose -f docker-compose.server.yml up -d
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: watchmenbot-db
+    environment:
+      POSTGRES_DB: watchmenbot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d watchmenbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  watchmenbot:
+    image: ${DOCKER_IMAGE:-ghcr.io/cartmanidze/watchmenbot:latest}
+    container_name: watchmenbot-app
+    environment:
+      Database__ConnectionString: "Host=postgres;Database=watchmenbot;Username=postgres;Password=${POSTGRES_PASSWORD}"
+      Telegram__BotToken: ${TELEGRAM_BOT_TOKEN}
+      Telegram__WebhookUrl: ${TELEGRAM_WEBHOOK_URL}
+      Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
+      Telegram__UsePolling: "false"
+      OpenRouter__ApiKey: ${OPENROUTER_API_KEY}
+      OpenRouter__BaseUrl: https://openrouter.ai/api
+      OpenRouter__Model: deepseek/deepseek-chat
+      OpenRouter__UseProxy: "false"
+      Embeddings__ApiKey: ${OPENAI_API_KEY}
+      Embeddings__BaseUrl: https://api.openai.com/v1
+      Embeddings__Model: text-embedding-3-small
+      Embeddings__Dimensions: "1536"
+      DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}
+      Admin__UserId: ${ADMIN_USER_ID}
+      Admin__Username: ${ADMIN_USERNAME}
+      Admin__ReportTime: ${ADMIN_REPORT_TIME:-10:00}
+      Admin__TimezoneOffset: ${ADMIN_TIMEZONE:-+06:00}
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: watchmenbot-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - watchmenbot
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
