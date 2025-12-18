@@ -16,6 +16,7 @@ public class AdminCommandHandler
     private readonly ChatImportService _importService;
     private readonly MessageStore _messageStore;
     private readonly TelegramExportParser _exportParser;
+    private readonly PromptSettingsStore _promptSettings;
     private readonly ILogger<AdminCommandHandler> _logger;
 
     public AdminCommandHandler(
@@ -26,6 +27,7 @@ public class AdminCommandHandler
         ChatImportService importService,
         MessageStore messageStore,
         TelegramExportParser exportParser,
+        PromptSettingsStore promptSettings,
         ILogger<AdminCommandHandler> logger)
     {
         _bot = bot;
@@ -35,6 +37,7 @@ public class AdminCommandHandler
         _importService = importService;
         _messageStore = messageStore;
         _exportParser = exportParser;
+        _promptSettings = promptSettings;
         _logger = logger;
     }
 
@@ -57,6 +60,12 @@ public class AdminCommandHandler
             return await HandleImportFileAsync(message, ct);
         }
 
+        // Handle file upload for prompt (TXT file)
+        if (message.Document != null && text.StartsWith("/admin prompt", StringComparison.OrdinalIgnoreCase))
+        {
+            return await HandlePromptFileAsync(message, ct);
+        }
+
         // Parse command
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2)
@@ -75,6 +84,9 @@ public class AdminCommandHandler
                 "report" => await HandleReportAsync(message.Chat.Id, ct),
                 "chats" => await HandleChatsAsync(message.Chat.Id, ct),
                 "import" when parts.Length >= 3 => await HandleImportCommandAsync(message.Chat.Id, parts[2], ct),
+                "prompts" => await HandlePromptsListAsync(message.Chat.Id, ct),
+                "prompt" when parts.Length >= 3 => await HandlePromptShowAsync(message.Chat.Id, parts[2], ct),
+                "prompt_reset" when parts.Length >= 3 => await HandlePromptResetAsync(message.Chat.Id, parts[2], ct),
                 "set_summary_time" when parts.Length >= 3 => await HandleSetSummaryTimeAsync(message.Chat.Id, parts[2], ct),
                 "set_report_time" when parts.Length >= 3 => await HandleSetReportTimeAsync(message.Chat.Id, parts[2], ct),
                 "set_timezone" when parts.Length >= 3 => await HandleSetTimezoneAsync(message.Chat.Id, parts[2], ct),
@@ -415,6 +427,208 @@ public class AdminCommandHandler
         return true;
     }
 
+    private async Task<bool> HandlePromptsListAsync(long chatId, CancellationToken ct)
+    {
+        var prompts = await _promptSettings.GetAllPromptsAsync();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("<b>🎭 Промпты команд</b>\n");
+
+        foreach (var prompt in prompts)
+        {
+            var status = prompt.IsCustom ? "✏️ кастомный" : "📋 дефолтный";
+            sb.AppendLine($"<b>/{prompt.Command}</b> — {prompt.Description}");
+            sb.AppendLine($"   {status}");
+            if (prompt.IsCustom && prompt.UpdatedAt.HasValue)
+            {
+                sb.AppendLine($"   📅 {prompt.UpdatedAt.Value:dd.MM.yyyy HH:mm}");
+            }
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("💡 <b>Команды:</b>");
+        sb.AppendLine("<code>/admin prompt ask</code> — показать промпт");
+        sb.AppendLine("<code>/admin prompt_reset ask</code> — сбросить на дефолт");
+        sb.AppendLine("\n📎 Отправь TXT файл с caption:");
+        sb.AppendLine("<code>/admin prompt ask</code>");
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: sb.ToString(),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandlePromptShowAsync(long chatId, string command, CancellationToken ct)
+    {
+        var defaults = _promptSettings.GetDefaults();
+        if (!defaults.ContainsKey(command))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Неизвестная команда: {command}\n\nДоступные: {string.Join(", ", defaults.Keys)}",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var currentPrompt = await _promptSettings.GetPromptAsync(command);
+        var prompts = await _promptSettings.GetAllPromptsAsync();
+        var promptInfo = prompts.FirstOrDefault(p => p.Command == command);
+        var isCustom = promptInfo?.IsCustom ?? false;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"<b>🎭 Промпт для /{command}</b>");
+        sb.AppendLine(isCustom ? "✏️ Кастомный" : "📋 Дефолтный");
+        sb.AppendLine();
+        sb.AppendLine("<b>Текущий промпт:</b>");
+        sb.AppendLine("───────────────");
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: sb.ToString(),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        // Send prompt as separate message (may be long)
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"<pre>{EscapeHtml(currentPrompt)}</pre>",
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"📎 Чтобы изменить — отправь TXT файл с caption:\n<code>/admin prompt {command}</code>",
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandlePromptResetAsync(long chatId, string command, CancellationToken ct)
+    {
+        var defaults = _promptSettings.GetDefaults();
+        if (!defaults.ContainsKey(command))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Неизвестная команда: {command}\n\nДоступные: {string.Join(", ", defaults.Keys)}",
+                cancellationToken: ct);
+            return true;
+        }
+
+        await _promptSettings.ResetPromptAsync(command);
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"✅ Промпт для <b>/{command}</b> сброшен на дефолтный",
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandlePromptFileAsync(Message message, CancellationToken ct)
+    {
+        var chatId = message.Chat.Id;
+        var caption = message.Caption ?? "";
+
+        // Parse command from caption: /admin prompt ask
+        var parts = caption.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3)
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Укажи команду в caption: <code>/admin prompt ask</code>",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+            return true;
+        }
+
+        var command = parts[2].ToLowerInvariant();
+        var defaults = _promptSettings.GetDefaults();
+
+        if (!defaults.ContainsKey(command))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Неизвестная команда: {command}\n\nДоступные: {string.Join(", ", defaults.Keys)}",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var document = message.Document!;
+
+        // Validate file
+        if (!document.FileName?.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) ?? true)
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Файл должен быть TXT",
+                cancellationToken: ct);
+            return true;
+        }
+
+        if (document.FileSize > 100 * 1024) // 100KB limit
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Файл слишком большой (лимит 100 КБ)",
+                cancellationToken: ct);
+            return true;
+        }
+
+        try
+        {
+            // Download file
+            var file = await _bot.GetFile(document.FileId, ct);
+            using var stream = new MemoryStream();
+            await _bot.DownloadFile(file.FilePath!, stream, ct);
+
+            var promptText = Encoding.UTF8.GetString(stream.ToArray()).Trim();
+
+            if (string.IsNullOrWhiteSpace(promptText))
+            {
+                await _bot.SendMessage(
+                    chatId: chatId,
+                    text: "❌ Файл пустой",
+                    cancellationToken: ct);
+                return true;
+            }
+
+            // Save prompt
+            await _promptSettings.SetPromptAsync(command, promptText);
+
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"✅ Промпт для <b>/{command}</b> обновлён!\n\n📝 Размер: {promptText.Length} символов",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+
+            _logger.LogInformation("[Admin] Prompt for {Command} updated by admin, size: {Size}", command, promptText.Length);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Admin] Failed to update prompt for {Command}", command);
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Ошибка: {ex.Message}",
+                cancellationToken: ct);
+        }
+
+        return true;
+    }
+
+    private static string EscapeHtml(string text)
+    {
+        return text
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;");
+    }
+
     private async Task<bool> SendHelpAsync(long chatId, CancellationToken ct)
     {
         var help = """
@@ -430,6 +644,14 @@ public class AdminCommandHandler
 
             Отправь ZIP с экспортом и caption:
             <code>/admin import -1001234567890</code>
+
+            <b>🎭 Промпты:</b>
+            /admin prompts — список всех промптов
+            /admin prompt &lt;cmd&gt; — показать промпт
+            /admin prompt_reset &lt;cmd&gt; — сбросить на дефолт
+
+            📎 Изменить промпт — отправь TXT файл:
+            <code>/admin prompt ask</code>
 
             <b>Настройки:</b>
             /admin set_summary_time HH:mm — время саммари

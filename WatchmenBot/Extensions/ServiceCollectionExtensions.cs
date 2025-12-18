@@ -110,6 +110,7 @@ public static class ServiceCollectionExtensions
         // Admin Services
         services.AddSingleton<LogCollector>();
         services.AddSingleton<AdminSettingsStore>();
+        services.AddSingleton<PromptSettingsStore>();
 
         // Background Services
         services.AddHostedService<DailySummaryService>();

@@ -32,6 +32,7 @@ public class DatabaseInitializer : IHostedService
             await CreateChatsTableAsync(connection);
             await CreateEmbeddingsTableAsync(connection);
             await CreateAdminSettingsTableAsync(connection);
+            await CreatePromptSettingsTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -134,6 +135,20 @@ public class DatabaseInitializer : IHostedService
             CREATE TABLE IF NOT EXISTS admin_settings (
                 key VARCHAR(100) PRIMARY KEY,
                 value TEXT NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreatePromptSettingsTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS prompt_settings (
+                command VARCHAR(50) PRIMARY KEY,
+                description VARCHAR(255) NOT NULL,
+                system_prompt TEXT NOT NULL,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
             );
             """;

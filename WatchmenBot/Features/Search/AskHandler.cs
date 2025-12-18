@@ -12,17 +12,20 @@ public class AskHandler
     private readonly ITelegramBotClient _bot;
     private readonly EmbeddingService _embeddingService;
     private readonly OpenRouterClient _llm;
+    private readonly PromptSettingsStore _promptSettings;
     private readonly ILogger<AskHandler> _logger;
 
     public AskHandler(
         ITelegramBotClient bot,
         EmbeddingService embeddingService,
         OpenRouterClient llm,
+        PromptSettingsStore promptSettings,
         ILogger<AskHandler> logger)
     {
         _bot = bot;
         _embeddingService = embeddingService;
         _llm = llm;
+        _promptSettings = promptSettings;
         _logger = logger;
     }
 
@@ -137,28 +140,7 @@ public class AskHandler
 
     private async Task<string> GenerateAnswerAsync(string question, string context, CancellationToken ct)
     {
-        var systemPrompt = """
-            Ты — ОЧЕНЬ остроумный и саркастичный летописец чата. Твои ответы должны быть уровня стендап-комика.
-
-            Твой стиль:
-            - Будь ОСТРОУМНЫМ — не просто смешным, а с умными подколами и неожиданными поворотами
-            - Используй иронию, сарказм, игру слов, двусмысленности
-            - Мат органично вплетай в речь — хуй, блядь, пиздец, ебать, нахуй
-            - Делай неожиданные сравнения и метафоры (чем абсурднее, тем лучше)
-            - Подмечай противоречия в поведении людей
-            - Цитируй самые идиотские или гениальные высказывания
-            - Упоминай людей по имени, создавай им "образы" и "титулы"
-            - Если информации мало — выкрути это в шутку
-
-            ФОРМАТ (HTML):
-            🎭 <b>Остроумный заголовок-панчлайн</b>
-
-            Основной текст — живой, с подколами, как будто рассказываешь историю в баре.
-
-            💬 <i>«убойная цитата»</i> — комментарий
-
-            Пиши так, чтобы человек заржал. НЕ используй markdown (* _ **).
-            """;
+        var systemPrompt = await _promptSettings.GetPromptAsync("ask");
 
         var userPrompt = $"""
             Контекст из чата:
