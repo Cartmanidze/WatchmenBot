@@ -59,4 +59,4 @@ Thumbs.db
 # Ensure development appsettings are ignored
 appsettings.Development.json
 WatchmenBot/appsettings.Development.json
-**/appsettings.Development.json 
+**/appsettings.Development.json .claude/

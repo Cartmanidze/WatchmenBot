@@ -1,7 +1,12 @@
 using System.Net;
 using Telegram.Bot.Types;
+using Telegram.Bot.Types.Enums;
 using WatchmenBot.Extensions;
+using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
+using WatchmenBot.Features.Search;
+using WatchmenBot.Features.Summary;
+using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Webhook;
 
@@ -27,16 +32,19 @@ public class ProcessTelegramUpdateResponse
 public class ProcessTelegramUpdateHandler
 {
     private readonly IConfiguration _configuration;
-    private readonly SaveMessageHandler _saveMessageHandler;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly LogCollector _logCollector;
     private readonly ILogger<ProcessTelegramUpdateHandler> _logger;
 
     public ProcessTelegramUpdateHandler(
         IConfiguration configuration,
-        SaveMessageHandler saveMessageHandler,
+        IServiceProvider serviceProvider,
+        LogCollector logCollector,
         ILogger<ProcessTelegramUpdateHandler> logger)
     {
         _configuration = configuration;
-        _saveMessageHandler = saveMessageHandler;
+        _serviceProvider = serviceProvider;
+        _logCollector = logCollector;
         _logger = logger;
     }
 
@@ -46,7 +54,7 @@ public class ProcessTelegramUpdateHandler
         var secretValidation = request.Headers.ValidateSecretToken(_configuration["Telegram:WebhookSecret"]);
         if (!secretValidation.IsValid)
         {
-            _logger.LogWarning("Unauthorized webhook request from {RemoteIpAddress}: {Reason}", 
+            _logger.LogWarning("Unauthorized webhook request from {RemoteIpAddress}: {Reason}",
                 request.RemoteIpAddress, secretValidation.Reason);
             return ProcessTelegramUpdateResponse.Unauthorized(secretValidation.Reason);
         }
@@ -65,29 +73,105 @@ public class ProcessTelegramUpdateHandler
             return ProcessTelegramUpdateResponse.Success(); // Not a message update, ignore
         }
 
-        if (!update.IsGroupMessage())
-        {
-            return ProcessTelegramUpdateResponse.Success(); // Not a group message, ignore
-        }
+        var message = update.Message!;
+        var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
+        var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
 
-        // Delegate to SaveMessage feature
         try
         {
-            var saveRequest = new SaveMessageRequest { Message = update.Message! };
-            var saveResponse = await _saveMessageHandler.HandleAsync(saveRequest, cancellationToken);
-            
-            if (!saveResponse.IsSuccess)
+            using var scope = _serviceProvider.CreateScope();
+
+            // Handle private messages (for admin commands)
+            if (message.Chat.Type == ChatType.Private)
+            {
+                if (IsCommand(message.Text, "/admin"))
+                {
+                    var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();
+                    await adminHandler.HandleAsync(message, cancellationToken);
+                }
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            // Only process group/supergroup messages
+            if (message.Chat.Type != ChatType.Group && message.Chat.Type != ChatType.Supergroup)
+            {
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            // Handle commands
+            if (IsCommand(message.Text, "/admin"))
+            {
+                var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();
+                await adminHandler.HandleAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            if (IsCommand(message.Text, "/summary"))
+            {
+                var hours = GenerateSummaryHandler.ParseHoursFromCommand(message.Text);
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /summary for {Hours}h", chatName, userName, hours);
+
+                var summaryHandler = scope.ServiceProvider.GetRequiredService<GenerateSummaryHandler>();
+                var summaryRequest = new GenerateSummaryRequest { Message = message, Hours = hours };
+                var response = await summaryHandler.HandleAsync(summaryRequest, cancellationToken);
+
+                if (response.IsSuccess)
+                    _logCollector.IncrementSummaries();
+
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            if (IsCommand(message.Text, "/search"))
+            {
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /search", chatName, userName);
+                var searchHandler = scope.ServiceProvider.GetRequiredService<SearchHandler>();
+                await searchHandler.HandleAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            if (IsCommand(message.Text, "/ask"))
+            {
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /ask", chatName, userName);
+                var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
+                await askHandler.HandleAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            if (IsCommand(message.Text, "/recall"))
+            {
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /recall", chatName, userName);
+                var recallHandler = scope.ServiceProvider.GetRequiredService<RecallHandler>();
+                await recallHandler.HandleAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            // Save regular message
+            var saveHandler = scope.ServiceProvider.GetRequiredService<SaveMessageHandler>();
+            var saveRequest = new SaveMessageRequest { Message = message };
+            var saveResponse = await saveHandler.HandleAsync(saveRequest, cancellationToken);
+
+            if (saveResponse.IsSuccess)
+            {
+                _logCollector.IncrementMessages();
+            }
+            else
             {
                 _logger.LogError("Failed to save message: {Error}", saveResponse.ErrorMessage);
-                return ProcessTelegramUpdateResponse.InternalError("Failed to save message");
             }
 
             return ProcessTelegramUpdateResponse.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error processing webhook update");
+            _logger.LogError(ex, "[Webhook] Error processing message {MessageId} in {Chat}", message.MessageId, chatName);
             return ProcessTelegramUpdateResponse.InternalError("Internal server error");
         }
+    }
+
+    private static bool IsCommand(string? text, string command)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        return text.StartsWith(command, StringComparison.OrdinalIgnoreCase);
     }
 }

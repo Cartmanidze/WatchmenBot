@@ -29,6 +29,7 @@ services:
       Telegram__WebhookUrl: ${TELEGRAM_WEBHOOK_URL}
       Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
       Telegram__UsePolling: "false"
+      Telegram__ValidateIpRange: "false"
       OpenRouter__ApiKey: ${OPENROUTER_API_KEY}
       OpenRouter__BaseUrl: https://openrouter.ai/api
       OpenRouter__Model: deepseek/deepseek-chat
