@@ -60,7 +60,7 @@ public class GetWebhookInfoHandler
     {
         try
         {
-            var info = await _botClient.GetWebhookInfoAsync(cancellationToken);
+            var info = await _botClient.GetWebhookInfo(cancellationToken);
             
             _logger.LogInformation("Retrieved webhook info: URL={Url}, PendingUpdates={PendingUpdates}", 
                 info.Url, info.PendingUpdateCount);

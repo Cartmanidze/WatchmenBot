@@ -69,7 +69,7 @@ public class AdminCommandHandler
             _logger.LogError(ex, "[Admin] Error handling command: {Command}", text);
             _logCollector.LogError("AdminCommand", $"Error: {text}", ex);
 
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: message.Chat.Id,
                 text: $"❌ Ошибка: {ex.Message}",
                 cancellationToken: ct);
@@ -91,7 +91,7 @@ public class AdminCommandHandler
         sb.AppendLine();
         sb.AppendLine($"👤 <b>Admin ID:</b> {_settings.GetAdminUserId()}");
 
-        await _bot.SendTextMessageAsync(
+        await _bot.SendMessage(
             chatId: chatId,
             text: sb.ToString(),
             parseMode: ParseMode.Html,
@@ -110,7 +110,7 @@ public class AdminCommandHandler
     {
         if (!TimeSpan.TryParse(time, out var parsedTime) || parsedTime.TotalHours >= 24)
         {
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "❌ Неверный формат времени. Используй HH:mm (например: 21:00)",
                 cancellationToken: ct);
@@ -119,7 +119,7 @@ public class AdminCommandHandler
 
         await _settings.SetSummaryTimeAsync(time);
 
-        await _bot.SendTextMessageAsync(
+        await _bot.SendMessage(
             chatId: chatId,
             text: $"✅ Время ежедневного саммари изменено на <b>{time}</b>\n\n⚠️ Изменения вступят в силу после перезапуска бота.",
             parseMode: ParseMode.Html,
@@ -132,7 +132,7 @@ public class AdminCommandHandler
     {
         if (!TimeSpan.TryParse(time, out var parsedTime) || parsedTime.TotalHours >= 24)
         {
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "❌ Неверный формат времени. Используй HH:mm (например: 10:00)",
                 cancellationToken: ct);
@@ -141,7 +141,7 @@ public class AdminCommandHandler
 
         await _settings.SetReportTimeAsync(time);
 
-        await _bot.SendTextMessageAsync(
+        await _bot.SendMessage(
             chatId: chatId,
             text: $"✅ Время отчёта в личку изменено на <b>{time}</b>",
             parseMode: ParseMode.Html,
@@ -159,7 +159,7 @@ public class AdminCommandHandler
 
         if (!TimeSpan.TryParse(cleanOffset, out var parsedOffset) || parsedOffset.TotalHours > 14 || parsedOffset.TotalHours < -12)
         {
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "❌ Неверный часовой пояс. Используй формат: +6, +06:00 и т.д.",
                 cancellationToken: ct);
@@ -168,7 +168,7 @@ public class AdminCommandHandler
 
         await _settings.SetTimezoneOffsetAsync($"+{cleanOffset}");
 
-        await _bot.SendTextMessageAsync(
+        await _bot.SendMessage(
             chatId: chatId,
             text: $"✅ Часовой пояс изменён на <b>UTC+{parsedOffset:hh\\:mm}</b>",
             parseMode: ParseMode.Html,
@@ -197,7 +197,7 @@ public class AdminCommandHandler
             <code>/admin set_timezone +6</code>
             """;
 
-        await _bot.SendTextMessageAsync(
+        await _bot.SendMessage(
             chatId: chatId,
             text: help,
             parseMode: ParseMode.Html,

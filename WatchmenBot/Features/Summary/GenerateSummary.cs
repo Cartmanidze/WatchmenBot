@@ -1,6 +1,7 @@
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Summary;
@@ -58,7 +59,7 @@ public class GenerateSummaryHandler
         try
         {
             // Send "typing" indicator
-            await _bot.SendChatActionAsync(chatId, ChatAction.Typing, cancellationToken: ct);
+            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
             var nowUtc = DateTimeOffset.UtcNow;
             var startUtc = nowUtc.AddHours(-hours);
@@ -69,10 +70,10 @@ public class GenerateSummaryHandler
 
             if (messages.Count == 0)
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: $"За последние {hours} часов сообщений не найдено.",
-                    replyToMessageId: message.MessageId,
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
 
                 return GenerateSummaryResponse.Success(0);
@@ -86,12 +87,12 @@ public class GenerateSummaryHandler
             // Try HTML first, fallback to plain text if parsing fails
             try
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: report,
                     parseMode: ParseMode.Html,
-                    disableWebPagePreview: true,
-                    replyToMessageId: message.MessageId,
+                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
@@ -99,11 +100,11 @@ public class GenerateSummaryHandler
                 _logger.LogWarning("HTML parsing failed, sending as plain text");
                 // Strip HTML tags for plain text
                 var plainText = System.Text.RegularExpressions.Regex.Replace(report, "<[^>]+>", "");
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: plainText,
-                    disableWebPagePreview: true,
-                    replyToMessageId: message.MessageId,
+                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
 
@@ -117,10 +118,10 @@ public class GenerateSummaryHandler
 
             try
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
-                    replyToMessageId: message.MessageId,
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
             catch

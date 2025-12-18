@@ -2,6 +2,7 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Search;
@@ -29,18 +30,18 @@ public class RecallHandler
 
         if (string.IsNullOrWhiteSpace(username))
         {
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "Использование: <code>/recall @username</code>\n\nПример: <code>/recall @ivan</code>",
                 parseMode: ParseMode.Html,
-                replyToMessageId: message.MessageId,
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
             return;
         }
 
         try
         {
-            await _bot.SendChatActionAsync(chatId, ChatAction.Typing, cancellationToken: ct);
+            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
             _logger.LogInformation("[Recall] Username: {Username} in chat {ChatId}", username, chatId);
 
@@ -52,11 +53,11 @@ public class RecallHandler
 
             if (messages.Count == 0)
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: $"Не нашёл сообщений от <b>@{EscapeHtml(username)}</b> за последнюю неделю.",
                     parseMode: ParseMode.Html,
-                    replyToMessageId: message.MessageId,
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
                 return;
             }
@@ -65,22 +66,22 @@ public class RecallHandler
 
             try
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: response,
                     parseMode: ParseMode.Html,
-                    disableWebPagePreview: true,
-                    replyToMessageId: message.MessageId,
+                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException)
             {
                 // Fallback to plain text
                 var plainText = System.Text.RegularExpressions.Regex.Replace(response, "<[^>]+>", "");
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: plainText,
-                    replyToMessageId: message.MessageId,
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
 
@@ -90,10 +91,10 @@ public class RecallHandler
         {
             _logger.LogError(ex, "[Recall] Failed for username: {Username}", username);
 
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "Произошла ошибка при поиске сообщений. Попробуйте позже.",
-                replyToMessageId: message.MessageId,
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
         }
     }

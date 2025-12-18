@@ -61,7 +61,7 @@ jobs:
 
     steps:
       - name: Deploy to server via SSH
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@master
         env:
           CR_PAT: ${{ secrets.CR_PAT }}
           IMAGE: ghcr.io/${{ github.repository }}:latest
@@ -71,49 +71,31 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           envs: CR_PAT,IMAGE
           script: |
+            set -e
             cd /opt/watchmenbot
 
             # Login to GitHub Container Registry
-            echo $CR_PAT | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo $CR_PAT | docker login ghcr.io -u cartmanidze --password-stdin
 
             # Pull latest image
             docker pull $IMAGE
 
-            # Set image for docker-compose
-            export DOCKER_IMAGE=$IMAGE
-
-            # Restart services using server compose file
+            # Restart services
             docker compose -f docker-compose.server.yml down
-            DOCKER_IMAGE=$IMAGE docker compose -f docker-compose.server.yml up -d
+            docker compose -f docker-compose.server.yml up -d
 
             # Wait for app to start
             sleep 10
+
+            # Set webhook
+            set -a && source .env && set +a
+            curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${TELEGRAM_WEBHOOK_URL}&secret_token=${TELEGRAM_WEBHOOK_SECRET}"
+
+            # Health check
+            docker ps | grep watchmenbot-app || exit 1
+            docker ps | grep watchmenbot-db || exit 1
 
             # Cleanup old images
             docker image prune -f
 
             echo "Deployment completed!"
-
-      - name: Set Telegram Webhook
-        if: success()
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            cd /opt/watchmenbot
-            set -a && source .env && set +a
-            curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${TELEGRAM_WEBHOOK_URL}&secret_token=${TELEGRAM_WEBHOOK_SECRET}"
-
-      - name: Health check
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            # Check if containers are running
-            docker ps | grep watchmenbot-app || exit 1
-            docker ps | grep watchmenbot-db || exit 1
-            echo "All containers are healthy!"

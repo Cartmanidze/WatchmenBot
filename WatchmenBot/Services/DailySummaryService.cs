@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Telegram.Bot;
+using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Models;
 
@@ -154,21 +155,21 @@ public class DailySummaryService : BackgroundService
                 // Try HTML first, fallback to plain text if parsing fails
                 try
                 {
-                    await _bot.SendTextMessageAsync(
+                    await _bot.SendMessage(
                         chatId: chatId,
                         text: report,
                         parseMode: ParseMode.Html,
-                        disableWebPagePreview: true,
+                        linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
                         cancellationToken: ct);
                 }
                 catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
                 {
                     _logger.LogWarning("[DailySummary] HTML parsing failed for chat {ChatId}, sending as plain text", chatId);
                     var plainText = System.Text.RegularExpressions.Regex.Replace(report, "<[^>]+>", "");
-                    await _bot.SendTextMessageAsync(
+                    await _bot.SendMessage(
                         chatId: chatId,
                         text: plainText,
-                        disableWebPagePreview: true,
+                        linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
                         cancellationToken: ct);
                 }
 

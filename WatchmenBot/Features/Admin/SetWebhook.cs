@@ -64,7 +64,7 @@ public class SetWebhookHandler
 
         try
         {
-            await _botClient.SetWebhookAsync(
+            await _botClient.SetWebhook(
                 url: webhookUrl,
                 allowedUpdates: new[] { UpdateType.Message },
                 secretToken: string.IsNullOrWhiteSpace(secretToken) ? null : secretToken,

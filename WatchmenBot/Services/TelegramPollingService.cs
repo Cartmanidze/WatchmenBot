@@ -46,9 +46,9 @@ public class TelegramPollingService : BackgroundService
         _logger.LogInformation("[Telegram] Starting polling mode...");
 
         // Delete webhook if exists (polling and webhook can't work together)
-        await _bot.DeleteWebhookAsync(cancellationToken: stoppingToken);
+        await _bot.DeleteWebhook(cancellationToken: stoppingToken);
 
-        var me = await _bot.GetMeAsync(stoppingToken);
+        var me = await _bot.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot ONLINE: @{Username} (ID: {Id})", me.Username, me.Id);
 
         // Register bot commands menu
@@ -61,7 +61,7 @@ public class TelegramPollingService : BackgroundService
         {
             try
             {
-                var updates = await _bot.GetUpdatesAsync(
+                var updates = await _bot.GetUpdates(
                     offset: offset,
                     allowedUpdates: new[] { UpdateType.Message },
                     cancellationToken: stoppingToken);
@@ -315,13 +315,13 @@ public class TelegramPollingService : BackgroundService
             };
 
             // Set commands for all group chats
-            await _bot.SetMyCommandsAsync(
+            await _bot.SetMyCommands(
                 groupCommands,
                 new BotCommandScopeAllGroupChats(),
                 cancellationToken: ct);
 
             // Set commands for private chats
-            await _bot.SetMyCommandsAsync(
+            await _bot.SetMyCommands(
                 privateCommands,
                 new BotCommandScopeAllPrivateChats(),
                 cancellationToken: ct);

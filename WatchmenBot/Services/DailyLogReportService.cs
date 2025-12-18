@@ -99,7 +99,7 @@ public class DailyLogReportService : BackgroundService
             var report = _logCollector.GetReportSinceLastTime();
             var message = report.ToTelegramHtml(timezoneOffset);
 
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: adminUserId,
                 text: message,
                 parseMode: ParseMode.Html,
@@ -124,7 +124,7 @@ public class DailyLogReportService : BackgroundService
             var report = _logCollector.GetFullReport();
             var message = report.ToTelegramHtml(timezoneOffset);
 
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: message,
                 parseMode: ParseMode.Html,

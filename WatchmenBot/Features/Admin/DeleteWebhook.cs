@@ -41,7 +41,7 @@ public class DeleteWebhookHandler
     {
         try
         {
-            await _botClient.DeleteWebhookAsync(cancellationToken: cancellationToken);
+            await _botClient.DeleteWebhook(cancellationToken: cancellationToken);
             _logger.LogInformation("Webhook deleted successfully");
             
             return DeleteWebhookResponse.Success();

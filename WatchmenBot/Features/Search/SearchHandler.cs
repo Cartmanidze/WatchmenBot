@@ -2,6 +2,7 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Search;
@@ -29,18 +30,18 @@ public class SearchHandler
 
         if (string.IsNullOrWhiteSpace(query))
         {
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "Использование: <code>/search запрос</code>\n\nПример: <code>/search что решили про релиз</code>",
                 parseMode: ParseMode.Html,
-                replyToMessageId: message.MessageId,
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
             return;
         }
 
         try
         {
-            await _bot.SendChatActionAsync(chatId, ChatAction.Typing, cancellationToken: ct);
+            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
             _logger.LogInformation("[Search] Query: {Query} in chat {ChatId}", query, chatId);
 
@@ -48,22 +49,22 @@ public class SearchHandler
 
             if (results.Count == 0)
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: "Ничего не найдено. Возможно, эмбеддинги ещё не созданы для этого чата.",
-                    replyToMessageId: message.MessageId,
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
                 return;
             }
 
             var response = FormatResults(query, results);
 
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: response,
                 parseMode: ParseMode.Html,
-                disableWebPagePreview: true,
-                replyToMessageId: message.MessageId,
+                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
 
             _logger.LogInformation("[Search] Found {Count} results for query: {Query}", results.Count, query);
@@ -72,10 +73,10 @@ public class SearchHandler
         {
             _logger.LogError(ex, "[Search] Failed for query: {Query}", query);
 
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "Произошла ошибка при поиске. Попробуйте позже.",
-                replyToMessageId: message.MessageId,
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
         }
     }

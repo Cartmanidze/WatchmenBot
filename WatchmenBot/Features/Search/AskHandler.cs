@@ -2,6 +2,7 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Search;
@@ -32,18 +33,18 @@ public class AskHandler
 
         if (string.IsNullOrWhiteSpace(question))
         {
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "Использование: <code>/ask вопрос</code>\n\nПример: <code>/ask кто отвечает за деплой?</code>",
                 parseMode: ParseMode.Html,
-                replyToMessageId: message.MessageId,
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
             return;
         }
 
         try
         {
-            await _bot.SendChatActionAsync(chatId, ChatAction.Typing, cancellationToken: ct);
+            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
             _logger.LogInformation("[Ask] Question: {Question} in chat {ChatId}", question, chatId);
 
@@ -52,10 +53,10 @@ public class AskHandler
 
             if (results.Count == 0)
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: "Не нашёл релевантной информации в истории чата. Возможно, эмбеддинги ещё не созданы.",
-                    replyToMessageId: message.MessageId,
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
                 return;
             }
@@ -71,22 +72,22 @@ public class AskHandler
 
             try
             {
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: response,
                     parseMode: ParseMode.Html,
-                    disableWebPagePreview: true,
-                    replyToMessageId: message.MessageId,
+                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException)
             {
                 // Fallback to plain text
                 var plainText = System.Text.RegularExpressions.Regex.Replace(response, "<[^>]+>", "");
-                await _bot.SendTextMessageAsync(
+                await _bot.SendMessage(
                     chatId: chatId,
                     text: plainText,
-                    replyToMessageId: message.MessageId,
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
 
@@ -96,10 +97,10 @@ public class AskHandler
         {
             _logger.LogError(ex, "[Ask] Failed for question: {Question}", question);
 
-            await _bot.SendTextMessageAsync(
+            await _bot.SendMessage(
                 chatId: chatId,
                 text: "Произошла ошибка при обработке вопроса. Попробуйте позже.",
-                replyToMessageId: message.MessageId,
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
         }
     }
