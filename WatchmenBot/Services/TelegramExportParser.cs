@@ -239,7 +239,9 @@ public class TelegramExportParser
             var hour = int.Parse(match.Groups[4].Value);
             var minute = int.Parse(match.Groups[5].Value);
             var second = int.Parse(match.Groups[6].Value);
-            var offset = TimeSpan.Parse(match.Groups[7].Value);
+            // TimeSpan.Parse doesn't handle leading '+', so we need to remove it
+            var offsetStr = match.Groups[7].Value.TrimStart('+');
+            var offset = TimeSpan.Parse(offsetStr);
 
             var dt = new DateTime(year, month, day, hour, minute, second);
             var dto = new DateTimeOffset(dt, offset);
