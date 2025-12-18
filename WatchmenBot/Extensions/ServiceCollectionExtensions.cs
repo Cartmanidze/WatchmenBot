@@ -103,9 +103,13 @@ public static class ServiceCollectionExtensions
         // Smart Summary Service (uses embeddings for topic extraction)
         services.AddScoped<SmartSummaryService>();
 
+        // Chat Import Services
+        services.AddScoped<TelegramExportParser>();
+        services.AddScoped<ChatImportService>();
+
         // Admin Services
         services.AddSingleton<LogCollector>();
-        services.AddScoped<AdminSettingsStore>();
+        services.AddSingleton<AdminSettingsStore>();
 
         // Background Services
         services.AddHostedService<DailySummaryService>();

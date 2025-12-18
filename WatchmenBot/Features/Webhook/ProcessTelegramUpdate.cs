@@ -84,7 +84,9 @@ public class ProcessTelegramUpdateHandler
             // Handle private messages (for admin commands)
             if (message.Chat.Type == ChatType.Private)
             {
-                if (IsCommand(message.Text, "/admin"))
+                // Handle text commands or document uploads with caption
+                var commandText = message.Text ?? message.Caption ?? "";
+                if (IsCommand(commandText, "/admin"))
                 {
                     var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();
                     await adminHandler.HandleAsync(message, cancellationToken);

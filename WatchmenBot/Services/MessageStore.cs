@@ -46,8 +46,20 @@ public class MessageStore
     public async Task<List<MessageRecord>> GetMessagesAsync(long chatId, DateTimeOffset startUtc, DateTimeOffset endUtc)
     {
         const string sql = """
-            SELECT id, chat_id, thread_id, from_user_id, username, display_name, text, date_utc, has_links, has_media, reply_to_message_id, message_type
-            FROM messages 
+            SELECT
+                id as Id,
+                chat_id as ChatId,
+                thread_id as ThreadId,
+                from_user_id as FromUserId,
+                username as Username,
+                display_name as DisplayName,
+                text as Text,
+                date_utc as DateUtc,
+                has_links as HasLinks,
+                has_media as HasMedia,
+                reply_to_message_id as ReplyToMessageId,
+                message_type as MessageType
+            FROM messages
             WHERE chat_id = @ChatId AND date_utc >= @StartUtc AND date_utc < @EndUtc
             ORDER BY date_utc;
             """;
@@ -139,8 +151,19 @@ public class MessageStore
     public async Task<List<MessageRecord>> GetMessagesWithoutEmbeddingsAsync(int limit = 100)
     {
         const string sql = """
-            SELECT m.id, m.chat_id, m.thread_id, m.from_user_id, m.username, m.display_name,
-                   m.text, m.date_utc, m.has_links, m.has_media, m.reply_to_message_id, m.message_type
+            SELECT
+                m.id as Id,
+                m.chat_id as ChatId,
+                m.thread_id as ThreadId,
+                m.from_user_id as FromUserId,
+                m.username as Username,
+                m.display_name as DisplayName,
+                m.text as Text,
+                m.date_utc as DateUtc,
+                m.has_links as HasLinks,
+                m.has_media as HasMedia,
+                m.reply_to_message_id as ReplyToMessageId,
+                m.message_type as MessageType
             FROM messages m
             LEFT JOIN message_embeddings e ON m.chat_id = e.chat_id AND m.id = e.message_id
             WHERE e.id IS NULL
@@ -186,4 +209,41 @@ public class MessageStore
             return (0, 0, 0);
         }
     }
+
+    /// <summary>
+    /// Get list of known chats with message counts
+    /// </summary>
+    public async Task<List<ChatInfo>> GetKnownChatsAsync()
+    {
+        const string sql = """
+            SELECT
+                chat_id as ChatId,
+                COUNT(*) as MessageCount,
+                MIN(date_utc) as FirstMessage,
+                MAX(date_utc) as LastMessage
+            FROM messages
+            GROUP BY chat_id
+            ORDER BY MAX(date_utc) DESC
+            """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var result = await connection.QueryAsync<ChatInfo>(sql);
+            return result.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get known chats");
+            return new List<ChatInfo>();
+        }
+    }
+}
+
+public class ChatInfo
+{
+    public long ChatId { get; set; }
+    public int MessageCount { get; set; }
+    public DateTimeOffset FirstMessage { get; set; }
+    public DateTimeOffset LastMessage { get; set; }
 }
