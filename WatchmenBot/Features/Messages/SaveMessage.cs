@@ -65,6 +65,12 @@ public class SaveMessageHandler
             var record = CreateMessageRecord(message);
             await _messageStore.SaveAsync(record);
 
+            // Save chat info (title, type)
+            await _messageStore.SaveChatAsync(
+                message.Chat.Id,
+                message.Chat.Title,
+                message.Chat.Type.ToString().ToLowerInvariant());
+
             _logger.LogDebug("[DB] Saved msg #{MessageId} to chat {ChatId}",
                 message.MessageId, message.Chat.Id);
 

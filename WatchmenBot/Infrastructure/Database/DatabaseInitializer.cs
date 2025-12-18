@@ -29,6 +29,7 @@ public class DatabaseInitializer : IHostedService
 
             // Create tables
             await CreateMessagesTableAsync(connection);
+            await CreateChatsTableAsync(connection);
             await CreateEmbeddingsTableAsync(connection);
             await CreateAdminSettingsTableAsync(connection);
 
@@ -78,6 +79,20 @@ public class DatabaseInitializer : IHostedService
                 message_type VARCHAR(50) NOT NULL DEFAULT 'text',
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (chat_id, id)
+            );
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateChatsTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS chats (
+                id BIGINT PRIMARY KEY,
+                title VARCHAR(255) NULL,
+                type VARCHAR(50) NOT NULL DEFAULT 'group',
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
             );
             """;
 

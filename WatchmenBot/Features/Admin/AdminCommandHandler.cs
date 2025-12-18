@@ -113,13 +113,15 @@ public class AdminCommandHandler
 
         foreach (var chat in chats)
         {
-            sb.AppendLine($"<code>{chat.ChatId}</code>");
+            var title = !string.IsNullOrWhiteSpace(chat.Title) ? chat.Title : "(без названия)";
+            sb.AppendLine($"<b>{title}</b>");
+            sb.AppendLine($"   🆔 <code>{chat.ChatId}</code>");
             sb.AppendLine($"   📨 {chat.MessageCount} сообщений");
             sb.AppendLine($"   📅 {chat.FirstMessage:dd.MM.yyyy} — {chat.LastMessage:dd.MM.yyyy}");
             sb.AppendLine();
         }
 
-        sb.AppendLine("Для импорта используй Chat ID из списка выше.");
+        sb.AppendLine("💡 Для импорта используй Chat ID из списка выше.");
 
         await _bot.SendMessage(
             chatId: chatId,
@@ -421,6 +423,7 @@ public class AdminCommandHandler
             <b>Просмотр:</b>
             /admin status — текущие настройки
             /admin report — отчёт по логам прямо сейчас
+            /admin chats — список известных чатов
 
             <b>Импорт истории:</b>
             /admin import &lt;chat_id&gt; — инструкция по импорту

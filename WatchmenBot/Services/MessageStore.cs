@@ -43,6 +43,28 @@ public class MessageStore
         }
     }
 
+    public async Task SaveChatAsync(long chatId, string? title, string chatType)
+    {
+        const string sql = """
+            INSERT INTO chats (id, title, type, updated_at)
+            VALUES (@Id, @Title, @Type, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                title = COALESCE(EXCLUDED.title, chats.title),
+                type = EXCLUDED.type,
+                updated_at = NOW();
+            """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            await connection.ExecuteAsync(sql, new { Id = chatId, Title = title, Type = chatType });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save chat {ChatId}", chatId);
+        }
+    }
+
     public async Task<List<MessageRecord>> GetMessagesAsync(long chatId, DateTimeOffset startUtc, DateTimeOffset endUtc)
     {
         const string sql = """
@@ -217,13 +239,16 @@ public class MessageStore
     {
         const string sql = """
             SELECT
-                chat_id as ChatId,
+                m.chat_id as ChatId,
+                c.title as Title,
+                c.type as ChatType,
                 COUNT(*) as MessageCount,
-                MIN(date_utc) as FirstMessage,
-                MAX(date_utc) as LastMessage
-            FROM messages
-            GROUP BY chat_id
-            ORDER BY MAX(date_utc) DESC
+                MIN(m.date_utc) as FirstMessage,
+                MAX(m.date_utc) as LastMessage
+            FROM messages m
+            LEFT JOIN chats c ON m.chat_id = c.id
+            GROUP BY m.chat_id, c.title, c.type
+            ORDER BY MAX(m.date_utc) DESC
             """;
 
         try
@@ -243,6 +268,8 @@ public class MessageStore
 public class ChatInfo
 {
     public long ChatId { get; set; }
+    public string? Title { get; set; }
+    public string? ChatType { get; set; }
     public int MessageCount { get; set; }
     public DateTimeOffset FirstMessage { get; set; }
     public DateTimeOffset LastMessage { get; set; }
