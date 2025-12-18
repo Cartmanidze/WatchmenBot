@@ -121,7 +121,7 @@ public class TelegramExportParser
             }
         }
 
-        _logger.LogDebug("[Import] Found {Count} message nodes in {File}", messageNodes.Count, Path.GetFileName(filePath));
+        _logger.LogInformation("[Import] Found {Count} message nodes in {File}", messageNodes.Count, Path.GetFileName(filePath));
 
         foreach (var node in messageNodes)
         {
@@ -148,7 +148,10 @@ public class TelegramExportParser
         var idAttr = node.GetAttributeValue("id", "");
         var idMatch = MessageIdRegex.Match(idAttr);
         if (!idMatch.Success)
+        {
+            _logger.LogWarning("[Import] No message ID found in node: {Id}", idAttr);
             return null;
+        }
 
         var messageId = long.Parse(idMatch.Groups[1].Value);
 
@@ -160,18 +163,27 @@ public class TelegramExportParser
         }
 
         if (string.IsNullOrWhiteSpace(currentFromName))
+        {
+            _logger.LogWarning("[Import] No from_name for message {Id}", messageId);
             return null;
+        }
 
-        // Get date/time
-        var dateNode = node.SelectSingleNode(".//div[contains(@class, 'date') and contains(@class, 'details')]");
+        // Get date/time - try multiple selectors
+        var dateNode = node.SelectSingleNode(".//div[contains(@class, 'date details')]")
+                    ?? node.SelectSingleNode(".//div[contains(@class, 'date') and contains(@class, 'details')]")
+                    ?? node.SelectSingleNode(".//div[@class='pull_right date details']");
         var dateTitle = dateNode?.GetAttributeValue("title", "");
         var dateUtc = ParseDateTime(dateTitle);
 
         if (dateUtc == null)
+        {
+            _logger.LogWarning("[Import] Failed to parse date for message {Id}: '{DateTitle}'", messageId, dateTitle);
             return null;
+        }
 
-        // Get text
-        var textNode = node.SelectSingleNode(".//div[@class='text']");
+        // Get text - try multiple selectors
+        var textNode = node.SelectSingleNode(".//div[@class='text']")
+                    ?? node.SelectSingleNode(".//div[contains(@class, 'text')]");
         var text = textNode != null ? CleanMessageText(textNode.InnerHtml) : null;
 
         // Skip empty messages

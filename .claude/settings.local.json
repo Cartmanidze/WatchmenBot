@@ -21,7 +21,9 @@
       "Bash(git reset:*)",
       "Bash(openssl rand:*)",
       "Bash(dotnet run:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nFix Dapper mapping bug and improve chat import\n\n- Fix Dapper column mapping: add explicit aliases (chat_id as ChatId, etc.)\n  This caused ChatId=0 and DateUtc=MinValue, creating infinite embedding loop\n- Add chats table to store chat titles\n- Save chat info (title, type) when processing messages\n- Update /admin chats to show chat names\n- Add /admin chats to help menu\n- Fix HTML parser XPath selector for Telegram export\n- Add fallback selector and debug logging for import\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nFix Dapper mapping bug and improve chat import\n\n- Fix Dapper column mapping: add explicit aliases (chat_id as ChatId, etc.)\n  This caused ChatId=0 and DateUtc=MinValue, creating infinite embedding loop\n- Add chats table to store chat titles\n- Save chat info (title, type) when processing messages\n- Update /admin chats to show chat names\n- Add /admin chats to help menu\n- Fix HTML parser XPath selector for Telegram export\n- Add fallback selector and debug logging for import\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
