@@ -1,6 +1,7 @@
 using System.Security.Authentication;
 using Microsoft.OpenApi.Models;
 using Telegram.Bot;
+using WatchmenBot.Policies;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Search;
@@ -127,8 +128,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AskHandler>();
         services.AddScoped<RecallHandler>();
 
-        // Controllers
-        services.AddControllers();
+        // Controllers with Telegram.Bot JSON support (snake_case)
+        services.AddControllers()
+            .AddJsonOptions(options =>
+            {
+                options.JsonSerializerOptions.PropertyNamingPolicy = new SnakeCaseNamingPolicy();
+            });
 
         // Swagger / OpenAPI
         services.AddEndpointsApiExplorer();
