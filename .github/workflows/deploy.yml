@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: cartmanidze/watchmenbot
 
 jobs:
   build-and-push:
@@ -64,7 +64,7 @@ jobs:
         uses: appleboy/ssh-action@master
         env:
           CR_PAT: ${{ secrets.CR_PAT }}
-          IMAGE: ghcr.io/${{ github.repository }}:latest
+          IMAGE: ghcr.io/cartmanidze/watchmenbot:latest
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
