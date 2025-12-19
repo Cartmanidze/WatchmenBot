@@ -16,6 +16,7 @@ public class AdminCommandHandler
     private readonly DailyLogReportService _reportService;
     private readonly ChatImportService _importService;
     private readonly MessageStore _messageStore;
+    private readonly EmbeddingService _embeddingService;
     private readonly TelegramExportParser _exportParser;
     private readonly PromptSettingsStore _promptSettings;
     private readonly LlmRouter _llmRouter;
@@ -28,6 +29,7 @@ public class AdminCommandHandler
         DailyLogReportService reportService,
         ChatImportService importService,
         MessageStore messageStore,
+        EmbeddingService embeddingService,
         TelegramExportParser exportParser,
         PromptSettingsStore promptSettings,
         LlmRouter llmRouter,
@@ -39,6 +41,7 @@ public class AdminCommandHandler
         _reportService = reportService;
         _importService = importService;
         _messageStore = messageStore;
+        _embeddingService = embeddingService;
         _exportParser = exportParser;
         _promptSettings = promptSettings;
         _llmRouter = llmRouter;
@@ -102,6 +105,11 @@ public class AdminCommandHandler
                 "llm_off" when parts.Length >= 3 => await HandleLlmToggleAsync(message.Chat.Id, parts[2], false, ct),
                 "prompt_tag" when parts.Length >= 4 => await HandlePromptTagAsync(message.Chat.Id, parts[2], parts[3], ct),
                 "prompt_tag" when parts.Length >= 3 => await HandlePromptTagAsync(message.Chat.Id, parts[2], null, ct),
+                "names" when parts.Length >= 3 => await HandleNamesAsync(message.Chat.Id, parts[2], ct),
+                "rename" => await HandleRenameAsync(message.Chat.Id, text, ct),
+                "reindex" when parts.Length >= 4 && parts[3] == "confirm" => await HandleReindexConfirmAsync(message.Chat.Id, parts[2], ct),
+                "reindex" when parts.Length >= 3 => await HandleReindexAsync(message.Chat.Id, parts[2], ct),
+                "reindex" => await HandleReindexAllAsync(message.Chat.Id, ct),
                 "help" => await SendHelpAsync(message.Chat.Id, ct),
                 _ => await SendHelpAsync(message.Chat.Id, ct)
             };
@@ -842,6 +850,240 @@ public class AdminCommandHandler
         return true;
     }
 
+    private async Task<bool> HandleReindexAsync(long chatId, string chatIdStr, CancellationToken ct)
+    {
+        if (!long.TryParse(chatIdStr, out var targetChatId))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Неверный формат Chat ID",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var stats = await _embeddingService.GetStatsAsync(targetChatId, ct);
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"""
+                ⚠️ <b>Переиндексация эмбеддингов</b>
+
+                Чат: <code>{targetChatId}</code>
+                Текущих эмбеддингов: {stats.TotalEmbeddings}
+
+                Это удалит все эмбеддинги чата и BackgroundService пересоздаст их в новом формате.
+
+                Для подтверждения: <code>/admin reindex {targetChatId} confirm</code>
+                """,
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleReindexConfirmAsync(long chatId, string chatIdStr, CancellationToken ct)
+    {
+        // Handle "all" for all chats
+        if (chatIdStr.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            var statusMsg = await _bot.SendMessage(
+                chatId: chatId,
+                text: "⏳ Удаляю ВСЕ эмбеддинги...",
+                cancellationToken: ct);
+
+            await _embeddingService.DeleteAllEmbeddingsAsync(ct);
+
+            var (total, _, _) = await _messageStore.GetEmbeddingStatsAsync();
+
+            await _bot.EditMessageText(
+                chatId: chatId,
+                messageId: statusMsg.MessageId,
+                text: $"""
+                    ✅ <b>Все эмбеддинги удалены</b>
+
+                    BackgroundService начнёт переиндексацию автоматически.
+                    Сообщений для индексации: {total}
+
+                    💡 Следить за прогрессом можно в логах.
+                    """,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+
+            return true;
+        }
+
+        if (!long.TryParse(chatIdStr, out var targetChatId))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Неверный формат Chat ID",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var statusMessage = await _bot.SendMessage(
+            chatId: chatId,
+            text: $"⏳ Удаляю эмбеддинги чата {targetChatId}...",
+            cancellationToken: ct);
+
+        await _embeddingService.DeleteChatEmbeddingsAsync(targetChatId, ct);
+
+        await _bot.EditMessageText(
+            chatId: chatId,
+            messageId: statusMessage.MessageId,
+            text: $"""
+                ✅ <b>Эмбеддинги чата удалены</b>
+
+                Чат: <code>{targetChatId}</code>
+
+                BackgroundService начнёт переиндексацию автоматически.
+                💡 Следить за прогрессом можно в логах.
+                """,
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleReindexAllAsync(long chatId, CancellationToken ct)
+    {
+        var (total, indexed, pending) = await _messageStore.GetEmbeddingStatsAsync();
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"""
+                ⚠️ <b>Переиндексация ВСЕХ эмбеддингов</b>
+
+                Всего эмбеддингов: {indexed}
+                Сообщений для индексации: {total}
+
+                Использование:
+                • <code>/admin reindex -1234567</code> — конкретный чат
+                • <code>/admin reindex all confirm</code> — ВСЕ чаты
+
+                ⚠️ Полная переиндексация может занять много времени и стоить денег (API calls).
+                """,
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleNamesAsync(long chatId, string chatIdStr, CancellationToken ct)
+    {
+        if (!long.TryParse(chatIdStr, out var targetChatId))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Неверный формат Chat ID",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var names = await _messageStore.GetUniqueDisplayNamesAsync(targetChatId);
+
+        if (names.Count == 0)
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Нет сообщений в этом чате",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"<b>👥 Имена в чате {targetChatId}</b>\n");
+
+        foreach (var (name, count) in names.Take(50))
+        {
+            sb.AppendLine($"• <code>{EscapeHtml(name)}</code> — {count} сообщ.");
+        }
+
+        if (names.Count > 50)
+        {
+            sb.AppendLine($"\n... и ещё {names.Count - 50} имён");
+        }
+
+        sb.AppendLine("\n💡 Чтобы переименовать:");
+        sb.AppendLine("<code>/admin rename -1234567 \"Старое\" \"Новое\"</code>");
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: sb.ToString(),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleRenameAsync(long chatId, string fullText, CancellationToken ct)
+    {
+        // Parse: /admin rename [-1234567] "Old Name" "New Name"
+        // or:    /admin rename "Old Name" "New Name" (all chats)
+        var regex = new System.Text.RegularExpressions.Regex(
+            @"/admin\s+rename\s+(?:(-?\d+)\s+)?""([^""]+)""\s+""([^""]+)""",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        var match = regex.Match(fullText);
+        if (!match.Success)
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: """
+                    ❌ <b>Неверный формат</b>
+
+                    Использование:
+                    <code>/admin rename -1234567 "Старое имя" "Новое имя"</code>
+                    <code>/admin rename "Старое имя" "Новое имя"</code> (все чаты)
+
+                    💡 Чтобы посмотреть имена: <code>/admin names -1234567</code>
+                    """,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+            return true;
+        }
+
+        long? targetChatId = null;
+        if (!string.IsNullOrEmpty(match.Groups[1].Value))
+        {
+            targetChatId = long.Parse(match.Groups[1].Value);
+        }
+
+        var oldName = match.Groups[2].Value;
+        var newName = match.Groups[3].Value;
+
+        var statusMsg = await _bot.SendMessage(
+            chatId: chatId,
+            text: "⏳ Переименовываю сообщения...",
+            cancellationToken: ct);
+
+        var messagesAffected = await _messageStore.RenameDisplayNameAsync(targetChatId, oldName, newName);
+
+        await _bot.EditMessageText(
+            chatId: chatId,
+            messageId: statusMsg.MessageId,
+            text: "⏳ Переименовываю эмбеддинги...",
+            cancellationToken: ct);
+
+        var embeddingsAffected = await _embeddingService.RenameInEmbeddingsAsync(targetChatId, oldName, newName, ct);
+
+        var scope = targetChatId.HasValue ? $"в чате {targetChatId}" : "во всех чатах";
+
+        await _bot.EditMessageText(
+            chatId: chatId,
+            messageId: statusMsg.MessageId,
+            text: $"""
+                ✅ <b>Переименование выполнено</b>
+
+                {EscapeHtml(oldName)} → <b>{EscapeHtml(newName)}</b>
+                📊 Обновлено: {messagesAffected} сообщений, {embeddingsAffected} эмбеддингов {scope}
+                """,
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
     private static string EscapeHtml(string text)
     {
         return text
@@ -876,6 +1118,14 @@ public class AdminCommandHandler
             /admin prompt &lt;cmd&gt; — показать промпт
             /admin prompt_tag &lt;cmd&gt; &lt;tag&gt; — установить LLM тег
             /admin prompt_reset &lt;cmd&gt; — сбросить на дефолт
+
+            <b>👥 Имена (для исправления импорта):</b>
+            /admin names &lt;chat_id&gt; — список имён в чате
+            /admin rename &lt;chat_id&gt; "Старое" "Новое" — переименовать
+
+            <b>🔄 Переиндексация эмбеддингов:</b>
+            /admin reindex &lt;chat_id&gt; — инфо + подтверждение
+            /admin reindex all confirm — пересоздать ВСЕ
 
             <b>Настройки:</b>
             /admin set_summary_time HH:mm — время саммари

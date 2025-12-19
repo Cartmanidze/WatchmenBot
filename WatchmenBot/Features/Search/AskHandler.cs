@@ -2,7 +2,6 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
 using WatchmenBot.Services.Llm;
 
@@ -30,23 +29,49 @@ public class AskHandler
         _logger = logger;
     }
 
-    public async Task HandleAsync(Message message, CancellationToken ct)
+    /// <summary>
+    /// Handle /ask command (дерзкий ответ с подъёбкой)
+    /// </summary>
+    public Task HandleAsync(Message message, CancellationToken ct)
+        => HandleAsync(message, "ask", ct);
+
+    /// <summary>
+    /// Handle /q command (серьёзный вопрос)
+    /// </summary>
+    public Task HandleQuestionAsync(Message message, CancellationToken ct)
+        => HandleAsync(message, "q", ct);
+
+    private async Task HandleAsync(Message message, string command, CancellationToken ct)
     {
         var chatId = message.Chat.Id;
         var question = ParseQuestion(message.Text);
 
         if (string.IsNullOrWhiteSpace(question))
         {
-            await _bot.SendMessage(
-                chatId: chatId,
-                text: """
+            var helpText = command == "q"
+                ? """
+                    🤔 <b>Задай любой серьёзный вопрос</b>
+
+                    По чату:
+                    • <code>/q о чём договорились по проекту?</code>
+                    • <code>/q что решили насчёт дедлайна?</code>
+
+                    Общие вопросы:
+                    • <code>/q сколько стоит трактор в РФ?</code>
+                    • <code>/q как работает async/await?</code>
+                    """
+                : """
                     🎭 <b>Спроси меня про кого-то из чата!</b>
 
                     Примеры:
                     • <code>/ask что за тип этот Глеб?</code>
                     • <code>/ask кто тут самый активный?</code>
                     • <code>/ask что думает Женя о работе?</code>
-                    """,
+                    """;
+
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: helpText,
                 parseMode: ParseMode.Html,
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
@@ -57,12 +82,13 @@ public class AskHandler
         {
             await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
-            _logger.LogInformation("[Ask] Question: {Question} in chat {ChatId}", question, chatId);
+            _logger.LogInformation("[{Command}] Question: {Question} in chat {ChatId}", command.ToUpper(), question, chatId);
 
             // Get relevant context from embeddings
             var results = await _embeddingService.SearchSimilarAsync(chatId, question, limit: 15, ct);
 
-            if (results.Count == 0)
+            // For /ask - require context, for /q - context is optional
+            if (results.Count == 0 && command == "ask")
             {
                 await _bot.SendMessage(
                     chatId: chatId,
@@ -72,11 +98,14 @@ public class AskHandler
                 return;
             }
 
-            // Build context from search results
-            var context = BuildContext(results);
+            // Build context from search results (may be empty for /q)
+            var context = results.Count > 0 ? BuildContext(results) : null;
 
-            // Generate answer using LLM
-            var answer = await GenerateAnswerAsync(question, context, ct);
+            // Get asker's name
+            var askerName = GetDisplayName(message.From);
+
+            // Generate answer using LLM with command-specific prompt
+            var answer = await GenerateAnswerAsync(command, question, context, askerName, ct);
 
             // Format response with sources
             var response = FormatResponse(question, answer, results.Take(3).ToList());
@@ -102,11 +131,11 @@ public class AskHandler
                     cancellationToken: ct);
             }
 
-            _logger.LogInformation("[Ask] Answered question: {Question}", question);
+            _logger.LogInformation("[{Command}] Answered question: {Question}", command.ToUpper(), question);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Ask] Failed for question: {Question}", question);
+            _logger.LogError(ex, "[{Command}] Failed for question: {Question}", command.ToUpper(), question);
 
             await _bot.SendMessage(
                 chatId: chatId,
@@ -139,16 +168,26 @@ public class AskHandler
         return sb.ToString();
     }
 
-    private async Task<string> GenerateAnswerAsync(string question, string context, CancellationToken ct)
+    private async Task<string> GenerateAnswerAsync(string command, string question, string? context, string askerName, CancellationToken ct)
     {
-        var settings = await _promptSettings.GetSettingsAsync("ask");
+        var settings = await _promptSettings.GetSettingsAsync(command);
 
-        var userPrompt = $"""
-            Контекст из чата:
-            {context}
+        var userPrompt = string.IsNullOrWhiteSpace(context)
+            ? $"""
+                Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
 
-            Вопрос: {question}
-            """;
+                Спрашивает: {askerName}
+                Вопрос: {question}
+                """
+            : $"""
+                Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
+
+                Контекст из чата:
+                {context}
+
+                Спрашивает: {askerName}
+                Вопрос: {question}
+                """;
 
         // Выбираем провайдера по тегу или дефолтный
         var response = await _llmRouter.CompleteWithFallbackAsync(
@@ -185,5 +224,22 @@ public class AskHandler
             .Replace("&", "&amp;")
             .Replace("<", "&lt;")
             .Replace(">", "&gt;");
+    }
+
+    private static string GetDisplayName(User? user)
+    {
+        if (user == null)
+            return "Аноним";
+
+        if (!string.IsNullOrWhiteSpace(user.FirstName))
+        {
+            return string.IsNullOrWhiteSpace(user.LastName)
+                ? user.FirstName
+                : $"{user.FirstName} {user.LastName}";
+        }
+
+        return !string.IsNullOrWhiteSpace(user.Username)
+            ? user.Username
+            : user.Id.ToString();
     }
 }

@@ -75,7 +75,8 @@ public class SaveMessageHandler
                 message.MessageId, message.Chat.Id);
 
             // Create embedding immediately (fire and forget, don't block message saving)
-            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length > 5)
+            // Skip short messages (< 10 chars) - they add noise to embeddings
+            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length > 10)
             {
                 _ = Task.Run(async () =>
                 {

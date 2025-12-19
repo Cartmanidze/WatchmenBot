@@ -59,12 +59,14 @@ public class EmbeddingService
     }
 
     /// <summary>
-    /// Batch store embeddings for multiple messages
+    /// Batch store embeddings for multiple messages.
+    /// Groups consecutive messages from the same author (within 5 min) into single embeddings.
     /// </summary>
     public async Task StoreMessageEmbeddingsBatchAsync(IEnumerable<MessageRecord> messages, CancellationToken ct = default)
     {
         var messageList = messages
-            .Where(m => !string.IsNullOrWhiteSpace(m.Text))
+            .Where(m => !string.IsNullOrWhiteSpace(m.Text) && m.Text.Length > 10)
+            .OrderBy(m => m.DateUtc)
             .ToList();
 
         if (messageList.Count == 0)
@@ -72,23 +74,41 @@ public class EmbeddingService
 
         try
         {
-            var texts = messageList.Select(FormatMessageForEmbedding).ToList();
+            // Group consecutive messages from the same author
+            var groups = GroupConsecutiveMessages(messageList);
+
+            _logger.LogDebug("[Embeddings] Grouped {Original} messages into {Grouped} chunks",
+                messageList.Count, groups.Count);
+
+            var texts = groups.Select(g => FormatGroupForEmbedding(g)).ToList();
             var embeddings = await _embeddingClient.GetEmbeddingsAsync(texts, ct);
 
             // Prepare batch data
             var batchData = new List<(long ChatId, long MessageId, int ChunkIndex, string ChunkText, float[] Embedding, string MetadataJson)>();
 
-            for (var i = 0; i < messageList.Count && i < embeddings.Count; i++)
+            for (var i = 0; i < groups.Count && i < embeddings.Count; i++)
             {
-                var message = messageList[i];
+                var group = groups[i];
                 var embedding = embeddings[i];
 
                 if (embedding.Length == 0) continue;
 
-                var metadata = new { message.FromUserId, message.Username, message.DisplayName, message.DateUtc };
+                var firstMsg = group.First();
+                var lastMsg = group.Last();
+                var metadata = new
+                {
+                    firstMsg.FromUserId,
+                    firstMsg.Username,
+                    firstMsg.DisplayName,
+                    firstMsg.DateUtc,
+                    EndDateUtc = lastMsg.DateUtc,
+                    MessageCount = group.Count,
+                    MessageIds = group.Select(m => m.Id).ToArray()
+                };
                 var metadataJson = JsonSerializer.Serialize(metadata);
 
-                batchData.Add((message.ChatId, message.Id, 0, texts[i], embedding, metadataJson));
+                // Use first message ID as the primary key
+                batchData.Add((firstMsg.ChatId, firstMsg.Id, 0, texts[i], embedding, metadataJson));
             }
 
             // Batch insert to DB
@@ -97,13 +117,68 @@ public class EmbeddingService
                 await StoreBatchEmbeddingsAsync(batchData, ct);
             }
 
-            _logger.LogDebug("[Embeddings] Stored {Stored}/{Total} embeddings to DB", batchData.Count, messageList.Count);
+            _logger.LogDebug("[Embeddings] Stored {Stored} embeddings from {Original} messages",
+                batchData.Count, messageList.Count);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[Embeddings] Failed to store batch of {Count} messages", messageList.Count);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Groups consecutive messages from the same author within a time window
+    /// </summary>
+    private static List<List<MessageRecord>> GroupConsecutiveMessages(List<MessageRecord> messages, int maxGapMinutes = 5, int maxGroupSize = 10)
+    {
+        var groups = new List<List<MessageRecord>>();
+        if (messages.Count == 0) return groups;
+
+        var currentGroup = new List<MessageRecord> { messages[0] };
+
+        for (var i = 1; i < messages.Count; i++)
+        {
+            var prev = messages[i - 1];
+            var curr = messages[i];
+
+            var sameAuthor = prev.FromUserId == curr.FromUserId && prev.FromUserId != 0;
+            var sameChat = prev.ChatId == curr.ChatId;
+            var withinTimeWindow = (curr.DateUtc - prev.DateUtc).TotalMinutes <= maxGapMinutes;
+            var groupNotFull = currentGroup.Count < maxGroupSize;
+
+            if (sameAuthor && sameChat && withinTimeWindow && groupNotFull)
+            {
+                currentGroup.Add(curr);
+            }
+            else
+            {
+                groups.Add(currentGroup);
+                currentGroup = new List<MessageRecord> { curr };
+            }
+        }
+
+        groups.Add(currentGroup);
+        return groups;
+    }
+
+    private static string FormatGroupForEmbedding(List<MessageRecord> group)
+    {
+        var first = group.First();
+        var name = !string.IsNullOrWhiteSpace(first.DisplayName)
+            ? first.DisplayName
+            : !string.IsNullOrWhiteSpace(first.Username)
+                ? first.Username
+                : first.FromUserId.ToString();
+
+        if (group.Count == 1)
+        {
+            return $"{name}: {first.Text}";
+        }
+
+        // Multiple messages - combine with newlines
+        var combinedText = string.Join("\n", group.Select(m => m.Text));
+        return $"{name}: {combinedText}";
     }
 
     private async Task StoreBatchEmbeddingsAsync(
@@ -353,6 +428,71 @@ public class EmbeddingService
     }
 
     /// <summary>
+    /// Delete ALL embeddings (for full reindex)
+    /// </summary>
+    public async Task DeleteAllEmbeddingsAsync(CancellationToken ct = default)
+    {
+        using var connection = await _connectionFactory.CreateConnectionAsync();
+
+        var deleted = await connection.ExecuteAsync("TRUNCATE message_embeddings");
+
+        _logger.LogInformation("Deleted ALL embeddings (TRUNCATE)");
+    }
+
+    /// <summary>
+    /// Replace display name in chunk_text for existing embeddings
+    /// Format: "OldName: message text" (new) or "[date] OldName: " (legacy)
+    /// </summary>
+    public async Task<int> RenameInEmbeddingsAsync(long? chatId, string oldName, string newName, CancellationToken ct = default)
+    {
+        using var connection = await _connectionFactory.CreateConnectionAsync();
+
+        // Handle both new format "Name: " and legacy format "] Name: "
+        var sql = chatId.HasValue
+            ? """
+              UPDATE message_embeddings
+              SET chunk_text = REPLACE(REPLACE(chunk_text, @OldPatternNew, @NewPatternNew), @OldPatternLegacy, @NewPatternLegacy),
+                  metadata = CASE
+                      WHEN metadata->>'DisplayName' = @OldName
+                      THEN jsonb_set(metadata, '{DisplayName}', to_jsonb(@NewName::text))
+                      ELSE metadata
+                  END
+              WHERE chat_id = @ChatId
+                AND (chunk_text LIKE @LikePatternNew OR chunk_text LIKE @LikePatternLegacy OR metadata->>'DisplayName' = @OldName)
+              """
+            : """
+              UPDATE message_embeddings
+              SET chunk_text = REPLACE(REPLACE(chunk_text, @OldPatternNew, @NewPatternNew), @OldPatternLegacy, @NewPatternLegacy),
+                  metadata = CASE
+                      WHEN metadata->>'DisplayName' = @OldName
+                      THEN jsonb_set(metadata, '{DisplayName}', to_jsonb(@NewName::text))
+                      ELSE metadata
+                  END
+              WHERE chunk_text LIKE @LikePatternNew OR chunk_text LIKE @LikePatternLegacy OR metadata->>'DisplayName' = @OldName
+              """;
+
+        var affected = await connection.ExecuteAsync(sql, new
+        {
+            ChatId = chatId,
+            OldName = oldName,
+            NewName = newName,
+            // New format: starts with "Name: "
+            OldPatternNew = $"{oldName}: ",
+            NewPatternNew = $"{newName}: ",
+            LikePatternNew = $"{oldName}: %",
+            // Legacy format: "] Name: "
+            OldPatternLegacy = $"] {oldName}: ",
+            NewPatternLegacy = $"] {newName}: ",
+            LikePatternLegacy = $"%] {oldName}: %"
+        });
+
+        _logger.LogInformation("Renamed '{OldName}' to '{NewName}' in {Count} embeddings (chatId: {ChatId})",
+            oldName, newName, affected, chatId?.ToString() ?? "all");
+
+        return affected;
+    }
+
+    /// <summary>
     /// Get embedding statistics for a chat
     /// </summary>
     public async Task<EmbeddingStats> GetStatsAsync(long chatId, CancellationToken ct = default)
@@ -375,13 +515,14 @@ public class EmbeddingService
 
     private static string FormatMessageForEmbedding(MessageRecord message)
     {
+        // Format: "Name: message text" (без даты — она в metadata)
         var name = !string.IsNullOrWhiteSpace(message.DisplayName)
             ? message.DisplayName
             : !string.IsNullOrWhiteSpace(message.Username)
                 ? message.Username
                 : message.FromUserId.ToString();
 
-        return $"[{message.DateUtc.ToLocalTime():yyyy-MM-dd HH:mm}] {name}: {message.Text}";
+        return $"{name}: {message.Text}";
     }
 
     private async Task StoreEmbeddingAsync(

@@ -190,7 +190,7 @@ public class MessageStore
             LEFT JOIN message_embeddings e ON m.chat_id = e.chat_id AND m.id = e.message_id
             WHERE e.id IS NULL
               AND m.text IS NOT NULL
-              AND LENGTH(m.text) > 5
+              AND LENGTH(m.text) > 10
             ORDER BY m.date_utc DESC
             LIMIT @Limit;
             """;
@@ -215,7 +215,7 @@ public class MessageStore
     {
         const string sql = """
             SELECT
-                (SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND LENGTH(text) > 5) as total,
+                (SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND LENGTH(text) > 10) as total,
                 (SELECT COUNT(DISTINCT (chat_id, message_id)) FROM message_embeddings) as indexed;
             """;
 
@@ -261,6 +261,64 @@ public class MessageStore
         {
             _logger.LogError(ex, "Failed to get known chats");
             return new List<ChatInfo>();
+        }
+    }
+
+    /// <summary>
+    /// Rename display_name in messages (for fixing imported contact names)
+    /// </summary>
+    public async Task<int> RenameDisplayNameAsync(long? chatId, string oldName, string newName)
+    {
+        var sql = chatId.HasValue
+            ? """
+              UPDATE messages
+              SET display_name = @NewName
+              WHERE chat_id = @ChatId AND display_name = @OldName
+              """
+            : """
+              UPDATE messages
+              SET display_name = @NewName
+              WHERE display_name = @OldName
+              """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var affected = await connection.ExecuteAsync(sql, new { ChatId = chatId, OldName = oldName, NewName = newName });
+            _logger.LogInformation("Renamed '{OldName}' to '{NewName}' in {Count} messages (chatId: {ChatId})",
+                oldName, newName, affected, chatId?.ToString() ?? "all");
+            return affected;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to rename '{OldName}' to '{NewName}'", oldName, newName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Get unique display names in a chat
+    /// </summary>
+    public async Task<List<(string DisplayName, int MessageCount)>> GetUniqueDisplayNamesAsync(long chatId)
+    {
+        const string sql = """
+            SELECT display_name, COUNT(*) as cnt
+            FROM messages
+            WHERE chat_id = @ChatId AND display_name IS NOT NULL
+            GROUP BY display_name
+            ORDER BY cnt DESC
+            """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var results = await connection.QueryAsync<(string DisplayName, int cnt)>(sql, new { ChatId = chatId });
+            return results.Select(r => (r.DisplayName, r.cnt)).ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get unique display names for chat {ChatId}", chatId);
+            throw;
         }
     }
 }

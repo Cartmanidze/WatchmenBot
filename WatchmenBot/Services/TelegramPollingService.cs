@@ -100,12 +100,17 @@ public class TelegramPollingService : BackgroundService
         {
             using var scope = _serviceProvider.CreateScope();
 
-            // Handle private messages (for admin commands)
+            // Handle private messages (admin commands and /q)
             if (message.Chat.Type == ChatType.Private)
             {
                 if (IsAdminCommand(message.Text))
                 {
                     await HandleAdminCommand(scope.ServiceProvider, message, ct);
+                }
+                else if (IsQuestionCommand(message.Text))
+                {
+                    // /q works in private chat too (general questions without chat context)
+                    await HandleQuestionCommand(scope.ServiceProvider, message, ct);
                 }
                 return;
             }
@@ -142,6 +147,13 @@ public class TelegramPollingService : BackgroundService
             if (IsAskCommand(message.Text))
             {
                 await HandleAskCommand(scope.ServiceProvider, message, ct);
+                return;
+            }
+
+            // Check for /q command (serious question)
+            if (IsQuestionCommand(message.Text))
+            {
+                await HandleQuestionCommand(scope.ServiceProvider, message, ct);
                 return;
             }
 
@@ -221,6 +233,17 @@ public class TelegramPollingService : BackgroundService
         return text.StartsWith("/recall", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsQuestionCommand(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        // Match /q but not /qsomething (only /q or /q followed by space/@ for bot mentions)
+        return text.StartsWith("/q ", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("/q@", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("/q", StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task HandleSummaryCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
     {
         var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
@@ -295,6 +318,17 @@ public class TelegramPollingService : BackgroundService
         await recallHandler.HandleAsync(message, ct);
     }
 
+    private async Task HandleQuestionCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
+    {
+        var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
+        var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
+
+        _logger.LogInformation("[Telegram] [{Chat}] @{User} requested /q", chatName, userName);
+
+        var askHandler = serviceProvider.GetRequiredService<AskHandler>();
+        await askHandler.HandleQuestionAsync(message, ct);
+    }
+
     private async Task RegisterBotCommandsAsync(CancellationToken ct)
     {
         try
@@ -303,15 +337,17 @@ public class TelegramPollingService : BackgroundService
             var groupCommands = new BotCommand[]
             {
                 new() { Command = "search", Description = "Поиск по истории чата" },
-                new() { Command = "ask", Description = "Задать вопрос по чату (AI)" },
+                new() { Command = "ask", Description = "Дерзкий вопрос по чату (AI)" },
+                new() { Command = "q", Description = "Серьёзный вопрос (AI)" },
                 new() { Command = "summary", Description = "Саммари за N часов" },
                 new() { Command = "recall", Description = "Сообщения пользователя за неделю" },
             };
 
-            // Commands for private chat (admin)
+            // Commands for private chat (admin + general questions)
             var privateCommands = new BotCommand[]
             {
                 new() { Command = "admin", Description = "Показать справку по админ-командам" },
+                new() { Command = "q", Description = "Серьёзный вопрос (AI)" },
             };
 
             // Set commands for all group chats
