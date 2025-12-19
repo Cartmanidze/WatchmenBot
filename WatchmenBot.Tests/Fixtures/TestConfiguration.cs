@@ -3,6 +3,7 @@ using System.Security.Authentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using WatchmenBot.Services;
+using WatchmenBot.Services.Llm;
 using Xunit;
 
 namespace WatchmenBot.Tests.Fixtures;
@@ -49,12 +50,41 @@ public class TestConfiguration : IDisposable
         if (!HasOpenRouterKey)
             throw new InvalidOperationException("OpenRouter API key not configured");
 
-        return new OpenRouterClient(
-            _httpClient,
-            OpenRouterApiKey!,
-            Configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api",
-            Configuration["OpenRouter:Model"] ?? "deepseek/deepseek-chat",
-            NullLogger<OpenRouterClient>.Instance);
+        var router = CreateLlmRouter();
+        return new OpenRouterClient(router, NullLogger<OpenRouterClient>.Instance);
+    }
+
+    public LlmRouter CreateLlmRouter()
+    {
+        if (!HasOpenRouterKey)
+            throw new InvalidOperationException("OpenRouter API key not configured");
+
+        var factory = new LlmProviderFactory(
+            new TestHttpClientFactory(_httpClient),
+            NullLoggerFactory.Instance);
+
+        var router = new LlmRouter(NullLogger<LlmRouter>.Instance);
+
+        var options = new LlmProviderOptions
+        {
+            Name = "openrouter",
+            Type = "openrouter",
+            ApiKey = OpenRouterApiKey!,
+            BaseUrl = Configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api/v1",
+            Model = Configuration["OpenRouter:Model"] ?? "deepseek/deepseek-chat",
+            Priority = 1,
+            Tags = ["default"]
+        };
+
+        router.Register(factory.Create(options), options);
+        return router;
+    }
+
+    private class TestHttpClientFactory : IHttpClientFactory
+    {
+        private readonly HttpClient _client;
+        public TestHttpClientFactory(HttpClient client) => _client = client;
+        public HttpClient CreateClient(string name) => _client;
     }
 
     public EmbeddingClient CreateEmbeddingClient()

@@ -9,6 +9,7 @@ using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Services;
+using WatchmenBot.Services.Llm;
 
 namespace WatchmenBot.Extensions;
 
@@ -43,33 +44,57 @@ public static class ServiceCollectionExtensions
         services.AddHealthChecks()
             .AddCheck<DatabaseHealthCheck>("postgresql");
 
-        // OpenRouter Client (DeepSeek V3.2 via OpenRouter)
-        services.AddHttpClient<OpenRouterClient>()
-            .ConfigurePrimaryHttpMessageHandler(sp =>
+        // LLM Router with multiple providers
+        services.AddSingleton<LlmProviderFactory>();
+        services.AddSingleton<LlmRouter>(sp =>
+        {
+            var factory = sp.GetRequiredService<LlmProviderFactory>();
+            var logger = sp.GetRequiredService<ILogger<LlmRouter>>();
+            var router = new LlmRouter(logger);
+
+            var providersSection = configuration.GetSection("Llm:Providers");
+            var providers = providersSection.Get<LlmProviderOptions[]>() ?? [];
+
+            if (providers.Length == 0)
             {
-                var useProxy = configuration.GetValue<bool>("OpenRouter:UseProxy", true);
-                return new HttpClientHandler
-                {
-                    AutomaticDecompression = System.Net.DecompressionMethods.GZip |
-                                           System.Net.DecompressionMethods.Deflate,
-                    SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-                    UseProxy = useProxy
-                };
-            })
-            .AddTypedClient<OpenRouterClient>((httpClient, serviceProvider) =>
-            {
-                var apiKey = configuration["OpenRouter:ApiKey"] ?? string.Empty;
-                var baseUrl = configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api";
+                // Fallback to old OpenRouter config for backward compatibility
+                var apiKey = configuration["OpenRouter:ApiKey"];
+                var baseUrl = configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api/v1";
                 var model = configuration["OpenRouter:Model"] ?? "deepseek/deepseek-chat";
-                var logger = serviceProvider.GetRequiredService<ILogger<OpenRouterClient>>();
 
-                if (string.IsNullOrWhiteSpace(apiKey))
+                if (!string.IsNullOrWhiteSpace(apiKey))
                 {
-                    throw new InvalidOperationException("OpenRouter:ApiKey is required");
+                    var legacyOptions = new LlmProviderOptions
+                    {
+                        Name = "openrouter",
+                        Type = "openrouter",
+                        ApiKey = apiKey,
+                        BaseUrl = baseUrl,
+                        Model = model,
+                        Priority = 1,
+                        Tags = ["default"]
+                    };
+                    router.Register(factory.Create(legacyOptions), legacyOptions);
                 }
+            }
+            else
+            {
+                foreach (var options in providers.Where(p => p.Enabled))
+                {
+                    router.Register(factory.Create(options), options);
+                }
+            }
 
-                return new OpenRouterClient(httpClient, apiKey, baseUrl, model, logger);
-            });
+            return router;
+        });
+
+        // Keep OpenRouterClient for backward compatibility (wraps LlmRouter)
+        services.AddSingleton<OpenRouterClient>(sp =>
+        {
+            var router = sp.GetRequiredService<LlmRouter>();
+            var logger = sp.GetRequiredService<ILogger<OpenRouterClient>>();
+            return new OpenRouterClient(router, logger);
+        });
 
         // Embedding Client (OpenAI text-embedding-3-small)
         services.AddHttpClient<EmbeddingClient>()

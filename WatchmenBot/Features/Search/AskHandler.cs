@@ -4,6 +4,7 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
+using WatchmenBot.Services.Llm;
 
 namespace WatchmenBot.Features.Search;
 
@@ -11,20 +12,20 @@ public class AskHandler
 {
     private readonly ITelegramBotClient _bot;
     private readonly EmbeddingService _embeddingService;
-    private readonly OpenRouterClient _llm;
+    private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
     private readonly ILogger<AskHandler> _logger;
 
     public AskHandler(
         ITelegramBotClient bot,
         EmbeddingService embeddingService,
-        OpenRouterClient llm,
+        LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
         ILogger<AskHandler> logger)
     {
         _bot = bot;
         _embeddingService = embeddingService;
-        _llm = llm;
+        _llmRouter = llmRouter;
         _promptSettings = promptSettings;
         _logger = logger;
     }
@@ -140,7 +141,7 @@ public class AskHandler
 
     private async Task<string> GenerateAnswerAsync(string question, string context, CancellationToken ct)
     {
-        var systemPrompt = await _promptSettings.GetPromptAsync("ask");
+        var settings = await _promptSettings.GetSettingsAsync("ask");
 
         var userPrompt = $"""
             Контекст из чата:
@@ -149,7 +150,20 @@ public class AskHandler
             Вопрос: {question}
             """;
 
-        return await _llm.ChatCompletionAsync(systemPrompt, userPrompt, 0.8, ct);
+        // Выбираем провайдера по тегу или дефолтный
+        var response = await _llmRouter.CompleteWithFallbackAsync(
+            new LlmRequest
+            {
+                SystemPrompt = settings.SystemPrompt,
+                UserPrompt = userPrompt,
+                Temperature = 0.8
+            },
+            preferredTag: settings.LlmTag,
+            ct: ct);
+
+        _logger.LogDebug("[Ask] Used provider: {Provider}, model: {Model}", response.Provider, response.Model);
+
+        return response.Content;
     }
 
     private static string FormatResponse(string question, string answer, List<SearchResult> topSources)

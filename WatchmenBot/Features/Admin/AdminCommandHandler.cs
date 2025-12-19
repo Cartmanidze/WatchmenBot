@@ -4,6 +4,7 @@ using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Services;
+using WatchmenBot.Services.Llm;
 
 namespace WatchmenBot.Features.Admin;
 
@@ -17,6 +18,7 @@ public class AdminCommandHandler
     private readonly MessageStore _messageStore;
     private readonly TelegramExportParser _exportParser;
     private readonly PromptSettingsStore _promptSettings;
+    private readonly LlmRouter _llmRouter;
     private readonly ILogger<AdminCommandHandler> _logger;
 
     public AdminCommandHandler(
@@ -28,6 +30,7 @@ public class AdminCommandHandler
         MessageStore messageStore,
         TelegramExportParser exportParser,
         PromptSettingsStore promptSettings,
+        LlmRouter llmRouter,
         ILogger<AdminCommandHandler> logger)
     {
         _bot = bot;
@@ -38,6 +41,7 @@ public class AdminCommandHandler
         _messageStore = messageStore;
         _exportParser = exportParser;
         _promptSettings = promptSettings;
+        _llmRouter = llmRouter;
         _logger = logger;
     }
 
@@ -90,6 +94,14 @@ public class AdminCommandHandler
                 "set_summary_time" when parts.Length >= 3 => await HandleSetSummaryTimeAsync(message.Chat.Id, parts[2], ct),
                 "set_report_time" when parts.Length >= 3 => await HandleSetReportTimeAsync(message.Chat.Id, parts[2], ct),
                 "set_timezone" when parts.Length >= 3 => await HandleSetTimezoneAsync(message.Chat.Id, parts[2], ct),
+                "llm" => await HandleLlmListAsync(message.Chat.Id, ct),
+                "llm_test" when parts.Length >= 3 => await HandleLlmTestAsync(message.Chat.Id, parts[2], ct),
+                "llm_test" => await HandleLlmTestAsync(message.Chat.Id, null, ct),
+                "llm_set" when parts.Length >= 3 => await HandleLlmSetAsync(message.Chat.Id, parts[2], ct),
+                "llm_on" when parts.Length >= 3 => await HandleLlmToggleAsync(message.Chat.Id, parts[2], true, ct),
+                "llm_off" when parts.Length >= 3 => await HandleLlmToggleAsync(message.Chat.Id, parts[2], false, ct),
+                "prompt_tag" when parts.Length >= 4 => await HandlePromptTagAsync(message.Chat.Id, parts[2], parts[3], ct),
+                "prompt_tag" when parts.Length >= 3 => await HandlePromptTagAsync(message.Chat.Id, parts[2], null, ct),
                 "help" => await SendHelpAsync(message.Chat.Id, ct),
                 _ => await SendHelpAsync(message.Chat.Id, ct)
             };
@@ -437,7 +449,8 @@ public class AdminCommandHandler
         foreach (var prompt in prompts)
         {
             var status = prompt.IsCustom ? "✏️ кастомный" : "📋 дефолтный";
-            sb.AppendLine($"<b>/{prompt.Command}</b> — {prompt.Description}");
+            var tagInfo = !string.IsNullOrEmpty(prompt.LlmTag) ? $" 🏷️ {prompt.LlmTag}" : "";
+            sb.AppendLine($"<b>/{prompt.Command}</b> — {prompt.Description}{tagInfo}");
             sb.AppendLine($"   {status}");
             if (prompt.IsCustom && prompt.UpdatedAt.HasValue)
             {
@@ -448,9 +461,8 @@ public class AdminCommandHandler
 
         sb.AppendLine("💡 <b>Команды:</b>");
         sb.AppendLine("<code>/admin prompt ask</code> — показать промпт");
+        sb.AppendLine("<code>/admin prompt_tag ask uncensored</code> — тег LLM");
         sb.AppendLine("<code>/admin prompt_reset ask</code> — сбросить на дефолт");
-        sb.AppendLine("\n📎 Отправь TXT файл с caption:");
-        sb.AppendLine("<code>/admin prompt ask</code>");
 
         await _bot.SendMessage(
             chatId: chatId,
@@ -621,6 +633,215 @@ public class AdminCommandHandler
         return true;
     }
 
+    private async Task<bool> HandleLlmListAsync(long chatId, CancellationToken ct)
+    {
+        var providers = _llmRouter.GetAllProviders();
+        var defaultName = _llmRouter.DefaultProviderName;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("<b>🤖 LLM Провайдеры</b>\n");
+
+        if (providers.Count == 0)
+        {
+            sb.AppendLine("❌ Нет зарегистрированных провайдеров");
+        }
+        else
+        {
+            foreach (var (name, options) in providers.OrderBy(p => p.Value.Priority))
+            {
+                var status = options.Enabled ? "✅" : "⏸️";
+                var isDefault = name == defaultName ? " ⭐ <i>(default)</i>" : "";
+
+                sb.AppendLine($"{status} <b>{name}</b>{isDefault}");
+                sb.AppendLine($"   📦 {options.Model}");
+                sb.AppendLine($"   🏷️ [{string.Join(", ", options.Tags)}]");
+                sb.AppendLine();
+            }
+        }
+
+        sb.AppendLine("💡 <code>/admin llm_set &lt;name&gt;</code> — сменить дефолтный");
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: sb.ToString(),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleLlmTestAsync(long chatId, string? providerName, CancellationToken ct)
+    {
+        var statusMsg = await _bot.SendMessage(
+            chatId: chatId,
+            text: "⏳ Тестирую LLM...",
+            cancellationToken: ct);
+
+        try
+        {
+            ILlmProvider provider;
+            if (string.IsNullOrEmpty(providerName))
+            {
+                provider = _llmRouter.GetDefault();
+            }
+            else
+            {
+                provider = _llmRouter.GetProvider(providerName)
+                    ?? throw new ArgumentException($"Провайдер '{providerName}' не найден");
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            var response = await provider.CompleteAsync(new LlmRequest
+            {
+                SystemPrompt = "Ты тестовый бот. Отвечай кратко.",
+                UserPrompt = "Скажи 'Привет, я работаю!' и добавь одну случайную шутку про программистов.",
+                Temperature = 0.8
+            }, ct);
+
+            sw.Stop();
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"✅ <b>Тест пройден!</b>\n");
+            sb.AppendLine($"📦 <b>Провайдер:</b> {response.Provider}");
+            sb.AppendLine($"🤖 <b>Модель:</b> {response.Model}");
+            sb.AppendLine($"⏱️ <b>Время:</b> {sw.ElapsedMilliseconds}ms");
+            sb.AppendLine($"📊 <b>Токены:</b> {response.PromptTokens} + {response.CompletionTokens} = {response.TotalTokens}");
+            sb.AppendLine();
+            sb.AppendLine("<b>Ответ:</b>");
+            sb.AppendLine($"<i>{EscapeHtml(response.Content)}</i>");
+
+            await _bot.EditMessageText(
+                chatId: chatId,
+                messageId: statusMsg.MessageId,
+                text: sb.ToString(),
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            await _bot.EditMessageText(
+                chatId: chatId,
+                messageId: statusMsg.MessageId,
+                text: $"❌ <b>Ошибка теста</b>\n\n{EscapeHtml(ex.Message)}",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> HandleLlmSetAsync(long chatId, string providerName, CancellationToken ct)
+    {
+        var providers = _llmRouter.GetAllProviders();
+
+        if (!providers.ContainsKey(providerName))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Провайдер <b>{providerName}</b> не найден\n\nДоступные: {string.Join(", ", providers.Keys)}",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+            return true;
+        }
+
+        var oldDefault = _llmRouter.DefaultProviderName;
+        var success = _llmRouter.SetDefaultProvider(providerName);
+
+        if (success)
+        {
+            var newProvider = providers[providerName];
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"""
+                    ✅ <b>Дефолтный провайдер изменён</b>
+
+                    {oldDefault} → <b>{providerName}</b>
+                    📦 Модель: {newProvider.Model}
+                    """,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Не удалось изменить провайдера",
+                cancellationToken: ct);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> HandleLlmToggleAsync(long chatId, string providerName, bool enabled, CancellationToken ct)
+    {
+        var success = _llmRouter.SetProviderEnabled(providerName, enabled);
+
+        if (success)
+        {
+            var status = enabled ? "✅ включён" : "❌ выключен";
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"Провайдер <b>{providerName}</b> {status}",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            var providers = _llmRouter.GetAllProviders();
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Провайдер <b>{providerName}</b> не найден\n\nДоступные: {string.Join(", ", providers.Keys)}",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> HandlePromptTagAsync(long chatId, string command, string? tag, CancellationToken ct)
+    {
+        var defaults = _promptSettings.GetDefaults();
+        if (!defaults.ContainsKey(command))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Неизвестная команда: {command}\n\nДоступные: {string.Join(", ", defaults.Keys)}",
+                cancellationToken: ct);
+            return true;
+        }
+
+        // Если тег не указан — сбросить на null
+        var tagToSet = string.IsNullOrWhiteSpace(tag) || tag == "null" || tag == "default" ? null : tag;
+
+        await _promptSettings.SetLlmTagAsync(command, tagToSet);
+
+        var providers = _llmRouter.GetAllProviders();
+        var availableTags = providers.Values.SelectMany(p => p.Tags).Distinct().ToList();
+
+        if (tagToSet == null)
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"✅ Тег для <b>/{command}</b> сброшен (будет использоваться дефолтный провайдер)",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            var hasProvider = providers.Values.Any(p => p.Tags.Contains(tagToSet, StringComparer.OrdinalIgnoreCase));
+            var warning = hasProvider ? "" : $"\n\n⚠️ Провайдер с тегом '{tagToSet}' не найден! Доступные теги: {string.Join(", ", availableTags)}";
+
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"✅ Тег для <b>/{command}</b> установлен: <code>{tagToSet}</code>{warning}",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+
+        return true;
+    }
+
     private static string EscapeHtml(string text)
     {
         return text
@@ -642,25 +863,24 @@ public class AdminCommandHandler
             <b>Импорт истории:</b>
             /admin import &lt;chat_id&gt; — инструкция по импорту
 
-            Отправь ZIP с экспортом и caption:
-            <code>/admin import -1001234567890</code>
+            <b>🤖 LLM:</b>
+            /admin llm — список провайдеров
+            /admin llm_set &lt;name&gt; — сменить дефолтный
+            /admin llm_on &lt;name&gt; — включить провайдера
+            /admin llm_off &lt;name&gt; — выключить провайдера
+            /admin llm_test — тест дефолтного
+            /admin llm_test &lt;name&gt; — тест конкретного
 
             <b>🎭 Промпты:</b>
             /admin prompts — список всех промптов
             /admin prompt &lt;cmd&gt; — показать промпт
+            /admin prompt_tag &lt;cmd&gt; &lt;tag&gt; — установить LLM тег
             /admin prompt_reset &lt;cmd&gt; — сбросить на дефолт
-
-            📎 Изменить промпт — отправь TXT файл:
-            <code>/admin prompt ask</code>
 
             <b>Настройки:</b>
             /admin set_summary_time HH:mm — время саммари
             /admin set_report_time HH:mm — время отчёта
             /admin set_timezone +N — часовой пояс
-
-            <b>Примеры:</b>
-            <code>/admin set_summary_time 21:00</code>
-            <code>/admin set_timezone +6</code>
             """;
 
         await _bot.SendMessage(

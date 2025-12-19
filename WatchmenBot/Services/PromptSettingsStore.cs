@@ -14,6 +14,7 @@ public class PromptSettingsStore
         ["ask"] = new PromptConfig
         {
             Description = "Отвечает на вопросы про участников чата",
+            LlmTag = "uncensored",
             SystemPrompt = """
                 Ты — дерзкий эксперт по чату. Отвечаешь КОРОТКО и ТОЧНО.
 
@@ -31,6 +32,7 @@ public class PromptSettingsStore
         ["summary"] = new PromptConfig
         {
             Description = "Генерирует саммари чата за период",
+            LlmTag = null,
             SystemPrompt = """
                 Ты — саркастичный летописец чата. Пиши как стендап-комик, который ведёт хронику безумия.
 
@@ -70,6 +72,7 @@ public class PromptSettingsStore
         ["recall"] = new PromptConfig
         {
             Description = "Вспоминает контекст по теме",
+            LlmTag = null,
             SystemPrompt = """
                 Ты помогаешь вспомнить, что обсуждалось в чате по заданной теме.
 
@@ -91,23 +94,47 @@ public class PromptSettingsStore
 
     public async Task<string> GetPromptAsync(string command)
     {
+        var settings = await GetSettingsAsync(command);
+        return settings.SystemPrompt;
+    }
+
+    /// <summary>
+    /// Получить полные настройки промпта (промпт + тег LLM)
+    /// </summary>
+    public async Task<PromptSettings> GetSettingsAsync(string command)
+    {
         try
         {
             using var connection = await _connectionFactory.CreateConnectionAsync();
-            var result = await connection.QuerySingleOrDefaultAsync<string>(
-                "SELECT system_prompt FROM prompt_settings WHERE command = @Command",
+            var result = await connection.QuerySingleOrDefaultAsync<(string SystemPrompt, string? LlmTag)>(
+                "SELECT system_prompt, llm_tag FROM prompt_settings WHERE command = @Command",
                 new { Command = command });
 
-            if (!string.IsNullOrEmpty(result))
-                return result;
+            if (!string.IsNullOrEmpty(result.SystemPrompt))
+            {
+                return new PromptSettings
+                {
+                    SystemPrompt = result.SystemPrompt,
+                    LlmTag = result.LlmTag
+                };
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get prompt for {Command}, using default", command);
+            _logger.LogWarning(ex, "Failed to get settings for {Command}, using default", command);
         }
 
         // Return default if not found in DB
-        return DefaultPrompts.TryGetValue(command, out var config) ? config.SystemPrompt : string.Empty;
+        if (DefaultPrompts.TryGetValue(command, out var config))
+        {
+            return new PromptSettings
+            {
+                SystemPrompt = config.SystemPrompt,
+                LlmTag = config.LlmTag
+            };
+        }
+
+        return new PromptSettings { SystemPrompt = string.Empty, LlmTag = null };
     }
 
     public async Task SetPromptAsync(string command, string systemPrompt)
@@ -138,6 +165,39 @@ public class PromptSettingsStore
         }
     }
 
+    /// <summary>
+    /// Установить LLM тег для команды
+    /// </summary>
+    public async Task SetLlmTagAsync(string command, string? llmTag)
+    {
+        var description = DefaultPrompts.TryGetValue(command, out var config)
+            ? config.Description
+            : $"Промпт для /{command}";
+
+        var defaultPrompt = config?.SystemPrompt ?? "";
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO prompt_settings (command, description, system_prompt, llm_tag, updated_at)
+                VALUES (@Command, @Description, @SystemPrompt, @LlmTag, NOW())
+                ON CONFLICT (command) DO UPDATE SET
+                    llm_tag = EXCLUDED.llm_tag,
+                    updated_at = NOW()
+                """,
+                new { Command = command, Description = description, SystemPrompt = defaultPrompt, LlmTag = llmTag });
+
+            _logger.LogInformation("Updated LLM tag for {Command}: {Tag}", command, llmTag ?? "(null)");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to set LLM tag for {Command}", command);
+            throw;
+        }
+    }
+
     public async Task ResetPromptAsync(string command)
     {
         try
@@ -161,17 +221,17 @@ public class PromptSettingsStore
         var result = new List<PromptInfo>();
 
         // Get custom prompts from DB
-        Dictionary<string, (string Description, string Prompt, DateTimeOffset UpdatedAt)> customPrompts = new();
+        Dictionary<string, (string Description, string Prompt, string? LlmTag, DateTimeOffset UpdatedAt)> customPrompts = new();
 
         try
         {
             using var connection = await _connectionFactory.CreateConnectionAsync();
-            var dbPrompts = await connection.QueryAsync<(string Command, string Description, string SystemPrompt, DateTimeOffset UpdatedAt)>(
-                "SELECT command, description, system_prompt, updated_at FROM prompt_settings");
+            var dbPrompts = await connection.QueryAsync<(string Command, string Description, string SystemPrompt, string? LlmTag, DateTimeOffset UpdatedAt)>(
+                "SELECT command, description, system_prompt, llm_tag, updated_at FROM prompt_settings");
 
             foreach (var p in dbPrompts)
             {
-                customPrompts[p.Command] = (p.Description, p.SystemPrompt, p.UpdatedAt);
+                customPrompts[p.Command] = (p.Description, p.SystemPrompt, p.LlmTag, p.UpdatedAt);
             }
         }
         catch (Exception ex)
@@ -189,7 +249,8 @@ public class PromptSettingsStore
                 Description = isCustom ? custom.Description : config.Description,
                 IsCustom = isCustom,
                 UpdatedAt = isCustom ? custom.UpdatedAt : null,
-                PromptPreview = TruncateText(isCustom ? custom.Prompt : config.SystemPrompt, 100)
+                PromptPreview = TruncateText(isCustom ? custom.Prompt : config.SystemPrompt, 100),
+                LlmTag = isCustom ? custom.LlmTag : config.LlmTag
             });
         }
 
@@ -210,6 +271,7 @@ public class PromptConfig
 {
     public required string Description { get; init; }
     public required string SystemPrompt { get; init; }
+    public string? LlmTag { get; init; }
 }
 
 public class PromptInfo
@@ -219,4 +281,14 @@ public class PromptInfo
     public bool IsCustom { get; init; }
     public DateTimeOffset? UpdatedAt { get; init; }
     public string PromptPreview { get; init; } = "";
+    public string? LlmTag { get; init; }
+}
+
+/// <summary>
+/// Полные настройки промпта включая тег LLM
+/// </summary>
+public class PromptSettings
+{
+    public required string SystemPrompt { get; init; }
+    public string? LlmTag { get; init; }
 }

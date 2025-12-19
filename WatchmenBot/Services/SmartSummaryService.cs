@@ -1,24 +1,25 @@
 using System.Text;
 using System.Text.Json;
 using WatchmenBot.Models;
+using WatchmenBot.Services.Llm;
 
 namespace WatchmenBot.Services;
 
 public class SmartSummaryService
 {
     private readonly EmbeddingService _embeddingService;
-    private readonly OpenRouterClient _llm;
+    private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
     private readonly ILogger<SmartSummaryService> _logger;
 
     public SmartSummaryService(
         EmbeddingService embeddingService,
-        OpenRouterClient llm,
+        LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
         ILogger<SmartSummaryService> logger)
     {
         _embeddingService = embeddingService;
-        _llm = llm;
+        _llmRouter = llmRouter;
         _promptSettings = promptSettings;
         _logger = logger;
     }
@@ -143,10 +144,16 @@ public class SmartSummaryService
 
         try
         {
-            var response = await _llm.ChatCompletionAsync(systemPrompt, userPrompt, 0.3, ct);
+            // Для извлечения топиков используем дефолтного провайдера (дешёвый)
+            var response = await _llmRouter.CompleteAsync(new LlmRequest
+            {
+                SystemPrompt = systemPrompt,
+                UserPrompt = userPrompt,
+                Temperature = 0.3
+            }, ct);
 
             // Parse JSON array
-            var cleaned = response.Trim();
+            var cleaned = response.Content.Trim();
             if (cleaned.StartsWith("```"))
             {
                 cleaned = cleaned.Split('\n').Skip(1).TakeWhile(l => !l.StartsWith("```")).Aggregate((a, b) => a + b);
@@ -187,12 +194,24 @@ public class SmartSummaryService
             }
         }
 
-        var systemPrompt = await _promptSettings.GetPromptAsync("summary");
+        var settings = await _promptSettings.GetSettingsAsync("summary");
 
         // Add context about topic grouping
-        var enhancedPrompt = systemPrompt + "\n\nВАЖНО: Тебе даны сообщения, уже сгруппированные по темам через семантический анализ. Используй эту структуру для более глубокого и точного саммари.";
+        var enhancedPrompt = settings.SystemPrompt + "\n\nВАЖНО: Тебе даны сообщения, уже сгруппированные по темам через семантический анализ. Используй эту структуру для более глубокого и точного саммари.";
 
-        return await _llm.ChatCompletionAsync(enhancedPrompt, contextBuilder.ToString(), 0.7, ct);
+        var response = await _llmRouter.CompleteWithFallbackAsync(
+            new LlmRequest
+            {
+                SystemPrompt = enhancedPrompt,
+                UserPrompt = contextBuilder.ToString(),
+                Temperature = 0.7
+            },
+            preferredTag: settings.LlmTag,
+            ct: ct);
+
+        _logger.LogDebug("[SmartSummary] Used provider: {Provider}, model: {Model}", response.Provider, response.Model);
+
+        return response.Content;
     }
 
     private async Task<string> GenerateTraditionalSummaryAsync(List<MessageRecord> messages, CancellationToken ct)
@@ -213,7 +232,7 @@ public class SmartSummaryService
 
         var stats = BuildStats(messages);
 
-        var systemPrompt = await _promptSettings.GetPromptAsync("summary");
+        var settings = await _promptSettings.GetSettingsAsync("summary");
 
         var userPrompt = new StringBuilder();
         userPrompt.AppendLine("Статистика:");
@@ -223,7 +242,17 @@ public class SmartSummaryService
         userPrompt.AppendLine("Переписка:");
         userPrompt.AppendLine(convo.ToString());
 
-        return await _llm.ChatCompletionAsync(systemPrompt, userPrompt.ToString(), 0.7, ct);
+        var response = await _llmRouter.CompleteWithFallbackAsync(
+            new LlmRequest
+            {
+                SystemPrompt = settings.SystemPrompt,
+                UserPrompt = userPrompt.ToString(),
+                Temperature = 0.7
+            },
+            preferredTag: settings.LlmTag,
+            ct: ct);
+
+        return response.Content;
     }
 
     private static ChatStats BuildStats(List<MessageRecord> messages)

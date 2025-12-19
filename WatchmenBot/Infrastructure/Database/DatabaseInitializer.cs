@@ -149,11 +149,19 @@ public class DatabaseInitializer : IHostedService
                 command VARCHAR(50) PRIMARY KEY,
                 description VARCHAR(255) NOT NULL,
                 system_prompt TEXT NOT NULL,
+                llm_tag VARCHAR(50) NULL,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
             );
             """;
 
         await connection.ExecuteAsync(createTableSql);
+
+        // Add llm_tag column if it doesn't exist (migration for existing databases)
+        const string addColumnSql = """
+            ALTER TABLE prompt_settings ADD COLUMN IF NOT EXISTS llm_tag VARCHAR(50) NULL;
+            """;
+
+        await connection.ExecuteAsync(addColumnSql);
     }
 
     private async Task CreateIndexesAsync(System.Data.IDbConnection connection)
