@@ -30,10 +30,8 @@ services:
       Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
       Telegram__UsePolling: "false"
       Telegram__ValidateIpRange: "false"
-      OpenRouter__ApiKey: ${OPENROUTER_API_KEY}
-      OpenRouter__BaseUrl: https://openrouter.ai/api
-      OpenRouter__Model: deepseek/deepseek-chat
-      OpenRouter__UseProxy: "false"
+      # Override LLM provider API key from appsettings.json
+      Llm__Providers__0__ApiKey: ${OPENROUTER_API_KEY}
       Embeddings__ApiKey: ${OPENAI_API_KEY}
       Embeddings__BaseUrl: https://api.openai.com/v1
       Embeddings__Model: text-embedding-3-small

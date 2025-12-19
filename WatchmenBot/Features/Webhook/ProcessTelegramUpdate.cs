@@ -81,7 +81,7 @@ public class ProcessTelegramUpdateHandler
         {
             using var scope = _serviceProvider.CreateScope();
 
-            // Handle private messages (for admin commands)
+            // Handle private messages (for admin commands and /q)
             if (message.Chat.Type == ChatType.Private)
             {
                 // Handle text commands or document uploads with caption
@@ -90,6 +90,12 @@ public class ProcessTelegramUpdateHandler
                 {
                     var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();
                     await adminHandler.HandleAsync(message, cancellationToken);
+                }
+                else if (IsQuestionCommand(commandText))
+                {
+                    _logger.LogInformation("[Webhook] [PM] @{User} requested /q", userName);
+                    var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
+                    await askHandler.HandleQuestionAsync(message, cancellationToken);
                 }
                 return ProcessTelegramUpdateResponse.Success();
             }
@@ -139,6 +145,14 @@ public class ProcessTelegramUpdateHandler
                 return ProcessTelegramUpdateResponse.Success();
             }
 
+            if (IsQuestionCommand(message.Text))
+            {
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /q", chatName, userName);
+                var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
+                await askHandler.HandleQuestionAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
             if (IsCommand(message.Text, "/recall"))
             {
                 _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /recall", chatName, userName);
@@ -175,5 +189,16 @@ public class ProcessTelegramUpdateHandler
         if (string.IsNullOrWhiteSpace(text))
             return false;
         return text.StartsWith(command, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsQuestionCommand(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        // Match /q but not /qsomething (only /q or /q followed by space/@ for bot mentions)
+        return text.StartsWith("/q ", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("/q@", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("/q", StringComparison.OrdinalIgnoreCase);
     }
 }
