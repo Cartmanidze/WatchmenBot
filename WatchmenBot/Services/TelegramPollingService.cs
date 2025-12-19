@@ -36,6 +36,9 @@ public class TelegramPollingService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Always register bot commands menu (works for both polling and webhook modes)
+        await RegisterBotCommandsAsync(stoppingToken);
+
         var usePolling = _configuration.GetValue<bool>("Telegram:UsePolling", false);
         if (!usePolling)
         {
@@ -50,9 +53,6 @@ public class TelegramPollingService : BackgroundService
 
         var me = await _bot.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot ONLINE: @{Username} (ID: {Id})", me.Username, me.Id);
-
-        // Register bot commands menu
-        await RegisterBotCommandsAsync(stoppingToken);
 
         int offset = 0;
         var totalMessages = 0L;
