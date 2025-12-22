@@ -142,6 +142,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<AdminSettingsStore>();
         services.AddSingleton<PromptSettingsStore>();
 
+        // Usage tracking
+        services.AddHttpClient<OpenRouterUsageService>();
+
         // Background Services
         services.AddHostedService<DailySummaryService>();
         services.AddHostedService<BackgroundEmbeddingService>();

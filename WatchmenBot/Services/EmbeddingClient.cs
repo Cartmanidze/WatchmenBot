@@ -15,6 +15,14 @@ public class EmbeddingClient
     private readonly ILogger<EmbeddingClient> _logger;
     private readonly bool _isConfigured;
 
+    // Usage tracking (static to persist across scopes)
+    private static long _totalTokensUsed;
+    private static int _totalRequests;
+    private static readonly object _statsLock = new();
+
+    // Pricing: text-embedding-3-small = $0.00002 / 1K tokens
+    private const double PricePerThousandTokens = 0.00002;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -104,16 +112,66 @@ public class EmbeddingClient
             result.Add(embedding);
         }
 
-        // Log usage
+        // Log usage and track stats
         var tokens = 0;
         if (root.TryGetProperty("usage", out var usage))
         {
             tokens = usage.GetProperty("total_tokens").GetInt32();
+            lock (_statsLock)
+            {
+                _totalTokensUsed += tokens;
+                _totalRequests++;
+            }
         }
 
         _logger.LogDebug("[OpenAI] Embeddings: {Count} texts, {Tokens} tokens, {Ms}ms",
             textList.Count, tokens, sw.ElapsedMilliseconds);
 
         return result;
+    }
+
+    /// <summary>
+    /// Get usage statistics since app start
+    /// </summary>
+    public static EmbeddingUsageStats GetUsageStats()
+    {
+        lock (_statsLock)
+        {
+            return new EmbeddingUsageStats
+            {
+                TotalTokens = _totalTokensUsed,
+                TotalRequests = _totalRequests,
+                EstimatedCost = _totalTokensUsed / 1000.0 * PricePerThousandTokens
+            };
+        }
+    }
+
+    /// <summary>
+    /// Reset usage statistics
+    /// </summary>
+    public static void ResetStats()
+    {
+        lock (_statsLock)
+        {
+            _totalTokensUsed = 0;
+            _totalRequests = 0;
+        }
+    }
+}
+
+public class EmbeddingUsageStats
+{
+    public long TotalTokens { get; set; }
+    public int TotalRequests { get; set; }
+    public double EstimatedCost { get; set; }
+
+    public string ToTelegramHtml()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("<b>🔤 OpenAI Embeddings:</b>");
+        sb.AppendLine($"• Токенов: {TotalTokens:N0}");
+        sb.AppendLine($"• Запросов: {TotalRequests:N0}");
+        sb.AppendLine($"• Потрачено: ~${EstimatedCost:F4}");
+        return sb.ToString();
     }
 }

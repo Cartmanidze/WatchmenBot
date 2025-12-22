@@ -8,17 +8,20 @@ public class DailyLogReportService : BackgroundService
     private readonly ITelegramBotClient _bot;
     private readonly AdminSettingsStore _settings;
     private readonly LogCollector _logCollector;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<DailyLogReportService> _logger;
 
     public DailyLogReportService(
         ITelegramBotClient bot,
         AdminSettingsStore settings,
         LogCollector logCollector,
+        IServiceProvider serviceProvider,
         ILogger<DailyLogReportService> logger)
     {
         _bot = bot;
         _settings = settings;
         _logCollector = logCollector;
+        _serviceProvider = serviceProvider;
         _logger = logger;
     }
 
@@ -99,6 +102,20 @@ public class DailyLogReportService : BackgroundService
             var report = _logCollector.GetReportSinceLastTime();
             var message = report.ToTelegramHtml(timezoneOffset);
 
+            // Add usage info
+            var usageInfo = await GetUsageInfoAsync(ct);
+            if (usageInfo != null)
+            {
+                message += "\n" + usageInfo.ToTelegramHtml();
+            }
+
+            // Add embeddings usage
+            var embeddingStats = EmbeddingClient.GetUsageStats();
+            if (embeddingStats.TotalRequests > 0)
+            {
+                message += "\n" + embeddingStats.ToTelegramHtml();
+            }
+
             await _bot.SendMessage(
                 chatId: adminUserId,
                 text: message,
@@ -113,6 +130,21 @@ public class DailyLogReportService : BackgroundService
         }
     }
 
+    private async Task<UsageInfo?> GetUsageInfoAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var usageService = scope.ServiceProvider.GetRequiredService<OpenRouterUsageService>();
+            return await usageService.GetUsageInfoAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[LogReport] Failed to get usage info");
+            return null;
+        }
+    }
+
     /// <summary>
     /// Send immediate report (for /admin report command)
     /// </summary>
@@ -123,6 +155,20 @@ public class DailyLogReportService : BackgroundService
             var timezoneOffset = await _settings.GetTimezoneOffsetAsync();
             var report = _logCollector.GetFullReport();
             var message = report.ToTelegramHtml(timezoneOffset);
+
+            // Add usage info
+            var usageInfo = await GetUsageInfoAsync(ct);
+            if (usageInfo != null)
+            {
+                message += "\n" + usageInfo.ToTelegramHtml();
+            }
+
+            // Add embeddings usage
+            var embeddingStats = EmbeddingClient.GetUsageStats();
+            if (embeddingStats.TotalRequests > 0)
+            {
+                message += "\n" + embeddingStats.ToTelegramHtml();
+            }
 
             await _bot.SendMessage(
                 chatId: chatId,
