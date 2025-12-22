@@ -73,7 +73,7 @@ public class DailySummaryService : BackgroundService
 
                 if (stoppingToken.IsCancellationRequested) break;
 
-                await RunSummaryForYesterday(tz, stoppingToken);
+                await RunSummaryForToday(tz, stoppingToken);
             }
             catch (TaskCanceledException)
             {
@@ -105,7 +105,7 @@ public class DailySummaryService : BackgroundService
         return todayTarget.ToUniversalTime();
     }
 
-    private async Task RunSummaryForYesterday(TimeSpan timezoneOffset, CancellationToken ct)
+    private async Task RunSummaryForToday(TimeSpan timezoneOffset, CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<MessageStore>();
@@ -115,16 +115,16 @@ public class DailySummaryService : BackgroundService
         var sw = Stopwatch.StartNew();
         var chatIds = await store.GetDistinctChatIdsAsync();
 
-        // Calculate "yesterday" in the configured timezone
-        var nowInTz = DateTimeOffset.UtcNow.ToOffset(timezoneOffset);
-        var yesterdayStart = new DateTimeOffset(
-            nowInTz.Year, nowInTz.Month, nowInTz.Day, 0, 0, 0, timezoneOffset).AddDays(-1);
-        var yesterdayEnd = yesterdayStart.AddDays(1);
-        var startUtc = yesterdayStart.ToUniversalTime();
-        var endUtc = yesterdayEnd.ToUniversalTime();
+        // Calculate "today" in the configured timezone (from midnight to now)
+        var nowUtc = DateTimeOffset.UtcNow;
+        var nowInTz = nowUtc.ToOffset(timezoneOffset);
+        var todayStart = new DateTimeOffset(
+            nowInTz.Year, nowInTz.Month, nowInTz.Day, 0, 0, 0, timezoneOffset);
+        var startUtc = todayStart.ToUniversalTime();
+        var endUtc = nowUtc;
 
         _logger.LogInformation("[DailySummary] Starting for {Date}, {ChatCount} chats to process",
-            yesterdayStart.ToString("yyyy-MM-dd"), chatIds.Count);
+            todayStart.ToString("yyyy-MM-dd"), chatIds.Count);
 
         var successCount = 0;
         var totalMessages = 0;
@@ -150,7 +150,7 @@ public class DailySummaryService : BackgroundService
 
                 // Generate smart summary using embeddings
                 var report = await smartSummary.GenerateSmartSummaryAsync(
-                    chatId, messages, startUtc, endUtc, "за вчера", ct);
+                    chatId, messages, startUtc, endUtc, "за сегодня", ct);
 
                 // Try HTML first, fallback to plain text if parsing fails
                 try
