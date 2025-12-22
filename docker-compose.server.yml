@@ -31,10 +31,11 @@ services:
       Telegram__UsePolling: "false"
       Telegram__ValidateIpRange: "false"
       # Override LLM provider API keys from appsettings.json
-      # 0=deepseek, 1=llama-fallback, 2=perplexity
+      # 0=grok, 1=qwen, 2=llama-fallback, 3=perplexity
       Llm__Providers__0__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__1__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__2__ApiKey: ${OPENROUTER_API_KEY}
+      Llm__Providers__3__ApiKey: ${OPENROUTER_API_KEY}
       Embeddings__ApiKey: ${OPENAI_API_KEY}
       Embeddings__BaseUrl: https://api.openai.com/v1
       Embeddings__Model: text-embedding-3-small
