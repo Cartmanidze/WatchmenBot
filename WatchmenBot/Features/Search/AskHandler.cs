@@ -84,8 +84,8 @@ public class AskHandler
 
             _logger.LogInformation("[{Command}] Question: {Question} in chat {ChatId}", command.ToUpper(), question, chatId);
 
-            // Get relevant context from embeddings
-            var results = await _embeddingService.SearchSimilarAsync(chatId, question, limit: 15, ct);
+            // Get relevant context from embeddings (increased limit for better context)
+            var results = await _embeddingService.SearchSimilarAsync(chatId, question, limit: 20, ct);
 
             // For /ask - require context, for /q - context is optional
             if (results.Count == 0 && command == "ask")
@@ -157,14 +157,58 @@ public class AskHandler
         return text[(spaceIndex + 1)..].Trim();
     }
 
-    private static string BuildContext(List<SearchResult> results)
+    private string BuildContext(List<SearchResult> results)
     {
+        _logger.LogDebug("[BuildContext] Processing {Count} search results", results.Count);
+
+        // Parse metadata to get timestamps and sort chronologically
+        var messagesWithTime = results
+            .Select((r, index) => {
+                DateTimeOffset time = DateTimeOffset.MinValue;
+                if (!string.IsNullOrEmpty(r.MetadataJson))
+                {
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(r.MetadataJson);
+                        if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
+                        {
+                            time = dateEl.GetDateTimeOffset();
+                        }
+                        _logger.LogDebug("[BuildContext] #{Index} sim={Similarity:F3} time={Time} text={Text}",
+                            index, r.Similarity, time, TruncateText(r.ChunkText, 80));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[BuildContext] Failed to parse metadata: {Json}", r.MetadataJson);
+                    }
+                }
+                else
+                {
+                    _logger.LogDebug("[BuildContext] #{Index} sim={Similarity:F3} NO METADATA text={Text}",
+                        index, r.Similarity, TruncateText(r.ChunkText, 80));
+                }
+                return (Text: r.ChunkText, Time: time, Similarity: r.Similarity);
+            })
+            .OrderBy(m => m.Time) // Chronological order
+            .ToList();
+
+        _logger.LogInformation("[BuildContext] Built context: {Count} messages, time range: {From} - {To}",
+            messagesWithTime.Count,
+            messagesWithTime.FirstOrDefault().Time,
+            messagesWithTime.LastOrDefault().Time);
+
         var sb = new StringBuilder();
-        foreach (var result in results)
+        sb.AppendLine("Релевантные сообщения из чата (хронологически):");
+        sb.AppendLine();
+
+        foreach (var msg in messagesWithTime)
         {
-            sb.AppendLine(result.ChunkText);
-            sb.AppendLine("---");
+            var timeStr = msg.Time != DateTimeOffset.MinValue
+                ? $"[{msg.Time.ToLocalTime():dd.MM HH:mm}] "
+                : "";
+            sb.AppendLine($"{timeStr}{msg.Text}");
         }
+
         return sb.ToString();
     }
 
@@ -200,7 +244,8 @@ public class AskHandler
             preferredTag: settings.LlmTag,
             ct: ct);
 
-        _logger.LogDebug("[Ask] Used provider: {Provider}, model: {Model}", response.Provider, response.Model);
+        _logger.LogInformation("[{Command}] LLM: provider={Provider}, model={Model}, tag={Tag}",
+            command.ToUpper(), response.Provider, response.Model, settings.LlmTag ?? "default");
 
         return response.Content;
     }
