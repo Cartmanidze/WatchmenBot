@@ -36,29 +36,27 @@ public class OpenRouterUsageService
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
 
-            // Get credits info
-            var response = await _httpClient.GetAsync("https://openrouter.ai/api/v1/auth/key", ct);
-            if (!response.IsSuccessStatusCode)
+            // Get credits balance from /api/v1/credits
+            var creditsResponse = await _httpClient.GetAsync("https://openrouter.ai/api/v1/credits", ct);
+            if (!creditsResponse.IsSuccessStatusCode)
             {
-                _logger.LogWarning("[Usage] Failed to get key info: {Status}", response.StatusCode);
+                _logger.LogWarning("[Usage] Failed to get credits: {Status}", creditsResponse.StatusCode);
                 return null;
             }
 
-            var keyInfo = await response.Content.ReadFromJsonAsync<OpenRouterKeyResponse>(ct);
-            if (keyInfo?.Data == null)
+            var credits = await creditsResponse.Content.ReadFromJsonAsync<OpenRouterCreditsResponse>(ct);
+            if (credits?.Data == null)
                 return null;
 
-            var limit = keyInfo.Data.Limit;
-            var used = keyInfo.Data.Usage ?? 0;
-            var remaining = keyInfo.Data.LimitRemaining;
+            var total = credits.Data.TotalCredits ?? 0;
+            var used = credits.Data.TotalUsage ?? 0;
+            var balance = total - used;
 
             return new UsageInfo
             {
-                TotalCredits = limit ?? 0,
+                TotalCredits = total,
                 UsedCredits = used,
-                RemainingCredits = remaining ?? 0,
-                HasLimit = limit.HasValue,
-                HasRemainingInfo = remaining.HasValue
+                Balance = balance
             };
         }
         catch (Exception ex)
@@ -69,87 +67,45 @@ public class OpenRouterUsageService
     }
 }
 
+// Response from /api/v1/credits
+public class OpenRouterCreditsResponse
+{
+    [JsonPropertyName("data")]
+    public OpenRouterCreditsData? Data { get; set; }
+}
+
+public class OpenRouterCreditsData
+{
+    [JsonPropertyName("total_credits")]
+    public double? TotalCredits { get; set; }
+
+    [JsonPropertyName("total_usage")]
+    public double? TotalUsage { get; set; }
+}
+
 public class UsageInfo
 {
     public double TotalCredits { get; set; }
     public double UsedCredits { get; set; }
-    public double RemainingCredits { get; set; }
-    public bool HasLimit { get; set; }
-    public bool HasRemainingInfo { get; set; }
+    public double Balance { get; set; }
 
     public string ToTelegramHtml()
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("<b>💰 OpenRouter:</b>");
+        sb.AppendLine($"• Баланс: ${Balance:F2}");
+        sb.AppendLine($"• Потрачено: ${UsedCredits:F2}");
+        sb.AppendLine($"• Пополнено: ${TotalCredits:F2}");
 
-        if (HasLimit && HasRemainingInfo)
+        if (Balance < 1)
         {
-            // Has credit limit
-            var percent = TotalCredits > 0 ? (RemainingCredits / TotalCredits * 100) : 0;
-            sb.AppendLine($"• Осталось: ${RemainingCredits:F2} / ${TotalCredits:F2} ({percent:F0}%)");
-
-            if (percent < 20)
-            {
-                sb.AppendLine("⚠️ <b>Пора пополнить!</b>");
-            }
+            sb.AppendLine("⚠️ <b>Пора пополнить!</b>");
         }
-        else if (HasRemainingInfo)
+        else if (Balance < 5)
         {
-            // Pay-as-you-go with remaining balance
-            sb.AppendLine($"• Баланс: ${RemainingCredits:F2}");
-            sb.AppendLine($"• Потрачено: ${UsedCredits:F2}");
-
-            if (RemainingCredits < 1)
-            {
-                sb.AppendLine("⚠️ <b>Пора пополнить!</b>");
-            }
-        }
-        else
-        {
-            // Only usage info available
-            sb.AppendLine($"• Потрачено: ${UsedCredits:F2}");
+            sb.AppendLine("💡 Скоро закончится");
         }
 
         return sb.ToString();
     }
-}
-
-// OpenRouter API response models
-public class OpenRouterKeyResponse
-{
-    [JsonPropertyName("data")]
-    public OpenRouterKeyData? Data { get; set; }
-}
-
-public class OpenRouterKeyData
-{
-    [JsonPropertyName("label")]
-    public string? Label { get; set; }
-
-    [JsonPropertyName("usage")]
-    public double? Usage { get; set; }
-
-    [JsonPropertyName("limit")]
-    public double? Limit { get; set; }
-
-    [JsonPropertyName("is_free_tier")]
-    public bool? IsFreeTier { get; set; }
-
-    [JsonPropertyName("rate_limit")]
-    public OpenRouterRateLimit? RateLimit { get; set; }
-
-    [JsonPropertyName("limit_remaining")]
-    public double? LimitRemaining { get; set; }
-
-    [JsonPropertyName("rate_limit_interval")]
-    public string? RateLimitInterval { get; set; }
-}
-
-public class OpenRouterRateLimit
-{
-    [JsonPropertyName("requests")]
-    public int? Requests { get; set; }
-
-    [JsonPropertyName("interval")]
-    public string? Interval { get; set; }
 }
