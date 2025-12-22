@@ -161,7 +161,15 @@ public class ProcessTelegramUpdateHandler
                 return ProcessTelegramUpdateResponse.Success();
             }
 
-            // Save regular message
+            if (IsCommand(message.Text, "/truth"))
+            {
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /truth", chatName, userName);
+                var factCheckHandler = scope.ServiceProvider.GetRequiredService<FactCheckHandler>();
+                await factCheckHandler.HandleAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            // Save regular message first
             var saveHandler = scope.ServiceProvider.GetRequiredService<SaveMessageHandler>();
             var saveRequest = new SaveMessageRequest { Message = message };
             var saveResponse = await saveHandler.HandleAsync(saveRequest, cancellationToken);
@@ -173,6 +181,15 @@ public class ProcessTelegramUpdateHandler
             else
             {
                 _logger.LogError("Failed to save message: {Error}", saveResponse.ErrorMessage);
+            }
+
+            // Check for "это правда?" trigger (after saving the message)
+            if (IsTruthQuestion(message.Text))
+            {
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} triggered truth check with '{Text}'",
+                    chatName, userName, message.Text?.Trim());
+                var factCheckHandler = scope.ServiceProvider.GetRequiredService<FactCheckHandler>();
+                await factCheckHandler.HandleAsync(message, cancellationToken);
             }
 
             return ProcessTelegramUpdateResponse.Success();
@@ -200,5 +217,27 @@ public class ProcessTelegramUpdateHandler
         return text.StartsWith("/q ", StringComparison.OrdinalIgnoreCase)
             || text.StartsWith("/q@", StringComparison.OrdinalIgnoreCase)
             || text.Equals("/q", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTruthQuestion(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var normalized = text.Trim().ToLowerInvariant();
+
+        // Various ways to ask "is this true?"
+        return normalized.Contains("это правда?")
+            || normalized.Contains("правда?")
+            || normalized.Contains("это правда ли")
+            || normalized.Contains("серьёзно?")
+            || normalized.Contains("серьезно?")
+            || normalized.Contains("не пиздишь?")
+            || normalized.Contains("не врёшь?")
+            || normalized.Contains("не врешь?")
+            || normalized.Contains("реально?")
+            || normalized.Equals("правда?")
+            || normalized.Equals("серьёзно?")
+            || normalized.Equals("серьезно?");
     }
 }

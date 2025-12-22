@@ -98,25 +98,61 @@ public class SmartSummaryService
         _logger.LogInformation("[SmartSummary] Extracted {Count} topics: {Topics}",
             topics.Count, string.Join(", ", topics));
 
-        // Step 2: For each topic, find relevant messages
-        var topicMessages = new Dictionary<string, List<string>>();
+        // Step 2: For each topic, find relevant messages (increased limit to 25)
+        var topicMessages = new Dictionary<string, List<MessageWithTime>>();
 
         foreach (var topic in topics)
         {
             var relevantMessages = await _embeddingService.SearchSimilarInRangeAsync(
-                chatId, topic, startUtc, endUtc, limit: 15, ct);
+                chatId, topic, startUtc, endUtc, limit: 25, ct);
 
             topicMessages[topic] = relevantMessages
-                .Where(m => m.Similarity > 0.3) // Filter low similarity
-                .Select(m => m.ChunkText)
+                .Where(m => m.Similarity > 0.25) // Slightly lower threshold for more context
+                .Select(ParseMessageWithTime)
+                .OrderBy(m => m.Time) // Sort chronologically
                 .ToList();
         }
 
         // Step 3: Build stats
         var stats = BuildStats(allMessages);
 
-        // Step 4: Generate topic-structured summary
-        return await GenerateFinalSummaryAsync(topicMessages, stats, ct);
+        // Step 4: Generate two-stage summary (facts first, then humor)
+        return await GenerateTwoStageSummaryAsync(topicMessages, stats, allMessages, ct);
+    }
+
+    /// <summary>
+    /// Parse SearchResult into MessageWithTime, extracting time from metadata
+    /// </summary>
+    private static MessageWithTime ParseMessageWithTime(SearchResult result)
+    {
+        DateTimeOffset time = DateTimeOffset.MinValue;
+
+        if (!string.IsNullOrEmpty(result.MetadataJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(result.MetadataJson);
+                if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
+                {
+                    time = dateEl.GetDateTimeOffset();
+                }
+            }
+            catch { /* ignore parsing errors */ }
+        }
+
+        return new MessageWithTime
+        {
+            Text = result.ChunkText,
+            Time = time,
+            Similarity = result.Similarity
+        };
+    }
+
+    private class MessageWithTime
+    {
+        public string Text { get; set; } = string.Empty;
+        public DateTimeOffset Time { get; set; }
+        public double Similarity { get; set; }
     }
 
     private async Task<List<string>> ExtractTopicsAsync(List<SearchResult> messages, CancellationToken ct)
@@ -169,11 +205,16 @@ public class SmartSummaryService
         }
     }
 
-    private async Task<string> GenerateFinalSummaryAsync(
-        Dictionary<string, List<string>> topicMessages,
+    /// <summary>
+    /// Two-stage generation: first extract facts accurately (low temp), then add humor (high temp)
+    /// </summary>
+    private async Task<string> GenerateTwoStageSummaryAsync(
+        Dictionary<string, List<MessageWithTime>> topicMessages,
         ChatStats stats,
+        List<MessageRecord> allMessages,
         CancellationToken ct)
     {
+        // Build context with timestamps
         var contextBuilder = new StringBuilder();
         contextBuilder.AppendLine("СТАТИСТИКА:");
         contextBuilder.AppendLine($"- Всего сообщений: {stats.TotalMessages}");
@@ -182,43 +223,104 @@ public class SmartSummaryService
         contextBuilder.AppendLine($"- С медиа: {stats.MessagesWithMedia}");
         contextBuilder.AppendLine();
 
-        contextBuilder.AppendLine("ТОПИКИ И РЕЛЕВАНТНЫЕ СООБЩЕНИЯ:");
+        // Add top active users
+        var topUsers = allMessages
+            .GroupBy(m => string.IsNullOrWhiteSpace(m.DisplayName) ? m.Username ?? m.FromUserId.ToString() : m.DisplayName)
+            .OrderByDescending(g => g.Count())
+            .Take(5)
+            .Select(g => $"{g.Key}: {g.Count()} сообщений")
+            .ToList();
+
+        if (topUsers.Count > 0)
+        {
+            contextBuilder.AppendLine("САМЫЕ АКТИВНЫЕ:");
+            foreach (var user in topUsers)
+                contextBuilder.AppendLine($"• {user}");
+            contextBuilder.AppendLine();
+        }
+
+        contextBuilder.AppendLine("ТОПИКИ И СООБЩЕНИЯ (хронологически):");
         foreach (var (topic, messages) in topicMessages)
         {
             if (messages.Count == 0) continue;
 
             contextBuilder.AppendLine($"\n### {topic}");
-            foreach (var msg in messages.Take(10))
+            foreach (var msg in messages.Take(20)) // Increased from 10 to 20
             {
-                contextBuilder.AppendLine(msg);
+                var timeStr = msg.Time != DateTimeOffset.MinValue
+                    ? $"[{msg.Time.ToLocalTime():HH:mm}] "
+                    : "";
+                contextBuilder.AppendLine($"{timeStr}{msg.Text}");
             }
         }
 
-        var settings = await _promptSettings.GetSettingsAsync("summary");
+        // STAGE 1: Extract facts with low temperature
+        var factsPrompt = """
+            Ты — точный аналитик чата. Извлеки ФАКТЫ из переписки.
 
-        // Add context about topic grouping
-        var enhancedPrompt = settings.SystemPrompt + "\n\nВАЖНО: Тебе даны сообщения, уже сгруппированные по темам через семантический анализ. Используй эту структуру для более глубокого и точного саммари.";
+            ПРАВИЛА:
+            - Перечисли ТОЛЬКО то, что реально обсуждалось
+            - Укажи КТО именно что сказал/сделал (имена!)
+            - Не выдумывай, не додумывай
+            - Кратко, по пунктам
+            - Отметь яркие цитаты (дословно)
 
-        var response = await _llmRouter.CompleteWithFallbackAsync(
+            Формат:
+            СОБЫТИЯ:
+            • [событие 1]
+            • [событие 2]
+
+            ОБСУЖДЕНИЯ:
+            • [тема]: кто что говорил
+
+            ЦИТАТЫ:
+            • "[цитата]" — Имя
+            """;
+
+        var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
-                SystemPrompt = enhancedPrompt,
+                SystemPrompt = factsPrompt,
                 UserPrompt = contextBuilder.ToString(),
-                Temperature = 0.7
+                Temperature = 0.3 // Low temp for accuracy
+            },
+            preferredTag: null, // Use default (cheaper) provider for facts
+            ct: ct);
+
+        _logger.LogDebug("[SmartSummary] Stage 1 (facts) complete, {Length} chars", factsResponse.Content.Length);
+
+        // STAGE 2: Add humor and format with higher temperature
+        var settings = await _promptSettings.GetSettingsAsync("summary");
+
+        var humorPrompt = $"""
+            {settings.SystemPrompt}
+
+            ВАЖНО: Ниже — точные факты из чата. Твоя задача:
+            1. НЕ менять факты, имена, события
+            2. Добавить юмор и сарказм к подаче
+            3. Структурировать по формату
+            4. Подколоть участников (но факты оставить верными!)
+            """;
+
+        var finalResponse = await _llmRouter.CompleteWithFallbackAsync(
+            new LlmRequest
+            {
+                SystemPrompt = humorPrompt,
+                UserPrompt = $"ФАКТЫ ИЗ ЧАТА:\n{factsResponse.Content}\n\nСТАТИСТИКА:\n- Сообщений: {stats.TotalMessages}\n- Участников: {stats.UniqueUsers}",
+                Temperature = 0.6 // Slightly lower than before (was 0.7)
             },
             preferredTag: settings.LlmTag,
             ct: ct);
 
-        _logger.LogDebug("[SmartSummary] Used provider: {Provider}, model: {Model}", response.Provider, response.Model);
+        _logger.LogDebug("[SmartSummary] Stage 2 (humor) complete. Provider: {Provider}", finalResponse.Provider);
 
-        return response.Content;
+        return finalResponse.Content;
     }
 
     private async Task<string> GenerateTraditionalSummaryAsync(List<MessageRecord> messages, CancellationToken ct)
     {
-        var sample = messages.Count > 300
-            ? messages.Skip(Math.Max(0, messages.Count - 300)).ToList()
-            : messages;
+        // Uniform sampling across the entire period instead of just taking last N
+        var sample = SampleMessagesUniformly(messages, maxMessages: 400);
 
         var convo = new StringBuilder();
         foreach (var m in sample)
@@ -232,27 +334,89 @@ public class SmartSummaryService
 
         var stats = BuildStats(messages);
 
+        // Add top active users
+        var topUsers = messages
+            .GroupBy(m => string.IsNullOrWhiteSpace(m.DisplayName) ? m.Username ?? m.FromUserId.ToString() : m.DisplayName)
+            .OrderByDescending(g => g.Count())
+            .Take(5)
+            .Select(g => $"{g.Key}: {g.Count()}")
+            .ToList();
+
+        // Two-stage approach for traditional method too
+        var factsPrompt = """
+            Ты — точный аналитик чата. Извлеки ФАКТЫ из переписки.
+
+            ПРАВИЛА:
+            - Перечисли ТОЛЬКО то, что реально обсуждалось
+            - Укажи КТО именно что сказал/сделал (имена!)
+            - Не выдумывай, не додумывай
+            - Кратко, по пунктам
+            - Отметь яркие цитаты (дословно)
+
+            Формат:
+            СОБЫТИЯ: • [список]
+            ОБСУЖДЕНИЯ: • [тема]: кто что говорил
+            ЦИТАТЫ: • "[цитата]" — Имя
+            """;
+
+        var contextPrompt = new StringBuilder();
+        contextPrompt.AppendLine($"Статистика: {stats.TotalMessages} сообщений, {stats.UniqueUsers} участников");
+        contextPrompt.AppendLine($"Активные: {string.Join(", ", topUsers)}");
+        contextPrompt.AppendLine();
+        contextPrompt.AppendLine("Переписка:");
+        contextPrompt.AppendLine(convo.ToString());
+
+        var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
+            new LlmRequest
+            {
+                SystemPrompt = factsPrompt,
+                UserPrompt = contextPrompt.ToString(),
+                Temperature = 0.3
+            },
+            preferredTag: null,
+            ct: ct);
+
+        // Stage 2: Add humor
         var settings = await _promptSettings.GetSettingsAsync("summary");
 
-        var userPrompt = new StringBuilder();
-        userPrompt.AppendLine("Статистика:");
-        userPrompt.AppendLine($"- Сообщений: {stats.TotalMessages}");
-        userPrompt.AppendLine($"- Участников: {stats.UniqueUsers}");
-        userPrompt.AppendLine();
-        userPrompt.AppendLine("Переписка:");
-        userPrompt.AppendLine(convo.ToString());
+        var humorPrompt = $"""
+            {settings.SystemPrompt}
+
+            ВАЖНО: Ниже — точные факты из чата. НЕ меняй факты и имена, только добавь юмор!
+            """;
 
         var response = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
-                SystemPrompt = settings.SystemPrompt,
-                UserPrompt = userPrompt.ToString(),
-                Temperature = 0.7
+                SystemPrompt = humorPrompt,
+                UserPrompt = $"ФАКТЫ:\n{factsResponse.Content}\n\nСтатистика: {stats.TotalMessages} сообщений, {stats.UniqueUsers} участников",
+                Temperature = 0.6
             },
             preferredTag: settings.LlmTag,
             ct: ct);
 
         return response.Content;
+    }
+
+    /// <summary>
+    /// Sample messages uniformly across time period to capture beginning, middle and end
+    /// </summary>
+    private static List<MessageRecord> SampleMessagesUniformly(List<MessageRecord> messages, int maxMessages)
+    {
+        if (messages.Count <= maxMessages)
+            return messages;
+
+        var result = new List<MessageRecord>();
+        var step = (double)messages.Count / maxMessages;
+
+        for (var i = 0; i < maxMessages; i++)
+        {
+            var index = (int)(i * step);
+            if (index < messages.Count)
+                result.Add(messages[index]);
+        }
+
+        return result;
     }
 
     private static ChatStats BuildStats(List<MessageRecord> messages)

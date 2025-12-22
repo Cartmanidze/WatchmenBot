@@ -341,6 +341,7 @@ public class TelegramPollingService : BackgroundService
                 new() { Command = "q", Description = "Серьёзный вопрос (AI)" },
                 new() { Command = "summary", Description = "Саммари за N часов" },
                 new() { Command = "recall", Description = "Сообщения пользователя за неделю" },
+                new() { Command = "truth", Description = "Фактчек последних сообщений" },
             };
 
             // Commands for private chat (admin + general questions)

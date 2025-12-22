@@ -157,6 +157,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SearchHandler>();
         services.AddScoped<AskHandler>();
         services.AddScoped<RecallHandler>();
+        services.AddScoped<FactCheckHandler>();
 
         // Controllers with Telegram.Bot JSON support (snake_case)
         services.AddControllers()

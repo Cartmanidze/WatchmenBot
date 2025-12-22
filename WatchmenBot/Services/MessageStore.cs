@@ -99,6 +99,47 @@ public class MessageStore
         }
     }
 
+    /// <summary>
+    /// Get latest N messages from a chat (excluding bot messages)
+    /// </summary>
+    public async Task<List<MessageRecord>> GetLatestMessagesAsync(long chatId, int limit = 20)
+    {
+        const string sql = """
+            SELECT
+                id as Id,
+                chat_id as ChatId,
+                thread_id as ThreadId,
+                from_user_id as FromUserId,
+                username as Username,
+                display_name as DisplayName,
+                text as Text,
+                date_utc as DateUtc,
+                has_links as HasLinks,
+                has_media as HasMedia,
+                reply_to_message_id as ReplyToMessageId,
+                message_type as MessageType
+            FROM messages
+            WHERE chat_id = @ChatId
+              AND text IS NOT NULL
+              AND text != ''
+              AND (username IS NULL OR NOT (username ILIKE '%bot' OR username ILIKE '%_bot'))
+            ORDER BY date_utc DESC
+            LIMIT @Limit;
+            """;
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var results = await connection.QueryAsync<MessageRecord>(sql, new { ChatId = chatId, Limit = limit });
+            return results.Reverse().ToList(); // Return in chronological order
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get latest messages for chat {ChatId}", chatId);
+            throw;
+        }
+    }
+
     public async Task<List<long>> GetDistinctChatIdsAsync()
     {
         const string sql = "SELECT DISTINCT chat_id FROM messages;";
