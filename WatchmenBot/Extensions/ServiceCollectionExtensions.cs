@@ -98,11 +98,16 @@ public static class ServiceCollectionExtensions
 
         // Embedding Client (OpenAI text-embedding-3-small)
         services.AddHttpClient<EmbeddingClient>()
-            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 AutomaticDecompression = System.Net.DecompressionMethods.GZip |
                                        System.Net.DecompressionMethods.Deflate,
-                SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+                PooledConnectionLifetime = TimeSpan.FromMinutes(2), // Prevent stale connections
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1)
+            })
+            .ConfigureHttpClient(client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(60); // Explicit timeout
             })
             .AddTypedClient<EmbeddingClient>((httpClient, serviceProvider) =>
             {
