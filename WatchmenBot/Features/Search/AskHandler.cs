@@ -216,6 +216,13 @@ public class AskHandler
     {
         var settings = await _promptSettings.GetSettingsAsync(command);
 
+        // For /ask with context - use two-stage generation
+        if (command == "ask" && !string.IsNullOrWhiteSpace(context))
+        {
+            return await GenerateTwoStageAnswerAsync(question, context, askerName, settings, ct);
+        }
+
+        // For /q or /ask without context - single stage
         var userPrompt = string.IsNullOrWhiteSpace(context)
             ? $"""
                 Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
@@ -233,13 +240,12 @@ public class AskHandler
                 Вопрос: {question}
                 """;
 
-        // Выбираем провайдера по тегу или дефолтный
         var response = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = settings.SystemPrompt,
                 UserPrompt = userPrompt,
-                Temperature = 0.8
+                Temperature = 0.5
             },
             preferredTag: settings.LlmTag,
             ct: ct);
@@ -248,6 +254,70 @@ public class AskHandler
             command.ToUpper(), response.Provider, response.Model, settings.LlmTag ?? "default");
 
         return response.Content;
+    }
+
+    /// <summary>
+    /// Two-stage generation for /ask: extract facts first, then add humor
+    /// </summary>
+    private async Task<string> GenerateTwoStageAnswerAsync(
+        string question, string context, string askerName, PromptSettings settings, CancellationToken ct)
+    {
+        // STAGE 1: Extract facts with low temperature
+        var factsPrompt = $"""
+            Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
+
+            Контекст из чата:
+            {context}
+
+            Спрашивает: {askerName}
+            Вопрос: {question}
+
+            ЗАДАЧА: Кратко ответь на вопрос на основе контекста.
+            - Кто связан с этой темой? (имена)
+            - Что конкретно они говорили/делали?
+            - Есть ли смешные или глупые цитаты?
+
+            Формат: просто факты, 2-4 предложения.
+            """;
+
+        var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
+            new LlmRequest
+            {
+                SystemPrompt = "Ты — аналитик чата. Извлекай факты точно и кратко.",
+                UserPrompt = factsPrompt,
+                Temperature = 0.3 // Low for accuracy
+            },
+            preferredTag: settings.LlmTag, // Use same provider (Qwen) for both stages
+            ct: ct);
+
+        _logger.LogInformation("[ASK] Stage 1 (facts): {Length} chars", factsResponse.Content.Length);
+
+        // STAGE 2: Add humor with higher temperature
+        var humorPrompt = $"""
+            Спрашивает: {askerName}
+            Вопрос: {question}
+
+            Факты из чата:
+            {factsResponse.Content}
+
+            Теперь ответь дерзко и с подъёбкой на основе этих фактов.
+            Подколи того, кто связан с темой (не спрашивающего, если вопрос не про него).
+            """;
+
+        var finalResponse = await _llmRouter.CompleteWithFallbackAsync(
+            new LlmRequest
+            {
+                SystemPrompt = settings.SystemPrompt,
+                UserPrompt = humorPrompt,
+                Temperature = 0.6 // Higher for creativity
+            },
+            preferredTag: settings.LlmTag,
+            ct: ct);
+
+        _logger.LogInformation("[ASK] Stage 2 (humor): provider={Provider}, model={Model}",
+            finalResponse.Provider, finalResponse.Model);
+
+        return finalResponse.Content;
     }
 
     private static string FormatResponse(string question, string answer, List<SearchResult> topSources)
