@@ -36,8 +36,8 @@ public class FactCheckHandler
     {
         var chatId = message.Chat.Id;
 
-        // Parse optional count from command (default 15)
-        var count = ParseCount(message.Text, defaultCount: 15, maxCount: 30);
+        // Parse optional count from command (default 5)
+        var count = ParseCount(message.Text, defaultCount: 5, maxCount: 15);
 
         try
         {
