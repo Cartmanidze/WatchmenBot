@@ -7,6 +7,13 @@ namespace WatchmenBot.Services;
 
 public class SmartSummaryService
 {
+    // Token budget for context (roughly 4 chars per token)
+    private const int ContextTokenBudget = 6000;
+    private const int CharsPerToken = 4;
+    private const int ContextCharBudget = ContextTokenBudget * CharsPerToken; // ~24000 chars
+    private const int MaxMessagesPerTopic = 12; // Reduced from 20
+    private const int MaxTotalTopicMessages = 50; // Hard limit across all topics
+
     private readonly EmbeddingService _embeddingService;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
@@ -99,8 +106,9 @@ public class SmartSummaryService
         // Send debug report to admin
         await _debugService.SendDebugReportAsync(debugReport, ct);
 
+        // Sanitize HTML for Telegram before returning
         var header = $"📊 <b>Отчёт {periodDescription}</b>\n\n";
-        return header + summaryContent;
+        return TelegramHtmlSanitizer.Sanitize(header + summaryContent);
     }
 
     private static DateTimeOffset? ParseTimestamp(string? metadataJson)
@@ -142,19 +150,33 @@ public class SmartSummaryService
         _logger.LogInformation("[SmartSummary] Extracted {Count} topics: {Topics}",
             topics.Count, string.Join(", ", topics));
 
-        // Step 2: For each topic, find relevant messages (increased limit to 25)
+        // Step 2: For each topic, find relevant messages with budget awareness
         var topicMessages = new Dictionary<string, List<MessageWithTime>>();
+        var seenTexts = new HashSet<string>(); // Global deduplication across topics
 
         foreach (var topic in topics)
         {
             var relevantMessages = await _embeddingService.SearchSimilarInRangeAsync(
-                chatId, topic, startUtc, endUtc, limit: 25, ct);
+                chatId, topic, startUtc, endUtc, limit: 20, ct);
 
-            topicMessages[topic] = relevantMessages
-                .Where(m => m.Similarity > 0.25) // Slightly lower threshold for more context
+            // Filter, deduplicate, and sort by similarity (most relevant first)
+            var filtered = relevantMessages
+                .Where(m => m.Similarity > 0.3) // Higher threshold for better quality
+                .Where(m => !string.IsNullOrWhiteSpace(m.ChunkText))
+                .Where(m =>
+                {
+                    var key = m.ChunkText.Trim().ToLowerInvariant();
+                    if (seenTexts.Contains(key)) return false;
+                    seenTexts.Add(key);
+                    return true;
+                })
+                .OrderByDescending(m => m.Similarity) // Prioritize by relevance
+                .Take(MaxMessagesPerTopic) // Limit per topic
                 .Select(ParseMessageWithTime)
-                .OrderBy(m => m.Time) // Sort chronologically
+                .OrderBy(m => m.Time) // Then sort chronologically for context
                 .ToList();
+
+            topicMessages[topic] = filtered;
         }
 
         // Step 3: Build stats
@@ -261,7 +283,7 @@ public class SmartSummaryService
     {
         debugReport.StageCount = 2;
 
-        // Build context with timestamps
+        // Build context with token budget
         var contextBuilder = new StringBuilder();
         contextBuilder.AppendLine("СТАТИСТИКА:");
         contextBuilder.AppendLine($"- Всего сообщений: {stats.TotalMessages}");
@@ -286,47 +308,80 @@ public class SmartSummaryService
             contextBuilder.AppendLine();
         }
 
-        contextBuilder.AppendLine("ТОПИКИ И СООБЩЕНИЯ (хронологически):");
+        // Build topic context with budget awareness
+        contextBuilder.AppendLine("ТОПИКИ И СООБЩЕНИЯ:");
+        var usedChars = contextBuilder.Length;
+        var totalMessagesIncluded = 0;
+        var messagesExcluded = 0;
+
         foreach (var (topic, messages) in topicMessages)
         {
             if (messages.Count == 0) continue;
+            if (totalMessagesIncluded >= MaxTotalTopicMessages) break;
 
-            contextBuilder.AppendLine($"\n### {topic}");
-            foreach (var msg in messages.Take(20)) // Increased from 10 to 20
+            var topicHeader = $"\n### {topic}\n";
+            if (usedChars + topicHeader.Length > ContextCharBudget) break;
+
+            contextBuilder.Append(topicHeader);
+            usedChars += topicHeader.Length;
+
+            foreach (var msg in messages)
             {
+                if (totalMessagesIncluded >= MaxTotalTopicMessages)
+                {
+                    messagesExcluded++;
+                    continue;
+                }
+
                 var timeStr = msg.Time != DateTimeOffset.MinValue
                     ? $"[{msg.Time.ToLocalTime():HH:mm}] "
                     : "";
-                contextBuilder.AppendLine($"{timeStr}{msg.Text}");
+                var line = $"{timeStr}{msg.Text}\n";
+
+                if (usedChars + line.Length > ContextCharBudget)
+                {
+                    messagesExcluded++;
+                    continue;
+                }
+
+                contextBuilder.Append(line);
+                usedChars += line.Length;
+                totalMessagesIncluded++;
             }
         }
 
         var context = contextBuilder.ToString();
         debugReport.ContextSent = context;
-        debugReport.ContextMessagesCount = topicMessages.Values.Sum(m => m.Count);
-        debugReport.ContextTokensEstimate = context.Length / 4;
+        debugReport.ContextMessagesCount = totalMessagesIncluded;
+        debugReport.ContextTokensEstimate = usedChars / CharsPerToken;
 
-        // STAGE 1: Extract facts with low temperature
+        _logger.LogInformation("[SmartSummary] Context built: {Included} messages, {Chars}/{Budget} chars, {Excluded} excluded by budget",
+            totalMessagesIncluded, usedChars, ContextCharBudget, messagesExcluded);
+
+        // STAGE 1: Extract STRUCTURED facts with low temperature (prevents hallucinations)
         var factsSystemPrompt = """
-            Ты — точный аналитик чата. Извлеки ФАКТЫ из переписки.
+            Ты — точный аналитик чата. Извлеки ФАКТЫ СТРОГО из переписки.
 
-            ПРАВИЛА:
-            - Перечисли ТОЛЬКО то, что реально обсуждалось
-            - Укажи КТО именно что сказал/сделал (имена!)
-            - Не выдумывай, не додумывай
-            - Кратко, по пунктам
-            - Отметь яркие цитаты (дословно)
+            ВАЖНО: Отвечай ТОЛЬКО JSON, без markdown, без пояснений.
+            Если факт не подтверждён переписки — НЕ добавляй его.
 
-            Формат:
-            СОБЫТИЯ:
-            • [событие 1]
-            • [событие 2]
+            Формат ответа:
+            {
+              "events": [
+                {"what": "описание события", "who": ["участники"], "time": "когда (если известно)"}
+              ],
+              "discussions": [
+                {"topic": "тема", "participants": ["имена"], "summary": "краткое содержание"}
+              ],
+              "quotes": [
+                {"text": "прямая цитата", "author": "имя", "context": "о чём"}
+              ],
+              "heroes": [
+                {"name": "имя", "why": "чем отличился (смешно/глупо/круто)"}
+              ]
+            }
 
-            ОБСУЖДЕНИЯ:
-            • [тема]: кто что говорил
-
-            ЦИТАТЫ:
-            • "[цитата]" — Имя
+            Максимум 5 событий, 5 обсуждений, 5 цитат, 3 героя.
             """;
 
         var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
@@ -335,7 +390,7 @@ public class SmartSummaryService
             {
                 SystemPrompt = factsSystemPrompt,
                 UserPrompt = context,
-                Temperature = 0.3 // Low temp for accuracy
+                Temperature = 0.1 // Very low for accuracy
             },
             preferredTag: null, // Use default (cheaper) provider for facts
             ct: ct);
@@ -344,8 +399,8 @@ public class SmartSummaryService
         debugReport.Stages.Add(new DebugStage
         {
             StageNumber = 1,
-            Name = "Facts",
-            Temperature = 0.3,
+            Name = "Facts (JSON)",
+            Temperature = 0.1,
             SystemPrompt = factsSystemPrompt,
             UserPrompt = context,
             Response = factsResponse.Content,
@@ -353,22 +408,33 @@ public class SmartSummaryService
             TimeMs = stage1Sw.ElapsedMilliseconds
         });
 
-        _logger.LogDebug("[SmartSummary] Stage 1 (facts) complete, {Length} chars", factsResponse.Content.Length);
+        _logger.LogDebug("[SmartSummary] Stage 1 (structured facts) complete, {Length} chars", factsResponse.Content.Length);
 
-        // STAGE 2: Add humor and format with higher temperature
+        // STAGE 2: Add humor based ONLY on structured facts
         var settings = await _promptSettings.GetSettingsAsync("summary");
 
         var humorSystemPrompt = $"""
             {settings.SystemPrompt}
 
-            ВАЖНО: Ниже — точные факты из чата. Твоя задача:
-            1. НЕ менять факты, имена, события
-            2. Добавить юмор и сарказм к подаче
-            3. Структурировать по формату
-            4. Подколоть участников (но факты оставить верными!)
+            КРИТИЧЕСКИ ВАЖНО:
+            1. Используй ТОЛЬКО факты из JSON ниже
+            2. НЕ придумывай новых событий, имён, цитат
+            3. Цитаты бери ДОСЛОВНО из поля "quotes"
+            4. Героев дня бери из поля "heroes"
+            5. Добавляй юмор и мат к СУЩЕСТВУЮЩИМ фактам
             """;
 
-        var humorUserPrompt = $"ФАКТЫ ИЗ ЧАТА:\n{factsResponse.Content}\n\nСТАТИСТИКА:\n- Сообщений: {stats.TotalMessages}\n- Участников: {stats.UniqueUsers}";
+        var humorUserPrompt = $"""
+            СТРУКТУРИРОВАННЫЕ ФАКТЫ (JSON):
+            {factsResponse.Content}
+
+            СТАТИСТИКА:
+            - Сообщений: {stats.TotalMessages}
+            - Участников: {stats.UniqueUsers}
+
+            Сгенерируй саммари по формату из system prompt.
+            Используй ТОЛЬКО данные из JSON выше!
+            """;
 
         var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
         var finalResponse = await _llmRouter.CompleteWithFallbackAsync(
@@ -416,8 +482,8 @@ public class SmartSummaryService
         debugReport.IsMultiStage = true;
         debugReport.StageCount = 2;
 
-        // Uniform sampling across the entire period instead of just taking last N
-        var sample = SampleMessagesUniformly(messages, maxMessages: 400);
+        // Uniform sampling with reduced sample size for better focus
+        var sample = SampleMessagesUniformly(messages, maxMessages: 200);
 
         var convo = new StringBuilder();
         foreach (var m in sample)
@@ -439,21 +505,30 @@ public class SmartSummaryService
             .Select(g => $"{g.Key}: {g.Count()}")
             .ToList();
 
-        // Two-stage approach for traditional method too
+        // Two-stage approach with STRUCTURED JSON for facts (prevents hallucinations)
         var factsSystemPrompt = """
-            Ты — точный аналитик чата. Извлеки ФАКТЫ из переписки.
+            Ты — точный аналитик чата. Извлеки ФАКТЫ СТРОГО из переписки.
 
-            ПРАВИЛА:
-            - Перечисли ТОЛЬКО то, что реально обсуждалось
-            - Укажи КТО именно что сказал/сделал (имена!)
-            - Не выдумывай, не додумывай
-            - Кратко, по пунктам
-            - Отметь яркие цитаты (дословно)
+            ВАЖНО: Отвечай ТОЛЬКО JSON, без markdown, без пояснений.
+            Если факт не подтверждён перепиской — НЕ добавляй его.
 
-            Формат:
-            СОБЫТИЯ: • [список]
-            ОБСУЖДЕНИЯ: • [тема]: кто что говорил
-            ЦИТАТЫ: • "[цитата]" — Имя
+            Формат ответа:
+            {
+              "events": [
+                {"what": "описание события", "who": ["участники"]}
+              ],
+              "discussions": [
+                {"topic": "тема", "participants": ["имена"], "summary": "краткое содержание"}
+              ],
+              "quotes": [
+                {"text": "прямая цитата", "author": "имя"}
+              ],
+              "heroes": [
+                {"name": "имя", "why": "чем отличился"}
+              ]
+            }
+
+            Максимум 5 событий, 5 обсуждений, 5 цитат, 3 героя.
             """;
 
         var contextPrompt = new StringBuilder();
@@ -474,7 +549,7 @@ public class SmartSummaryService
             {
                 SystemPrompt = factsSystemPrompt,
                 UserPrompt = context,
-                Temperature = 0.3
+                Temperature = 0.1  // Very low for accuracy
             },
             preferredTag: null,
             ct: ct);
@@ -483,8 +558,8 @@ public class SmartSummaryService
         debugReport.Stages.Add(new DebugStage
         {
             StageNumber = 1,
-            Name = "Facts",
-            Temperature = 0.3,
+            Name = "Facts (JSON)",
+            Temperature = 0.1,
             SystemPrompt = factsSystemPrompt,
             UserPrompt = context,
             Response = factsResponse.Content,
@@ -492,16 +567,28 @@ public class SmartSummaryService
             TimeMs = stage1Sw.ElapsedMilliseconds
         });
 
-        // Stage 2: Add humor
+        // Stage 2: Add humor based ONLY on structured JSON facts
         var settings = await _promptSettings.GetSettingsAsync("summary");
 
         var humorSystemPrompt = $"""
             {settings.SystemPrompt}
 
-            ВАЖНО: Ниже — точные факты из чата. НЕ меняй факты и имена, только добавь юмор!
+            КРИТИЧЕСКИ ВАЖНО:
+            1. Используй ТОЛЬКО факты из JSON ниже
+            2. НЕ придумывай новых событий, имён, цитат
+            3. Цитаты бери ДОСЛОВНО из поля "quotes"
+            4. Героев дня бери из поля "heroes"
+            5. Добавляй юмор к СУЩЕСТВУЮЩИМ фактам
             """;
 
-        var humorUserPrompt = $"ФАКТЫ:\n{factsResponse.Content}\n\nСтатистика: {stats.TotalMessages} сообщений, {stats.UniqueUsers} участников";
+        var humorUserPrompt = $"""
+            СТРУКТУРИРОВАННЫЕ ФАКТЫ (JSON):
+            {factsResponse.Content}
+
+            Статистика: {stats.TotalMessages} сообщений, {stats.UniqueUsers} участников
+
+            Используй ТОЛЬКО данные из JSON!
+            """;
 
         var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
         var response = await _llmRouter.CompleteWithFallbackAsync(

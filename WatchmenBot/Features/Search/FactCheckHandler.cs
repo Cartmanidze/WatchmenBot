@@ -122,27 +122,17 @@ public class FactCheckHandler
 
             _logger.LogDebug("[TRUTH] Used provider: {Provider}", response.Provider);
 
+            // Sanitize HTML for Telegram
+            var sanitizedResponse = TelegramHtmlSanitizer.Sanitize(response.Content);
+
             // Send response
-            try
-            {
-                await _bot.SendMessage(
-                    chatId: chatId,
-                    text: response.Content,
-                    parseMode: ParseMode.Html,
-                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
-                    cancellationToken: ct);
-            }
-            catch (Telegram.Bot.Exceptions.ApiRequestException)
-            {
-                // Fallback to plain text
-                var plainText = System.Text.RegularExpressions.Regex.Replace(response.Content, "<[^>]+>", "");
-                await _bot.SendMessage(
-                    chatId: chatId,
-                    text: plainText,
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
-                    cancellationToken: ct);
-            }
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: sanitizedResponse,
+                parseMode: ParseMode.Html,
+                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                cancellationToken: ct);
 
             _logger.LogInformation("[TRUTH] Completed fact-check for {Count} messages", messages.Count);
 

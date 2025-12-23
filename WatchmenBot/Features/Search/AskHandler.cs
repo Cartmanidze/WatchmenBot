@@ -246,28 +246,18 @@ public class AskHandler
             var answer = await GenerateAnswerWithDebugAsync(command, question, context, askerName, debugReport, ct);
 
             // Format response with confidence warning if needed
-            var response = (confidenceWarning ?? "") + FormatResponse(question, answer, results.Take(3).ToList());
+            var rawResponse = (confidenceWarning ?? "") + FormatResponse(question, answer, results.Take(3).ToList());
 
-            try
-            {
-                await _bot.SendMessage(
-                    chatId: chatId,
-                    text: response,
-                    parseMode: ParseMode.Html,
-                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
-                    cancellationToken: ct);
-            }
-            catch (Telegram.Bot.Exceptions.ApiRequestException)
-            {
-                // Fallback to plain text
-                var plainText = System.Text.RegularExpressions.Regex.Replace(response, "<[^>]+>", "");
-                await _bot.SendMessage(
-                    chatId: chatId,
-                    text: plainText,
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
-                    cancellationToken: ct);
-            }
+            // Sanitize HTML for Telegram
+            var response = TelegramHtmlSanitizer.Sanitize(rawResponse);
+
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: response,
+                parseMode: ParseMode.Html,
+                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
+                replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                cancellationToken: ct);
 
             _logger.LogInformation("[{Command}] Answered question: {Question} (confidence: {Conf})",
                 command.ToUpper(), question, searchResponse.Confidence);
@@ -321,17 +311,27 @@ public class AskHandler
         return text[(spaceIndex + 1)..].Trim();
     }
 
+    // Token budget for context (roughly 4 chars per token)
+    private const int ContextTokenBudget = 4000;
+    private const int CharsPerToken = 4;
+    private const int ContextCharBudget = ContextTokenBudget * CharsPerToken; // ~16000 chars
+
     private (string context, Dictionary<long, (bool included, string reason)> tracker) BuildContextWithTracking(List<SearchResult> results)
     {
-        _logger.LogDebug("[BuildContext] Processing {Count} search results", results.Count);
+        _logger.LogDebug("[BuildContext] Processing {Count} search results with budget {Budget} tokens",
+            results.Count, ContextTokenBudget);
 
         var tracker = new Dictionary<long, (bool included, string reason)>();
         var seenTexts = new HashSet<string>();
+        var usedChars = 0;
 
-        // Parse metadata to get timestamps and track each result
-        var messagesWithTime = new List<(long MessageId, string Text, DateTimeOffset Time, double Similarity)>();
+        // Sort by similarity DESC - prioritize most relevant messages
+        var sortedResults = results.OrderByDescending(r => r.Similarity).ToList();
 
-        foreach (var r in results)
+        // First pass: filter and deduplicate, respecting budget
+        var validMessages = new List<(long MessageId, string Text, DateTimeOffset Time, double Similarity)>();
+
+        foreach (var r in sortedResults)
         {
             // Check for empty text
             if (string.IsNullOrWhiteSpace(r.ChunkText))
@@ -349,7 +349,19 @@ public class AskHandler
                 _logger.LogDebug("[BuildContext] msg={Id} EXCLUDED: duplicate_text", r.MessageId);
                 continue;
             }
+
+            // Check token budget
+            var msgChars = r.ChunkText.Length + 30; // +30 for timestamp formatting
+            if (usedChars + msgChars > ContextCharBudget)
+            {
+                tracker[r.MessageId] = (false, "budget_exceeded");
+                _logger.LogDebug("[BuildContext] msg={Id} EXCLUDED: budget_exceeded (sim={Sim:F3})",
+                    r.MessageId, r.Similarity);
+                continue;
+            }
+
             seenTexts.Add(textKey);
+            usedChars += msgChars;
 
             // Parse timestamp
             DateTimeOffset time = DateTimeOffset.MinValue;
@@ -369,26 +381,26 @@ public class AskHandler
                 }
             }
 
-            // Include this result
             tracker[r.MessageId] = (true, "ok");
-            messagesWithTime.Add((r.MessageId, r.ChunkText, time, r.Similarity));
-            _logger.LogDebug("[BuildContext] msg={Id} INCLUDED sim={Sim:F3} time={Time} text={Text}",
-                r.MessageId, r.Similarity, time, TruncateText(r.ChunkText, 80));
+            validMessages.Add((r.MessageId, r.ChunkText, time, r.Similarity));
+            _logger.LogDebug("[BuildContext] msg={Id} INCLUDED sim={Sim:F3} chars={Chars}",
+                r.MessageId, r.Similarity, msgChars);
         }
 
-        // Sort chronologically
-        messagesWithTime = messagesWithTime.OrderBy(m => m.Time).ToList();
+        // Sort included messages chronologically for better context flow
+        validMessages = validMessages.OrderBy(m => m.Time).ToList();
 
-        _logger.LogInformation("[BuildContext] Built context: {Count}/{Total} messages included, time range: {From} - {To}",
-            messagesWithTime.Count, results.Count,
-            messagesWithTime.FirstOrDefault().Time,
-            messagesWithTime.LastOrDefault().Time);
+        _logger.LogInformation("[BuildContext] Built context: {Count}/{Total} messages, {Chars}/{Budget} chars, sim range: {MinSim:F3}-{MaxSim:F3}",
+            validMessages.Count, results.Count,
+            usedChars, ContextCharBudget,
+            validMessages.Count > 0 ? validMessages.Min(m => m.Similarity) : 0,
+            validMessages.Count > 0 ? validMessages.Max(m => m.Similarity) : 0);
 
         var sb = new StringBuilder();
         sb.AppendLine("Релевантные сообщения из чата (хронологически):");
         sb.AppendLine();
 
-        foreach (var msg in messagesWithTime)
+        foreach (var msg in validMessages)
         {
             var timeStr = msg.Time != DateTimeOffset.MinValue
                 ? $"[{msg.Time.ToLocalTime():dd.MM HH:mm}] "
@@ -470,23 +482,31 @@ public class AskHandler
         debugReport.StageCount = 2;
         var totalSw = System.Diagnostics.Stopwatch.StartNew();
 
-        // STAGE 1: Extract facts with low temperature
-        var factsSystemPrompt = "Ты — аналитик чата. Извлекай факты точно и кратко.";
-        var factsPrompt = $"""
-            Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
+        // STAGE 1: Extract STRUCTURED facts with low temperature (prevents hallucinations)
+        var factsSystemPrompt = """
+            Ты — аналитик чата. Извлекай факты СТРОГО из контекста.
 
+            ВАЖНО: Отвечай ТОЛЬКО JSON, без markdown, без пояснений.
+            Если факт не подтверждён контекстом — НЕ добавляй его.
+
+            Формат ответа:
+            {
+              "facts": [
+                {"who": "Имя", "said": "прямая цитата или пересказ", "context": "что обсуждали"}
+              ],
+              "answer": "краткий ответ на вопрос из фактов",
+              "roast_target": "кого подколоть (имя) или null",
+              "best_quote": "самая смешная/глупая цитата или null"
+            }
+            """;
+
+        var factsPrompt = $"""
             Контекст из чата:
             {context}
 
-            Спрашивает: {askerName}
-            Вопрос: {question}
+            Вопрос от {askerName}: {question}
 
-            ЗАДАЧА: Кратко ответь на вопрос на основе контекста.
-            - Кто связан с этой темой? (имена)
-            - Что конкретно они говорили/делали?
-            - Есть ли смешные или глупые цитаты?
-
-            Формат: просто факты, 2-4 предложения.
+            Извлеки факты ТОЛЬКО из контекста выше. Не додумывай.
             """;
 
         var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
@@ -495,7 +515,7 @@ public class AskHandler
             {
                 SystemPrompt = factsSystemPrompt,
                 UserPrompt = factsPrompt,
-                Temperature = 0.3 // Low for accuracy
+                Temperature = 0.1 // Very low for accuracy
             },
             preferredTag: settings.LlmTag,
             ct: ct);
@@ -504,8 +524,8 @@ public class AskHandler
         debugReport.Stages.Add(new DebugStage
         {
             StageNumber = 1,
-            Name = "Facts",
-            Temperature = 0.3,
+            Name = "Facts (JSON)",
+            Temperature = 0.1,
             SystemPrompt = factsSystemPrompt,
             UserPrompt = factsPrompt,
             Response = factsResponse.Content,
@@ -513,18 +533,25 @@ public class AskHandler
             TimeMs = stage1Sw.ElapsedMilliseconds
         });
 
-        _logger.LogInformation("[ASK] Stage 1 (facts): {Length} chars", factsResponse.Content.Length);
+        _logger.LogInformation("[ASK] Stage 1 (structured facts): {Length} chars", factsResponse.Content.Length);
 
-        // STAGE 2: Add humor with higher temperature
+        // STAGE 2: Add humor based ONLY on structured facts
         var humorPrompt = $"""
             Спрашивает: {askerName}
             Вопрос: {question}
 
-            Факты из чата:
+            Структурированные факты из чата (JSON):
             {factsResponse.Content}
 
-            Теперь ответь дерзко и с подъёбкой на основе этих фактов.
-            Подколи того, кто связан с темой (не спрашивающего, если вопрос не про него).
+            ПРАВИЛА:
+            1. Используй ТОЛЬКО факты из JSON выше
+            2. НЕ придумывай новых фактов или цитат
+            3. Если в JSON есть "roast_target" — подколи его
+            4. ОБЯЗАТЕЛЬНО включи цитату: если есть "best_quote" — вставь её дословно в <i>кавычках</i>
+            5. Ссылайся на конкретные высказывания из "facts" — кто что сказал
+            6. Ответ должен быть дерзким и с матом
+
+            Формат: 2-4 предложения с цитатой, HTML для <b> и <i>.
             """;
 
         var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
@@ -574,8 +601,36 @@ public class AskHandler
 
     private static string FormatResponse(string question, string answer, List<SearchResult> topSources)
     {
-        // Просто возвращаем ответ без формального оформления
-        return answer;
+        // If no sources or low quality, just return answer
+        if (topSources.Count == 0 || topSources[0].Similarity < 0.4)
+            return answer;
+
+        // Add source context footer for transparency
+        var sb = new StringBuilder(answer);
+
+        // Show top 2-3 sources with timestamps
+        var sourcesToShow = topSources
+            .Where(s => s.Similarity >= 0.35 && !string.IsNullOrWhiteSpace(s.ChunkText))
+            .Take(3)
+            .ToList();
+
+        if (sourcesToShow.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.Append("<i>📎 Контекст: ");
+
+            var sourceSnippets = sourcesToShow.Select(s =>
+            {
+                var text = TruncateText(s.ChunkText.Replace("\n", " ").Trim(), 60);
+                return $"\"{text}\"";
+            });
+
+            sb.Append(string.Join(" · ", sourceSnippets));
+            sb.Append("</i>");
+        }
+
+        return sb.ToString();
     }
 
     private static string TruncateText(string text, int maxLength)
