@@ -90,6 +90,8 @@ public class AdminCommandHandler
                 "status" => await HandleStatusAsync(message.Chat.Id, ct),
                 "report" => await HandleReportAsync(message.Chat.Id, ct),
                 "chats" => await HandleChatsAsync(message.Chat.Id, ct),
+                "debug" when parts.Length >= 3 => await HandleDebugAsync(message.Chat.Id, parts[2], ct),
+                "debug" => await HandleDebugStatusAsync(message.Chat.Id, ct),
                 "import" when parts.Length >= 3 => await HandleImportCommandAsync(message.Chat.Id, parts[2], ct),
                 "prompts" => await HandlePromptsListAsync(message.Chat.Id, ct),
                 "prompt" when parts.Length >= 3 => await HandlePromptShowAsync(message.Chat.Id, parts[2], ct),
@@ -351,6 +353,7 @@ public class AdminCommandHandler
     {
         var settings = await _settings.GetAllSettingsAsync();
         var tz = await _settings.GetTimezoneOffsetAsync();
+        var debugMode = await _settings.IsDebugModeEnabledAsync();
 
         var sb = new StringBuilder();
         sb.AppendLine("<b>⚙️ Текущие настройки</b>");
@@ -358,12 +361,76 @@ public class AdminCommandHandler
         sb.AppendLine($"🕐 <b>Время саммари:</b> {settings["summary_time"]}");
         sb.AppendLine($"📋 <b>Время отчёта:</b> {settings["report_time"]}");
         sb.AppendLine($"🌍 <b>Часовой пояс:</b> UTC+{tz:hh\\:mm}");
+        sb.AppendLine($"🔍 <b>Debug mode:</b> {(debugMode ? "✅ ON" : "❌ OFF")}");
         sb.AppendLine();
         sb.AppendLine($"👤 <b>Admin ID:</b> {_settings.GetAdminUserId()}");
 
         await _bot.SendMessage(
             chatId: chatId,
             text: sb.ToString(),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleDebugAsync(long chatId, string mode, CancellationToken ct)
+    {
+        var enable = mode.ToLowerInvariant() switch
+        {
+            "on" or "1" or "true" or "enable" => true,
+            "off" or "0" or "false" or "disable" => false,
+            _ => (bool?)null
+        };
+
+        if (enable == null)
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Используй: <code>/admin debug on</code> или <code>/admin debug off</code>",
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+            return true;
+        }
+
+        await _settings.SetDebugModeAsync(enable.Value);
+
+        var status = enable.Value ? "✅ включён" : "❌ выключен";
+        var info = enable.Value
+            ? "\n\n📊 Теперь при каждом /ask, /q, /summary, /truth ты будешь получать отчёт:\n• Результаты поиска (score, текст)\n• Контекст для LLM\n• Промпты (system + user)\n• Ответ LLM (токены, время)"
+            : "";
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"🔍 Debug mode {status}{info}",
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleDebugStatusAsync(long chatId, CancellationToken ct)
+    {
+        var enabled = await _settings.IsDebugModeEnabledAsync();
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"""
+                🔍 <b>Debug Mode</b>
+
+                Статус: {(enabled ? "✅ ON" : "❌ OFF")}
+
+                <b>Команды:</b>
+                <code>/admin debug on</code> — включить
+                <code>/admin debug off</code> — выключить
+
+                <b>Что показывает:</b>
+                • Query (запрос пользователя)
+                • TopK результаты поиска (score, message_ids, текст)
+                • Контекст для LLM (токены, сообщения)
+                • Промпты (system + user)
+                • Ответ LLM (провайдер, токены, время)
+                """,
             parseMode: ParseMode.Html,
             cancellationToken: ct);
 
@@ -1101,6 +1168,11 @@ public class AdminCommandHandler
             /admin status — текущие настройки
             /admin report — отчёт по логам прямо сейчас
             /admin chats — список известных чатов
+
+            <b>🔍 Debug:</b>
+            /admin debug — статус debug mode
+            /admin debug on — включить (отчёты в личку)
+            /admin debug off — выключить
 
             <b>Импорт истории:</b>
             /admin import &lt;chat_id&gt; — инструкция по импорту

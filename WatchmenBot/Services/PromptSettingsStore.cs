@@ -37,7 +37,7 @@ public class PromptSettingsStore
                 Формат: просто текст, HTML только для <b> и <i> если нужно.
                 """
         },
-        ["q"] = new PromptConfig
+        ["smart"] = new PromptConfig
         {
             Description = "Серьёзный вопрос с поиском (Perplexity)",
             LlmTag = "factcheck",

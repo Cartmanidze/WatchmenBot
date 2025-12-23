@@ -10,17 +10,20 @@ public class SmartSummaryService
     private readonly EmbeddingService _embeddingService;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
+    private readonly DebugService _debugService;
     private readonly ILogger<SmartSummaryService> _logger;
 
     public SmartSummaryService(
         EmbeddingService embeddingService,
         LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
+        DebugService debugService,
         ILogger<SmartSummaryService> logger)
     {
         _embeddingService = embeddingService;
         _llmRouter = llmRouter;
         _promptSettings = promptSettings;
+        _debugService = debugService;
         _logger = logger;
     }
 
@@ -36,6 +39,14 @@ public class SmartSummaryService
         CancellationToken ct = default)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Initialize debug report
+        var debugReport = new DebugReport
+        {
+            Command = "summary",
+            ChatId = chatId,
+            Query = periodDescription
+        };
 
         // Filter bot messages
         var humanMessages = messages
@@ -54,6 +65,15 @@ public class SmartSummaryService
         var diverseMessages = await _embeddingService.GetDiverseMessagesAsync(
             chatId, startUtc, endUtc, limit: 100, ct);
 
+        // Collect debug info for search results
+        debugReport.SearchResults = diverseMessages.Select(r => new DebugSearchResult
+        {
+            Similarity = r.Similarity,
+            MessageIds = new[] { r.MessageId },
+            Text = r.ChunkText,
+            Timestamp = ParseTimestamp(r.MetadataJson)
+        }).ToList();
+
         string summaryContent;
 
         if (diverseMessages.Count >= 10)
@@ -61,38 +81,62 @@ public class SmartSummaryService
             // Use smart approach: topics + semantic search
             _logger.LogInformation("[SmartSummary] Using embedding-based approach with {Count} diverse messages",
                 diverseMessages.Count);
-            summaryContent = await GenerateTopicBasedSummaryAsync(chatId, humanMessages, diverseMessages, startUtc, endUtc, ct);
+            summaryContent = await GenerateTopicBasedSummaryWithDebugAsync(chatId, humanMessages, diverseMessages, startUtc, endUtc, debugReport, ct);
         }
         else
         {
             // Fallback to traditional approach (not enough embeddings)
             _logger.LogInformation("[SmartSummary] Falling back to traditional approach (only {Count} embeddings)",
                 diverseMessages.Count);
-            summaryContent = await GenerateTraditionalSummaryAsync(humanMessages, ct);
+            summaryContent = await GenerateTraditionalSummaryWithDebugAsync(humanMessages, debugReport, ct);
         }
 
         sw.Stop();
+        debugReport.LlmTimeMs = sw.ElapsedMilliseconds;
+
         _logger.LogInformation("[SmartSummary] Generated summary in {Elapsed:F1}s", sw.Elapsed.TotalSeconds);
+
+        // Send debug report to admin
+        await _debugService.SendDebugReportAsync(debugReport, ct);
 
         var header = $"📊 <b>Отчёт {periodDescription}</b>\n\n";
         return header + summaryContent;
     }
 
-    private async Task<string> GenerateTopicBasedSummaryAsync(
+    private static DateTimeOffset? ParseTimestamp(string? metadataJson)
+    {
+        if (string.IsNullOrEmpty(metadataJson))
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(metadataJson);
+            if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
+                return dateEl.GetDateTimeOffset();
+        }
+        catch { }
+
+        return null;
+    }
+
+    private async Task<string> GenerateTopicBasedSummaryWithDebugAsync(
         long chatId,
         List<MessageRecord> allMessages,
         List<SearchResult> diverseMessages,
         DateTimeOffset startUtc,
         DateTimeOffset endUtc,
+        DebugReport debugReport,
         CancellationToken ct)
     {
+        debugReport.IsMultiStage = true;
+
         // Step 1: Extract topics from diverse messages
         var topics = await ExtractTopicsAsync(diverseMessages, ct);
 
         if (topics.Count == 0)
         {
             _logger.LogWarning("[SmartSummary] No topics extracted, using fallback");
-            return await GenerateTraditionalSummaryAsync(allMessages, ct);
+            return await GenerateTraditionalSummaryWithDebugAsync(allMessages, debugReport, ct);
         }
 
         _logger.LogInformation("[SmartSummary] Extracted {Count} topics: {Topics}",
@@ -117,7 +161,7 @@ public class SmartSummaryService
         var stats = BuildStats(allMessages);
 
         // Step 4: Generate two-stage summary (facts first, then humor)
-        return await GenerateTwoStageSummaryAsync(topicMessages, stats, allMessages, ct);
+        return await GenerateTwoStageSummaryWithDebugAsync(topicMessages, stats, allMessages, debugReport, ct);
     }
 
     /// <summary>
@@ -208,12 +252,15 @@ public class SmartSummaryService
     /// <summary>
     /// Two-stage generation: first extract facts accurately (low temp), then add humor (high temp)
     /// </summary>
-    private async Task<string> GenerateTwoStageSummaryAsync(
+    private async Task<string> GenerateTwoStageSummaryWithDebugAsync(
         Dictionary<string, List<MessageWithTime>> topicMessages,
         ChatStats stats,
         List<MessageRecord> allMessages,
+        DebugReport debugReport,
         CancellationToken ct)
     {
+        debugReport.StageCount = 2;
+
         // Build context with timestamps
         var contextBuilder = new StringBuilder();
         contextBuilder.AppendLine("СТАТИСТИКА:");
@@ -254,8 +301,13 @@ public class SmartSummaryService
             }
         }
 
+        var context = contextBuilder.ToString();
+        debugReport.ContextSent = context;
+        debugReport.ContextMessagesCount = topicMessages.Values.Sum(m => m.Count);
+        debugReport.ContextTokensEstimate = context.Length / 4;
+
         // STAGE 1: Extract facts with low temperature
-        var factsPrompt = """
+        var factsSystemPrompt = """
             Ты — точный аналитик чата. Извлеки ФАКТЫ из переписки.
 
             ПРАВИЛА:
@@ -277,22 +329,36 @@ public class SmartSummaryService
             • "[цитата]" — Имя
             """;
 
+        var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
         var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
-                SystemPrompt = factsPrompt,
-                UserPrompt = contextBuilder.ToString(),
+                SystemPrompt = factsSystemPrompt,
+                UserPrompt = context,
                 Temperature = 0.3 // Low temp for accuracy
             },
             preferredTag: null, // Use default (cheaper) provider for facts
             ct: ct);
+        stage1Sw.Stop();
+
+        debugReport.Stages.Add(new DebugStage
+        {
+            StageNumber = 1,
+            Name = "Facts",
+            Temperature = 0.3,
+            SystemPrompt = factsSystemPrompt,
+            UserPrompt = context,
+            Response = factsResponse.Content,
+            Tokens = factsResponse.TotalTokens,
+            TimeMs = stage1Sw.ElapsedMilliseconds
+        });
 
         _logger.LogDebug("[SmartSummary] Stage 1 (facts) complete, {Length} chars", factsResponse.Content.Length);
 
         // STAGE 2: Add humor and format with higher temperature
         var settings = await _promptSettings.GetSettingsAsync("summary");
 
-        var humorPrompt = $"""
+        var humorSystemPrompt = $"""
             {settings.SystemPrompt}
 
             ВАЖНО: Ниже — точные факты из чата. Твоя задача:
@@ -302,23 +368,54 @@ public class SmartSummaryService
             4. Подколоть участников (но факты оставить верными!)
             """;
 
+        var humorUserPrompt = $"ФАКТЫ ИЗ ЧАТА:\n{factsResponse.Content}\n\nСТАТИСТИКА:\n- Сообщений: {stats.TotalMessages}\n- Участников: {stats.UniqueUsers}";
+
+        var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
         var finalResponse = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
-                SystemPrompt = humorPrompt,
-                UserPrompt = $"ФАКТЫ ИЗ ЧАТА:\n{factsResponse.Content}\n\nСТАТИСТИКА:\n- Сообщений: {stats.TotalMessages}\n- Участников: {stats.UniqueUsers}",
+                SystemPrompt = humorSystemPrompt,
+                UserPrompt = humorUserPrompt,
                 Temperature = 0.6 // Slightly lower than before (was 0.7)
             },
             preferredTag: settings.LlmTag,
             ct: ct);
+        stage2Sw.Stop();
+
+        debugReport.Stages.Add(new DebugStage
+        {
+            StageNumber = 2,
+            Name = "Humor",
+            Temperature = 0.6,
+            SystemPrompt = humorSystemPrompt,
+            UserPrompt = humorUserPrompt,
+            Response = finalResponse.Content,
+            Tokens = finalResponse.TotalTokens,
+            TimeMs = stage2Sw.ElapsedMilliseconds
+        });
+
+        // Set final debug info
+        debugReport.SystemPrompt = humorSystemPrompt;
+        debugReport.UserPrompt = humorUserPrompt;
+        debugReport.LlmProvider = finalResponse.Provider;
+        debugReport.LlmModel = finalResponse.Model;
+        debugReport.LlmTag = settings.LlmTag;
+        debugReport.Temperature = 0.6;
+        debugReport.LlmResponse = finalResponse.Content;
+        debugReport.PromptTokens = factsResponse.PromptTokens + finalResponse.PromptTokens;
+        debugReport.CompletionTokens = factsResponse.CompletionTokens + finalResponse.CompletionTokens;
+        debugReport.TotalTokens = factsResponse.TotalTokens + finalResponse.TotalTokens;
 
         _logger.LogDebug("[SmartSummary] Stage 2 (humor) complete. Provider: {Provider}", finalResponse.Provider);
 
         return finalResponse.Content;
     }
 
-    private async Task<string> GenerateTraditionalSummaryAsync(List<MessageRecord> messages, CancellationToken ct)
+    private async Task<string> GenerateTraditionalSummaryWithDebugAsync(List<MessageRecord> messages, DebugReport debugReport, CancellationToken ct)
     {
+        debugReport.IsMultiStage = true;
+        debugReport.StageCount = 2;
+
         // Uniform sampling across the entire period instead of just taking last N
         var sample = SampleMessagesUniformly(messages, maxMessages: 400);
 
@@ -343,7 +440,7 @@ public class SmartSummaryService
             .ToList();
 
         // Two-stage approach for traditional method too
-        var factsPrompt = """
+        var factsSystemPrompt = """
             Ты — точный аналитик чата. Извлеки ФАКТЫ из переписки.
 
             ПРАВИЛА:
@@ -366,34 +463,81 @@ public class SmartSummaryService
         contextPrompt.AppendLine("Переписка:");
         contextPrompt.AppendLine(convo.ToString());
 
+        var context = contextPrompt.ToString();
+        debugReport.ContextSent = context;
+        debugReport.ContextMessagesCount = sample.Count;
+        debugReport.ContextTokensEstimate = context.Length / 4;
+
+        var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
         var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
-                SystemPrompt = factsPrompt,
-                UserPrompt = contextPrompt.ToString(),
+                SystemPrompt = factsSystemPrompt,
+                UserPrompt = context,
                 Temperature = 0.3
             },
             preferredTag: null,
             ct: ct);
+        stage1Sw.Stop();
+
+        debugReport.Stages.Add(new DebugStage
+        {
+            StageNumber = 1,
+            Name = "Facts",
+            Temperature = 0.3,
+            SystemPrompt = factsSystemPrompt,
+            UserPrompt = context,
+            Response = factsResponse.Content,
+            Tokens = factsResponse.TotalTokens,
+            TimeMs = stage1Sw.ElapsedMilliseconds
+        });
 
         // Stage 2: Add humor
         var settings = await _promptSettings.GetSettingsAsync("summary");
 
-        var humorPrompt = $"""
+        var humorSystemPrompt = $"""
             {settings.SystemPrompt}
 
             ВАЖНО: Ниже — точные факты из чата. НЕ меняй факты и имена, только добавь юмор!
             """;
 
+        var humorUserPrompt = $"ФАКТЫ:\n{factsResponse.Content}\n\nСтатистика: {stats.TotalMessages} сообщений, {stats.UniqueUsers} участников";
+
+        var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
         var response = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
-                SystemPrompt = humorPrompt,
-                UserPrompt = $"ФАКТЫ:\n{factsResponse.Content}\n\nСтатистика: {stats.TotalMessages} сообщений, {stats.UniqueUsers} участников",
+                SystemPrompt = humorSystemPrompt,
+                UserPrompt = humorUserPrompt,
                 Temperature = 0.6
             },
             preferredTag: settings.LlmTag,
             ct: ct);
+        stage2Sw.Stop();
+
+        debugReport.Stages.Add(new DebugStage
+        {
+            StageNumber = 2,
+            Name = "Humor",
+            Temperature = 0.6,
+            SystemPrompt = humorSystemPrompt,
+            UserPrompt = humorUserPrompt,
+            Response = response.Content,
+            Tokens = response.TotalTokens,
+            TimeMs = stage2Sw.ElapsedMilliseconds
+        });
+
+        // Set final debug info
+        debugReport.SystemPrompt = humorSystemPrompt;
+        debugReport.UserPrompt = humorUserPrompt;
+        debugReport.LlmProvider = response.Provider;
+        debugReport.LlmModel = response.Model;
+        debugReport.LlmTag = settings.LlmTag;
+        debugReport.Temperature = 0.6;
+        debugReport.LlmResponse = response.Content;
+        debugReport.PromptTokens = factsResponse.PromptTokens + response.PromptTokens;
+        debugReport.CompletionTokens = factsResponse.CompletionTokens + response.CompletionTokens;
+        debugReport.TotalTokens = factsResponse.TotalTokens + response.TotalTokens;
 
         return response.Content;
     }

@@ -1,4 +1,3 @@
-using System.Security.Authentication;
 using Microsoft.OpenApi.Models;
 using Telegram.Bot;
 using WatchmenBot.Policies;
@@ -141,6 +140,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<LogCollector>();
         services.AddSingleton<AdminSettingsStore>();
         services.AddSingleton<PromptSettingsStore>();
+        services.AddSingleton<DebugService>();
 
         // Usage tracking
         services.AddHttpClient<OpenRouterUsageService>();

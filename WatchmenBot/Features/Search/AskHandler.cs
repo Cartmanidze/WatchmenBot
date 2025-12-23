@@ -13,6 +13,7 @@ public class AskHandler
     private readonly EmbeddingService _embeddingService;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
+    private readonly DebugService _debugService;
     private readonly ILogger<AskHandler> _logger;
 
     public AskHandler(
@@ -20,12 +21,14 @@ public class AskHandler
         EmbeddingService embeddingService,
         LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
+        DebugService debugService,
         ILogger<AskHandler> logger)
     {
         _bot = bot;
         _embeddingService = embeddingService;
         _llmRouter = llmRouter;
         _promptSettings = promptSettings;
+        _debugService = debugService;
         _logger = logger;
     }
 
@@ -36,10 +39,10 @@ public class AskHandler
         => HandleAsync(message, "ask", ct);
 
     /// <summary>
-    /// Handle /q command (серьёзный вопрос)
+    /// Handle /smart command (серьёзный вопрос)
     /// </summary>
     public Task HandleQuestionAsync(Message message, CancellationToken ct)
-        => HandleAsync(message, "q", ct);
+        => HandleAsync(message, "smart", ct);
 
     private async Task HandleAsync(Message message, string command, CancellationToken ct)
     {
@@ -48,17 +51,17 @@ public class AskHandler
 
         if (string.IsNullOrWhiteSpace(question))
         {
-            var helpText = command == "q"
+            var helpText = command == "smart"
                 ? """
                     🤔 <b>Задай любой серьёзный вопрос</b>
 
                     По чату:
-                    • <code>/q о чём договорились по проекту?</code>
-                    • <code>/q что решили насчёт дедлайна?</code>
+                    • <code>/smart о чём договорились по проекту?</code>
+                    • <code>/smart что решили насчёт дедлайна?</code>
 
                     Общие вопросы:
-                    • <code>/q сколько стоит трактор в РФ?</code>
-                    • <code>/q как работает async/await?</code>
+                    • <code>/smart сколько стоит трактор в РФ?</code>
+                    • <code>/smart как работает async/await?</code>
                     """
                 : """
                     🎭 <b>Спроси меня про кого-то из чата!</b>
@@ -78,6 +81,14 @@ public class AskHandler
             return;
         }
 
+        // Initialize debug report
+        var debugReport = new DebugReport
+        {
+            Command = command,
+            ChatId = chatId,
+            Query = question
+        };
+
         try
         {
             await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
@@ -87,6 +98,15 @@ public class AskHandler
             // Get relevant context from embeddings (increased limit for better context)
             var results = await _embeddingService.SearchSimilarAsync(chatId, question, limit: 20, ct);
 
+            // Collect debug info for search results
+            debugReport.SearchResults = results.Select(r => new DebugSearchResult
+            {
+                Similarity = r.Similarity,
+                MessageIds = new[] { r.MessageId },
+                Text = r.ChunkText,
+                Timestamp = ParseTimestamp(r.MetadataJson)
+            }).ToList();
+
             // For /ask - require context, for /q - context is optional
             if (results.Count == 0 && command == "ask")
             {
@@ -95,17 +115,28 @@ public class AskHandler
                     text: "Не нашёл релевантной информации в истории чата. Возможно, эмбеддинги ещё не созданы.",
                     replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
+
+                // Send debug even for no results
+                await _debugService.SendDebugReportAsync(debugReport, ct);
                 return;
             }
 
             // Build context from search results (may be empty for /q)
             var context = results.Count > 0 ? BuildContext(results) : null;
 
+            // Collect debug info for context
+            if (context != null)
+            {
+                debugReport.ContextSent = context;
+                debugReport.ContextMessagesCount = results.Count;
+                debugReport.ContextTokensEstimate = EstimateTokens(context);
+            }
+
             // Get asker's name
             var askerName = GetDisplayName(message.From);
 
             // Generate answer using LLM with command-specific prompt
-            var answer = await GenerateAnswerAsync(command, question, context, askerName, ct);
+            var answer = await GenerateAnswerWithDebugAsync(command, question, context, askerName, debugReport, ct);
 
             // Format response with sources
             var response = FormatResponse(question, answer, results.Take(3).ToList());
@@ -132,6 +163,9 @@ public class AskHandler
             }
 
             _logger.LogInformation("[{Command}] Answered question: {Question}", command.ToUpper(), question);
+
+            // Send debug report to admin
+            await _debugService.SendDebugReportAsync(debugReport, ct);
         }
         catch (Exception ex)
         {
@@ -143,6 +177,28 @@ public class AskHandler
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
         }
+    }
+
+    private static DateTimeOffset? ParseTimestamp(string? metadataJson)
+    {
+        if (string.IsNullOrEmpty(metadataJson))
+            return null;
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(metadataJson);
+            if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
+                return dateEl.GetDateTimeOffset();
+        }
+        catch { }
+
+        return null;
+    }
+
+    private static int EstimateTokens(string text)
+    {
+        // Rough estimate: ~4 chars per token for mixed content
+        return text.Length / 4;
     }
 
     private static string ParseQuestion(string? text)
@@ -212,14 +268,16 @@ public class AskHandler
         return sb.ToString();
     }
 
-    private async Task<string> GenerateAnswerAsync(string command, string question, string? context, string askerName, CancellationToken ct)
+    private async Task<string> GenerateAnswerWithDebugAsync(
+        string command, string question, string? context, string askerName, DebugReport debugReport, CancellationToken ct)
     {
         var settings = await _promptSettings.GetSettingsAsync(command);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // For /ask with context - use two-stage generation
         if (command == "ask" && !string.IsNullOrWhiteSpace(context))
         {
-            return await GenerateTwoStageAnswerAsync(question, context, askerName, settings, ct);
+            return await GenerateTwoStageAnswerWithDebugAsync(question, context, askerName, settings, debugReport, ct);
         }
 
         // For /q or /ask without context - single stage
@@ -250,6 +308,21 @@ public class AskHandler
             preferredTag: settings.LlmTag,
             ct: ct);
 
+        sw.Stop();
+
+        // Collect debug info
+        debugReport.SystemPrompt = settings.SystemPrompt;
+        debugReport.UserPrompt = userPrompt;
+        debugReport.LlmProvider = response.Provider;
+        debugReport.LlmModel = response.Model;
+        debugReport.LlmTag = settings.LlmTag;
+        debugReport.Temperature = 0.5;
+        debugReport.LlmResponse = response.Content;
+        debugReport.PromptTokens = response.PromptTokens;
+        debugReport.CompletionTokens = response.CompletionTokens;
+        debugReport.TotalTokens = response.TotalTokens;
+        debugReport.LlmTimeMs = sw.ElapsedMilliseconds;
+
         _logger.LogInformation("[{Command}] LLM: provider={Provider}, model={Model}, tag={Tag}",
             command.ToUpper(), response.Provider, response.Model, settings.LlmTag ?? "default");
 
@@ -259,10 +332,15 @@ public class AskHandler
     /// <summary>
     /// Two-stage generation for /ask: extract facts first, then add humor
     /// </summary>
-    private async Task<string> GenerateTwoStageAnswerAsync(
-        string question, string context, string askerName, PromptSettings settings, CancellationToken ct)
+    private async Task<string> GenerateTwoStageAnswerWithDebugAsync(
+        string question, string context, string askerName, PromptSettings settings, DebugReport debugReport, CancellationToken ct)
     {
+        debugReport.IsMultiStage = true;
+        debugReport.StageCount = 2;
+        var totalSw = System.Diagnostics.Stopwatch.StartNew();
+
         // STAGE 1: Extract facts with low temperature
+        var factsSystemPrompt = "Ты — аналитик чата. Извлекай факты точно и кратко.";
         var factsPrompt = $"""
             Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
 
@@ -280,15 +358,29 @@ public class AskHandler
             Формат: просто факты, 2-4 предложения.
             """;
 
+        var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
         var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
-                SystemPrompt = "Ты — аналитик чата. Извлекай факты точно и кратко.",
+                SystemPrompt = factsSystemPrompt,
                 UserPrompt = factsPrompt,
                 Temperature = 0.3 // Low for accuracy
             },
-            preferredTag: settings.LlmTag, // Use same provider (Qwen) for both stages
+            preferredTag: settings.LlmTag,
             ct: ct);
+        stage1Sw.Stop();
+
+        debugReport.Stages.Add(new DebugStage
+        {
+            StageNumber = 1,
+            Name = "Facts",
+            Temperature = 0.3,
+            SystemPrompt = factsSystemPrompt,
+            UserPrompt = factsPrompt,
+            Response = factsResponse.Content,
+            Tokens = factsResponse.TotalTokens,
+            TimeMs = stage1Sw.ElapsedMilliseconds
+        });
 
         _logger.LogInformation("[ASK] Stage 1 (facts): {Length} chars", factsResponse.Content.Length);
 
@@ -304,6 +396,7 @@ public class AskHandler
             Подколи того, кто связан с темой (не спрашивающего, если вопрос не про него).
             """;
 
+        var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
         var finalResponse = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
@@ -313,6 +406,34 @@ public class AskHandler
             },
             preferredTag: settings.LlmTag,
             ct: ct);
+        stage2Sw.Stop();
+
+        debugReport.Stages.Add(new DebugStage
+        {
+            StageNumber = 2,
+            Name = "Humor",
+            Temperature = 0.6,
+            SystemPrompt = settings.SystemPrompt,
+            UserPrompt = humorPrompt,
+            Response = finalResponse.Content,
+            Tokens = finalResponse.TotalTokens,
+            TimeMs = stage2Sw.ElapsedMilliseconds
+        });
+
+        totalSw.Stop();
+
+        // Set final debug info
+        debugReport.SystemPrompt = settings.SystemPrompt;
+        debugReport.UserPrompt = humorPrompt;
+        debugReport.LlmProvider = finalResponse.Provider;
+        debugReport.LlmModel = finalResponse.Model;
+        debugReport.LlmTag = settings.LlmTag;
+        debugReport.Temperature = 0.6;
+        debugReport.LlmResponse = finalResponse.Content;
+        debugReport.PromptTokens = factsResponse.PromptTokens + finalResponse.PromptTokens;
+        debugReport.CompletionTokens = factsResponse.CompletionTokens + finalResponse.CompletionTokens;
+        debugReport.TotalTokens = factsResponse.TotalTokens + finalResponse.TotalTokens;
+        debugReport.LlmTimeMs = totalSw.ElapsedMilliseconds;
 
         _logger.LogInformation("[ASK] Stage 2 (humor): provider={Provider}, model={Model}",
             finalResponse.Provider, finalResponse.Model);

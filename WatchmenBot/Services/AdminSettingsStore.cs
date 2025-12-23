@@ -137,8 +137,21 @@ public class AdminSettingsStore
         {
             ["summary_time"] = await GetSummaryTimeAsync(),
             ["report_time"] = await GetReportTimeAsync(),
-            ["timezone_offset"] = (await GetTimezoneOffsetAsync()).ToString(@"hh\:mm")
+            ["timezone_offset"] = (await GetTimezoneOffsetAsync()).ToString(@"hh\:mm"),
+            ["debug_mode"] = (await IsDebugModeEnabledAsync()).ToString().ToLower()
         };
         return result;
+    }
+
+    public async Task<bool> IsDebugModeEnabledAsync()
+    {
+        var value = await GetSettingAsync("debug_mode");
+        return value?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
+    }
+
+    public async Task SetDebugModeAsync(bool enabled)
+    {
+        await SetSettingAsync("debug_mode", enabled ? "true" : "false");
+        _logger.LogInformation("[Admin] Debug mode {Status}", enabled ? "enabled" : "disabled");
     }
 }

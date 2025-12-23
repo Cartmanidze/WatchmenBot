@@ -13,6 +13,7 @@ public class FactCheckHandler
     private readonly MessageStore _messageStore;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
+    private readonly DebugService _debugService;
     private readonly ILogger<FactCheckHandler> _logger;
 
     public FactCheckHandler(
@@ -20,12 +21,14 @@ public class FactCheckHandler
         MessageStore messageStore,
         LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
+        DebugService debugService,
         ILogger<FactCheckHandler> logger)
     {
         _bot = bot;
         _messageStore = messageStore;
         _llmRouter = llmRouter;
         _promptSettings = promptSettings;
+        _debugService = debugService;
         _logger = logger;
     }
 
@@ -38,6 +41,14 @@ public class FactCheckHandler
 
         // Parse optional count from command (default 5)
         var count = ParseCount(message.Text, defaultCount: 5, maxCount: 15);
+
+        // Initialize debug report
+        var debugReport = new DebugReport
+        {
+            Command = "truth",
+            ChatId = chatId,
+            Query = $"Fact-check last {count} messages"
+        };
 
         try
         {
@@ -61,6 +72,11 @@ public class FactCheckHandler
             // Build conversation context
             var context = BuildContext(messages);
 
+            // Collect debug info for context
+            debugReport.ContextSent = context;
+            debugReport.ContextMessagesCount = messages.Count;
+            debugReport.ContextTokensEstimate = context.Length / 4;
+
             // Get prompt settings
             var settings = await _promptSettings.GetSettingsAsync("truth");
 
@@ -74,6 +90,7 @@ public class FactCheckHandler
                 Проанализируй и проверь факты.
                 """;
 
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var response = await _llmRouter.CompleteWithFallbackAsync(
                 new LlmRequest
                 {
@@ -83,6 +100,20 @@ public class FactCheckHandler
                 },
                 preferredTag: settings.LlmTag,
                 ct: ct);
+            sw.Stop();
+
+            // Collect debug info
+            debugReport.SystemPrompt = settings.SystemPrompt;
+            debugReport.UserPrompt = userPrompt;
+            debugReport.LlmProvider = response.Provider;
+            debugReport.LlmModel = response.Model;
+            debugReport.LlmTag = settings.LlmTag;
+            debugReport.Temperature = 0.5;
+            debugReport.LlmResponse = response.Content;
+            debugReport.PromptTokens = response.PromptTokens;
+            debugReport.CompletionTokens = response.CompletionTokens;
+            debugReport.TotalTokens = response.TotalTokens;
+            debugReport.LlmTimeMs = sw.ElapsedMilliseconds;
 
             _logger.LogDebug("[TRUTH] Used provider: {Provider}", response.Provider);
 
@@ -109,6 +140,9 @@ public class FactCheckHandler
             }
 
             _logger.LogInformation("[TRUTH] Completed fact-check for {Count} messages", messages.Count);
+
+            // Send debug report to admin
+            await _debugService.SendDebugReportAsync(debugReport, ct);
         }
         catch (Exception ex)
         {

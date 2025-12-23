@@ -81,7 +81,7 @@ public class ProcessTelegramUpdateHandler
         {
             using var scope = _serviceProvider.CreateScope();
 
-            // Handle private messages (for admin commands and /q)
+            // Handle private messages (for admin commands and /smart)
             if (message.Chat.Type == ChatType.Private)
             {
                 // Handle text commands or document uploads with caption
@@ -91,9 +91,9 @@ public class ProcessTelegramUpdateHandler
                     var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();
                     await adminHandler.HandleAsync(message, cancellationToken);
                 }
-                else if (IsQuestionCommand(commandText))
+                else if (IsSmartCommand(commandText))
                 {
-                    _logger.LogInformation("[Webhook] [PM] @{User} requested /q", userName);
+                    _logger.LogInformation("[Webhook] [PM] @{User} requested /smart", userName);
                     var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
                     await askHandler.HandleQuestionAsync(message, cancellationToken);
                 }
@@ -145,9 +145,9 @@ public class ProcessTelegramUpdateHandler
                 return ProcessTelegramUpdateResponse.Success();
             }
 
-            if (IsQuestionCommand(message.Text))
+            if (IsSmartCommand(message.Text))
             {
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /q", chatName, userName);
+                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /smart", chatName, userName);
                 var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
                 await askHandler.HandleQuestionAsync(message, cancellationToken);
                 return ProcessTelegramUpdateResponse.Success();
@@ -208,15 +208,15 @@ public class ProcessTelegramUpdateHandler
         return text.StartsWith(command, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsQuestionCommand(string? text)
+    private static bool IsSmartCommand(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return false;
 
-        // Match /q but not /qsomething (only /q or /q followed by space/@ for bot mentions)
-        return text.StartsWith("/q ", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("/q@", StringComparison.OrdinalIgnoreCase)
-            || text.Equals("/q", StringComparison.OrdinalIgnoreCase);
+        // Match /smart but not /smartsomething (only /smart or /smart followed by space/@ for bot mentions)
+        return text.StartsWith("/smart ", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("/smart@", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("/smart", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsTruthQuestion(string? text)
