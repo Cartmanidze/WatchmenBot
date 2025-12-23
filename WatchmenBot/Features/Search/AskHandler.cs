@@ -95,34 +95,101 @@ public class AskHandler
 
             _logger.LogInformation("[{Command}] Question: {Question} in chat {ChatId}", command.ToUpper(), question, chatId);
 
-            // Get relevant context from embeddings (increased limit for better context)
-            var results = await _embeddingService.SearchSimilarAsync(chatId, question, limit: 20, ct);
+            // Get asker's name for personal retrieval
+            var askerName = GetDisplayName(message.From);
+            var askerUsername = message.From?.Username;
 
-            // Collect debug info for search results
-            debugReport.SearchResults = results.Select(r => new DebugSearchResult
+            // Detect if this is a personal question (about self or @someone)
+            var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
+
+            // Choose search strategy based on question type
+            SearchResponse searchResponse;
+
+            if (personalTarget == "self" && command == "ask")
             {
-                Similarity = r.Similarity,
-                MessageIds = new[] { r.MessageId },
-                Text = r.ChunkText,
-                Timestamp = ParseTimestamp(r.MetadataJson)
-            }).ToList();
-
-            // For /ask - require context, for /q - context is optional
-            if (results.Count == 0 && command == "ask")
+                // Personal question about self — use personal retrieval
+                _logger.LogInformation("[ASK] Personal question detected: self ({Name}/{Username})", askerName, askerUsername);
+                searchResponse = await _embeddingService.GetPersonalContextAsync(
+                    chatId,
+                    askerUsername ?? askerName,
+                    askerName,
+                    days: 7,
+                    ct);
+            }
+            else if (personalTarget != null && personalTarget.StartsWith("@") && command == "ask")
             {
-                await _bot.SendMessage(
-                    chatId: chatId,
-                    text: "Не нашёл релевантной информации в истории чата. Возможно, эмбеддинги ещё не созданы.",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
-                    cancellationToken: ct);
-
-                // Send debug even for no results
-                await _debugService.SendDebugReportAsync(debugReport, ct);
-                return;
+                // Question about @someone — use personal retrieval for that user
+                var targetUsername = personalTarget.TrimStart('@');
+                _logger.LogInformation("[ASK] Personal question detected: @{Target}", targetUsername);
+                searchResponse = await _embeddingService.GetPersonalContextAsync(
+                    chatId,
+                    targetUsername,
+                    null, // don't know display name
+                    days: 7,
+                    ct);
+            }
+            else
+            {
+                // Regular semantic search
+                searchResponse = await _embeddingService.SearchWithConfidenceAsync(chatId, question, limit: 20, ct);
             }
 
-            // Build context from search results (may be empty for /q)
-            var context = results.Count > 0 ? BuildContext(results) : null;
+            // Collect debug info for search results
+            debugReport.PersonalTarget = personalTarget;
+            debugReport.SearchResults = searchResponse.Results.Select(r => new DebugSearchResult
+            {
+                Similarity = r.Similarity,
+                Distance = r.Distance,
+                MessageIds = new[] { r.MessageId },
+                Text = r.ChunkText,
+                Timestamp = ParseTimestamp(r.MetadataJson),
+                IsNewsDump = r.IsNewsDump
+            }).ToList();
+            debugReport.SearchConfidence = searchResponse.Confidence.ToString();
+            debugReport.SearchConfidenceReason = searchResponse.ConfidenceReason;
+            debugReport.BestScore = searchResponse.BestScore;
+            debugReport.ScoreGap = searchResponse.ScoreGap;
+            debugReport.HasFullTextMatch = searchResponse.HasFullTextMatch;
+
+            // Handle confidence gate
+            var results = searchResponse.Results;
+            string? context = null;
+            string? confidenceWarning = null;
+
+            if (command == "ask")
+            {
+                // /ask requires context
+                if (searchResponse.Confidence == SearchConfidence.None)
+                {
+                    await _bot.SendMessage(
+                        chatId: chatId,
+                        text: "🤷 В истории чата про это не нашёл. Попробуй уточнить вопрос или период.",
+                        replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                        cancellationToken: ct);
+
+                    await _debugService.SendDebugReportAsync(debugReport, ct);
+                    return;
+                }
+
+                if (searchResponse.Confidence == SearchConfidence.Low)
+                {
+                    confidenceWarning = "⚠️ <i>Контекст слабый, ответ может быть неточным</i>\n\n";
+                }
+
+                context = BuildContext(results);
+            }
+            else // /smart
+            {
+                // /smart - context is optional, but warn if weak
+                if (results.Count > 0 && searchResponse.Confidence != SearchConfidence.None)
+                {
+                    context = BuildContext(results);
+                    if (searchResponse.Confidence == SearchConfidence.Low)
+                    {
+                        confidenceWarning = "⚠️ <i>Контекст из чата слабый</i>\n\n";
+                    }
+                }
+            }
 
             // Collect debug info for context
             if (context != null)
@@ -132,14 +199,11 @@ public class AskHandler
                 debugReport.ContextTokensEstimate = EstimateTokens(context);
             }
 
-            // Get asker's name
-            var askerName = GetDisplayName(message.From);
-
             // Generate answer using LLM with command-specific prompt
             var answer = await GenerateAnswerWithDebugAsync(command, question, context, askerName, debugReport, ct);
 
-            // Format response with sources
-            var response = FormatResponse(question, answer, results.Take(3).ToList());
+            // Format response with confidence warning if needed
+            var response = (confidenceWarning ?? "") + FormatResponse(question, answer, results.Take(3).ToList());
 
             try
             {
@@ -162,7 +226,8 @@ public class AskHandler
                     cancellationToken: ct);
             }
 
-            _logger.LogInformation("[{Command}] Answered question: {Question}", command.ToUpper(), question);
+            _logger.LogInformation("[{Command}] Answered question: {Question} (confidence: {Conf})",
+                command.ToUpper(), question, searchResponse.Confidence);
 
             // Send debug report to admin
             await _debugService.SendDebugReportAsync(debugReport, ct);
@@ -477,5 +542,35 @@ public class AskHandler
         return !string.IsNullOrWhiteSpace(user.Username)
             ? user.Username
             : user.Id.ToString();
+    }
+
+    /// <summary>
+    /// Detect if question is about the asker or a specific @user
+    /// Returns: null = general question, "self" = about asker, "@username" = about specific user
+    /// </summary>
+    private static string? DetectPersonalQuestion(string question, string askerName, string? askerUsername)
+    {
+        var q = question.ToLowerInvariant().Trim();
+
+        // Self-referential questions: "я ..?", "кто я?", "какой я?"
+        var selfPatterns = new[]
+        {
+            "я ", "кто я", "какой я", "какая я", "что я", "как я",
+            "обо мне", "про меня", "меня ", "мне ", "мной "
+        };
+
+        if (selfPatterns.Any(p => q.Contains(p)))
+        {
+            return "self";
+        }
+
+        // Extract @username from question
+        var usernameMatch = System.Text.RegularExpressions.Regex.Match(question, @"@(\w+)");
+        if (usernameMatch.Success)
+        {
+            return usernameMatch.Value; // returns "@username"
+        }
+
+        return null;
     }
 }

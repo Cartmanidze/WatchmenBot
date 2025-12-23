@@ -330,6 +330,7 @@ public class EmbeddingService
                     me.chunk_index as ChunkIndex,
                     me.chunk_text as ChunkText,
                     me.metadata as MetadataJson,
+                    me.embedding <=> @Embedding::vector as Distance,
                     1 - (me.embedding <=> @Embedding::vector) as Similarity
                 FROM message_embeddings me
                 JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
@@ -341,7 +342,11 @@ public class EmbeddingService
                 """,
                 new { ChatId = chatId, Embedding = embeddingString, StartUtc = startUtc.UtcDateTime, EndUtc = endUtc.UtcDateTime, Limit = limit });
 
-            return results.ToList();
+            return results.Select(r =>
+            {
+                r.IsNewsDump = DetectNewsDump(r.ChunkText);
+                return r;
+            }).ToList();
         }
         catch (Exception ex)
         {
@@ -579,6 +584,7 @@ public class EmbeddingService
                 chunk_index as ChunkIndex,
                 chunk_text as ChunkText,
                 metadata as MetadataJson,
+                embedding <=> @Embedding::vector as Distance,
                 1 - (embedding <=> @Embedding::vector) as Similarity
             FROM message_embeddings
             WHERE chat_id = @ChatId
@@ -587,7 +593,447 @@ public class EmbeddingService
             """,
             new { ChatId = chatId, Embedding = embeddingString, Limit = limit });
 
-        return results.ToList();
+        return results.Select(r =>
+        {
+            r.IsNewsDump = DetectNewsDump(r.ChunkText);
+            return r;
+        }).ToList();
+    }
+
+    /// <summary>
+    /// Search with confidence assessment — the main method for RAG
+    /// </summary>
+    public async Task<SearchResponse> SearchWithConfidenceAsync(
+        long chatId,
+        string query,
+        int limit = 20,
+        CancellationToken ct = default)
+    {
+        var response = new SearchResponse();
+
+        try
+        {
+            // First, try full-text search for exact matches
+            var fullTextResults = await FullTextSearchAsync(chatId, query, 5, ct);
+            response.HasFullTextMatch = fullTextResults.Count > 0;
+
+            // Then, vector search
+            var results = await SearchSimilarAsync(chatId, query, limit, ct);
+            if (results.Count == 0)
+            {
+                response.Confidence = SearchConfidence.None;
+                response.ConfidenceReason = "Нет embeddings в этом чате";
+                return response;
+            }
+
+            // Apply news dump penalty
+            foreach (var r in results)
+            {
+                if (r.IsNewsDump)
+                {
+                    r.Similarity -= 0.05; // Penalty for news dumps
+                }
+            }
+
+            // Re-sort after penalty
+            results = results.OrderByDescending(r => r.Similarity).ToList();
+            response.Results = results;
+
+            // Calculate confidence metrics
+            var best = results[0].Similarity;
+            var fifth = results.Count >= 5 ? results[4].Similarity : results.Last().Similarity;
+            var gap = best - fifth;
+
+            response.BestScore = best;
+            response.ScoreGap = gap;
+
+            // Determine confidence level
+            (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, response.HasFullTextMatch);
+
+            _logger.LogInformation(
+                "[Search] Query: '{Query}' | Best: {Best:F3} | Gap: {Gap:F3} | FullText: {FT} | Confidence: {Conf}",
+                TruncateForLog(query, 50), best, gap, response.HasFullTextMatch, response.Confidence);
+
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to search with confidence for query: {Query}", query);
+            response.Confidence = SearchConfidence.None;
+            response.ConfidenceReason = "Ошибка поиска";
+            return response;
+        }
+    }
+
+    /// <summary>
+    /// Full-text search using PostgreSQL tsvector
+    /// </summary>
+    public async Task<List<SearchResult>> FullTextSearchAsync(
+        long chatId,
+        string query,
+        int limit = 10,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            // Extract meaningful words for full-text search
+            var searchTerms = ExtractSearchTerms(query);
+            if (string.IsNullOrWhiteSpace(searchTerms))
+                return new List<SearchResult>();
+
+            var results = await connection.QueryAsync<SearchResult>(
+                """
+                SELECT
+                    chat_id as ChatId,
+                    message_id as MessageId,
+                    chunk_index as ChunkIndex,
+                    chunk_text as ChunkText,
+                    metadata as MetadataJson,
+                    0.0 as Distance,
+                    ts_rank(to_tsvector('russian', chunk_text), websearch_to_tsquery('russian', @Query)) as Similarity
+                FROM message_embeddings
+                WHERE chat_id = @ChatId
+                  AND to_tsvector('russian', chunk_text) @@ websearch_to_tsquery('russian', @Query)
+                ORDER BY Similarity DESC
+                LIMIT @Limit
+                """,
+                new { ChatId = chatId, Query = searchTerms, Limit = limit });
+
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Full-text search failed for query: {Query}", query);
+            return new List<SearchResult>();
+        }
+    }
+
+    /// <summary>
+    /// Extract meaningful search terms from a query
+    /// </summary>
+    private static string ExtractSearchTerms(string query)
+    {
+        // Remove common question words and punctuation
+        var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "кто", "что", "где", "когда", "как", "почему", "зачем", "какой", "какая", "какое", "какие",
+            "это", "эта", "этот", "эти", "тот", "та", "то", "те", "чем", "про", "об", "обо",
+            "ли", "же", "бы", "не", "ни", "да", "нет", "или", "и", "а", "но", "в", "на", "с", "к", "у", "о",
+            "за", "из", "по", "до", "от", "для", "при", "без", "над", "под", "между", "через",
+            "самый", "самая", "самое", "очень", "много", "мало", "все", "всё", "всех", "весь", "вся",
+            "был", "была", "было", "были", "есть", "будет", "можно", "нужно", "надо"
+        };
+
+        var words = query
+            .ToLowerInvariant()
+            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length > 2 && !stopWords.Contains(w))
+            .Distinct()
+            .ToList();
+
+        return string.Join(" ", words);
+    }
+
+    /// <summary>
+    /// Evaluate search confidence based on scores
+    /// </summary>
+    private static (SearchConfidence confidence, string reason) EvaluateConfidence(double bestScore, double gap, bool hasFullText)
+    {
+        // If full-text found exact matches, that's a strong signal
+        if (hasFullText)
+        {
+            if (bestScore >= 0.5)
+                return (SearchConfidence.High, "Точное совпадение слов + высокий similarity");
+            if (bestScore >= 0.35)
+                return (SearchConfidence.Medium, "Точное совпадение слов");
+            return (SearchConfidence.Low, "Слова найдены, но семантически далеко");
+        }
+
+        // Vector-only search thresholds
+        // High: best >= 0.5 AND gap >= 0.05 (clear winner)
+        if (bestScore >= 0.5 && gap >= 0.05)
+            return (SearchConfidence.High, $"Сильное совпадение (sim={bestScore:F2}, gap={gap:F2})");
+
+        // Medium: best >= 0.4 OR (best >= 0.35 AND gap >= 0.03)
+        if (bestScore >= 0.4)
+            return (SearchConfidence.Medium, $"Среднее совпадение (sim={bestScore:F2})");
+
+        if (bestScore >= 0.35 && gap >= 0.03)
+            return (SearchConfidence.Medium, $"Есть выделяющийся результат (sim={bestScore:F2}, gap={gap:F2})");
+
+        // Low: best >= 0.25
+        if (bestScore >= 0.25)
+            return (SearchConfidence.Low, $"Слабое совпадение (sim={bestScore:F2})");
+
+        // None: best < 0.25
+        return (SearchConfidence.None, $"Нет релевантных совпадений (best sim={bestScore:F2})");
+    }
+
+    /// <summary>
+    /// Detect if text looks like a news dump (long, lots of links, emojis)
+    /// </summary>
+    private static bool DetectNewsDump(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        var indicators = 0;
+
+        // Long text
+        if (text.Length > 800) indicators++;
+
+        // Multiple URLs
+        var urlCount = System.Text.RegularExpressions.Regex.Matches(text, @"https?://").Count;
+        if (urlCount >= 2) indicators++;
+
+        // News indicators
+        var newsPatterns = new[] { "— СМИ", "Подписаться", "⚡", "❗", "🔴", "BREAKING", "Срочно:", "Источник:" };
+        if (newsPatterns.Any(p => text.Contains(p, StringComparison.OrdinalIgnoreCase))) indicators++;
+
+        // Many emojis at the start
+        if (text.Length > 0 && char.IsHighSurrogate(text[0])) indicators++;
+
+        return indicators >= 2;
+    }
+
+    private static string TruncateForLog(string text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
+            return text;
+        return text[..(maxLength - 3)] + "...";
+    }
+
+    /// <summary>
+    /// Get messages from a specific user (for personal questions like "я гондон?" or "что за тип @Вася?")
+    /// </summary>
+    public async Task<List<SearchResult>> GetUserMessagesAsync(
+        long chatId,
+        string usernameOrName,
+        int days = 7,
+        int limit = 30,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            // Remove @ prefix if present
+            var cleanName = usernameOrName.TrimStart('@');
+
+            var startDate = DateTime.UtcNow.AddDays(-days);
+
+            // Search by username or display name in metadata
+            var results = await connection.QueryAsync<SearchResult>(
+                """
+                SELECT
+                    me.chat_id as ChatId,
+                    me.message_id as MessageId,
+                    me.chunk_index as ChunkIndex,
+                    me.chunk_text as ChunkText,
+                    me.metadata as MetadataJson,
+                    0.0 as Distance,
+                    1.0 as Similarity
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND m.date_utc >= @StartDate
+                  AND (
+                      me.metadata->>'Username' ILIKE @Pattern
+                      OR me.metadata->>'DisplayName' ILIKE @Pattern
+                      OR me.chunk_text ILIKE @TextPattern
+                  )
+                ORDER BY m.date_utc DESC
+                LIMIT @Limit
+                """,
+                new
+                {
+                    ChatId = chatId,
+                    StartDate = startDate,
+                    Pattern = cleanName,
+                    TextPattern = $"{cleanName}:%", // "Name: message..."
+                    Limit = limit
+                });
+
+            _logger.LogInformation("[Search] Found {Count} messages from user '{User}' in chat {ChatId}",
+                results.Count(), cleanName, chatId);
+
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get messages for user: {User}", usernameOrName);
+            return new List<SearchResult>();
+        }
+    }
+
+    /// <summary>
+    /// Get messages that mention a specific user
+    /// </summary>
+    public async Task<List<SearchResult>> GetMentionsOfUserAsync(
+        long chatId,
+        string usernameOrName,
+        int days = 7,
+        int limit = 20,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            var cleanName = usernameOrName.TrimStart('@');
+            var startDate = DateTime.UtcNow.AddDays(-days);
+
+            // Search for mentions in text (but NOT messages from the user themselves)
+            var results = await connection.QueryAsync<SearchResult>(
+                """
+                SELECT
+                    me.chat_id as ChatId,
+                    me.message_id as MessageId,
+                    me.chunk_index as ChunkIndex,
+                    me.chunk_text as ChunkText,
+                    me.metadata as MetadataJson,
+                    0.0 as Distance,
+                    0.9 as Similarity
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND m.date_utc >= @StartDate
+                  AND me.chunk_text ILIKE @Pattern
+                  AND NOT (
+                      me.metadata->>'Username' ILIKE @Name
+                      OR me.metadata->>'DisplayName' ILIKE @Name
+                  )
+                ORDER BY m.date_utc DESC
+                LIMIT @Limit
+                """,
+                new
+                {
+                    ChatId = chatId,
+                    StartDate = startDate,
+                    Pattern = $"%{cleanName}%",
+                    Name = cleanName,
+                    Limit = limit
+                });
+
+            _logger.LogInformation("[Search] Found {Count} mentions of user '{User}' in chat {ChatId}",
+                results.Count(), cleanName, chatId);
+
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get mentions for user: {User}", usernameOrName);
+            return new List<SearchResult>();
+        }
+    }
+
+    /// <summary>
+    /// Combined personal retrieval: user's messages + mentions of user
+    /// </summary>
+    public async Task<SearchResponse> GetPersonalContextAsync(
+        long chatId,
+        string usernameOrName,
+        string? displayName,
+        int days = 7,
+        CancellationToken ct = default)
+    {
+        var response = new SearchResponse();
+
+        try
+        {
+            var searchNames = new List<string>();
+
+            // Add username if provided
+            if (!string.IsNullOrWhiteSpace(usernameOrName))
+                searchNames.Add(usernameOrName.TrimStart('@'));
+
+            // Add display name if different from username
+            if (!string.IsNullOrWhiteSpace(displayName) &&
+                !searchNames.Any(n => n.Equals(displayName, StringComparison.OrdinalIgnoreCase)))
+                searchNames.Add(displayName);
+
+            var allResults = new List<SearchResult>();
+
+            foreach (var name in searchNames)
+            {
+                // Get user's own messages
+                var userMessages = await GetUserMessagesAsync(chatId, name, days, 20, ct);
+                allResults.AddRange(userMessages);
+
+                // Get mentions of user
+                var mentions = await GetMentionsOfUserAsync(chatId, name, days, 15, ct);
+                allResults.AddRange(mentions);
+            }
+
+            // Deduplicate by message ID
+            var deduped = allResults
+                .GroupBy(r => r.MessageId)
+                .Select(g => g.First())
+                .OrderByDescending(r => ParseTimestampFromMetadata(r.MetadataJson))
+                .Take(30)
+                .ToList();
+
+            response.Results = deduped;
+            response.HasFullTextMatch = deduped.Count > 0;
+
+            // Confidence based on how much we found
+            if (deduped.Count >= 10)
+            {
+                response.Confidence = SearchConfidence.High;
+                response.ConfidenceReason = $"Найдено {deduped.Count} сообщений про/от пользователя";
+            }
+            else if (deduped.Count >= 3)
+            {
+                response.Confidence = SearchConfidence.Medium;
+                response.ConfidenceReason = $"Найдено {deduped.Count} сообщений";
+            }
+            else if (deduped.Count > 0)
+            {
+                response.Confidence = SearchConfidence.Low;
+                response.ConfidenceReason = $"Мало сообщений ({deduped.Count})";
+            }
+            else
+            {
+                response.Confidence = SearchConfidence.None;
+                response.ConfidenceReason = "Пользователь не найден в истории чата";
+            }
+
+            response.BestScore = deduped.Count > 0 ? 1.0 : 0.0;
+
+            _logger.LogInformation(
+                "[Personal] User: {Names} | Found: {Count} | Confidence: {Conf}",
+                string.Join("/", searchNames), deduped.Count, response.Confidence);
+
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get personal context for: {User}", usernameOrName);
+            response.Confidence = SearchConfidence.None;
+            response.ConfidenceReason = "Ошибка поиска";
+            return response;
+        }
+    }
+
+    private static DateTimeOffset ParseTimestampFromMetadata(string? metadataJson)
+    {
+        if (string.IsNullOrEmpty(metadataJson))
+            return DateTimeOffset.MinValue;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(metadataJson);
+            if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
+                return dateEl.GetDateTimeOffset();
+        }
+        catch
+        {
+            // ignored
+        }
+
+        return DateTimeOffset.MinValue;
     }
 }
 
@@ -599,6 +1045,57 @@ public class SearchResult
     public string ChunkText { get; set; } = string.Empty;
     public string? MetadataJson { get; set; }
     public double Similarity { get; set; }
+    public double Distance { get; set; }
+
+    /// <summary>
+    /// Флаг: сообщение похоже на новостную простыню (много ссылок, эмодзи, длинное)
+    /// </summary>
+    public bool IsNewsDump { get; set; }
+}
+
+/// <summary>
+/// Результат поиска с оценкой уверенности
+/// </summary>
+public class SearchResponse
+{
+    public List<SearchResult> Results { get; set; } = new();
+
+    /// <summary>
+    /// Уверенность в результатах: High, Medium, Low, None
+    /// </summary>
+    public SearchConfidence Confidence { get; set; }
+
+    /// <summary>
+    /// Объяснение почему такая уверенность
+    /// </summary>
+    public string? ConfidenceReason { get; set; }
+
+    /// <summary>
+    /// Лучший скор similarity
+    /// </summary>
+    public double BestScore { get; set; }
+
+    /// <summary>
+    /// Разница между top-1 и top-5 (gap)
+    /// </summary>
+    public double ScoreGap { get; set; }
+
+    /// <summary>
+    /// Есть ли точные совпадения по тексту (full-text)
+    /// </summary>
+    public bool HasFullTextMatch { get; set; }
+}
+
+public enum SearchConfidence
+{
+    /// <summary>Нет совпадений — не кормить LLM</summary>
+    None,
+    /// <summary>Слабые совпадения — предупредить пользователя</summary>
+    Low,
+    /// <summary>Средние совпадения — можно использовать с оговоркой</summary>
+    Medium,
+    /// <summary>Хорошие совпадения — уверенный ответ</summary>
+    High
 }
 
 public class EmbeddingStats

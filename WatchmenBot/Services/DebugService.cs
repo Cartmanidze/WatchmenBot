@@ -182,7 +182,33 @@ public class DebugService
         sb.AppendLine($"🔍 <b>DEBUG: /{report.Command}</b>");
         sb.AppendLine($"📍 Chat: <code>{report.ChatId}</code>");
         sb.AppendLine($"❓ Query: <i>{EscapeHtml(report.Query)}</i>");
+
+        // Personal retrieval indicator
+        if (!string.IsNullOrEmpty(report.PersonalTarget))
+        {
+            var targetLabel = report.PersonalTarget == "self" ? "👤 О себе" : $"👤 О {report.PersonalTarget}";
+            sb.AppendLine($"🎯 <b>Тип:</b> {targetLabel} (персональный ретривал)");
+        }
+
         sb.AppendLine();
+
+        // Confidence assessment
+        if (!string.IsNullOrEmpty(report.SearchConfidence))
+        {
+            var confEmoji = report.SearchConfidence switch
+            {
+                "High" => "🟢",
+                "Medium" => "🟡",
+                "Low" => "🟠",
+                _ => "🔴"
+            };
+            sb.AppendLine($"{confEmoji} <b>Confidence:</b> {report.SearchConfidence}");
+            sb.AppendLine($"   Best: {report.BestScore:F3} | Gap: {report.ScoreGap:F3} | FullText: {report.HasFullTextMatch}");
+            if (!string.IsNullOrEmpty(report.SearchConfidenceReason))
+                sb.AppendLine($"   <i>{EscapeHtml(report.SearchConfidenceReason)}</i>");
+            sb.AppendLine();
+        }
+
         return sb.ToString();
     }
 
@@ -194,7 +220,9 @@ public class DebugService
         foreach (var result in report.SearchResults.Take(10))
         {
             var scoreBar = GetScoreBar(result.Similarity);
-            sb.AppendLine($"{scoreBar} <b>{result.Similarity:F3}</b> | ids: {string.Join(",", result.MessageIds.Take(3))}");
+            var newsFlag = result.IsNewsDump ? " 📰" : "";
+            sb.AppendLine($"{scoreBar} sim=<b>{result.Similarity:F3}</b> dist={result.Distance:F3}{newsFlag}");
+            sb.AppendLine($"   ids: {string.Join(",", result.MessageIds.Take(3))}");
             sb.AppendLine($"   <i>{EscapeHtml(TruncateText(result.Text, 100))}</i>");
         }
 
@@ -282,6 +310,16 @@ public class DebugReport
     // Search results
     public List<DebugSearchResult> SearchResults { get; set; } = new();
 
+    // Confidence assessment
+    public string? SearchConfidence { get; set; }
+    public string? SearchConfidenceReason { get; set; }
+    public double BestScore { get; set; }
+    public double ScoreGap { get; set; }
+    public bool HasFullTextMatch { get; set; }
+
+    // Personal retrieval info
+    public string? PersonalTarget { get; set; } // "self", "@username", or null
+
     // Context sent to LLM
     public string? ContextSent { get; set; }
     public int ContextTokensEstimate { get; set; }
@@ -311,9 +349,11 @@ public class DebugReport
 public class DebugSearchResult
 {
     public double Similarity { get; set; }
+    public double Distance { get; set; }
     public long[] MessageIds { get; set; } = Array.Empty<long>();
     public string Text { get; set; } = "";
     public DateTimeOffset? Timestamp { get; set; }
+    public bool IsNewsDump { get; set; }
 }
 
 public class DebugStage
