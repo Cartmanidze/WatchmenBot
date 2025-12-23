@@ -103,16 +103,6 @@ public class AskHandler
             // Detect if this is a personal question (about self or @someone)
             var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
 
-            // Rewrite query for better search (only for /ask, not /smart)
-            string searchQuery = question;
-            if (command == "ask")
-            {
-                var (rewritten, rewriteMs) = await RewriteQueryForSearchAsync(question, ct);
-                searchQuery = rewritten;
-                debugReport.RewrittenQuery = rewritten;
-                debugReport.QueryRewriteTimeMs = rewriteMs;
-            }
-
             // Choose search strategy based on command type
             SearchResponse searchResponse;
 
@@ -134,7 +124,7 @@ public class AskHandler
                     chatId,
                     askerUsername ?? askerName,
                     askerName,
-                    searchQuery,  // Use rewritten query for better matches!
+                    question,  // Original query first
                     days: 7,
                     ct);
             }
@@ -147,14 +137,14 @@ public class AskHandler
                     chatId,
                     targetUsername,
                     null, // don't know display name
-                    searchQuery,  // Use rewritten query for better matches!
+                    question,  // Original query first
                     days: 7,
                     ct);
             }
             else
             {
-                // Regular semantic search for /ask with rewritten query
-                searchResponse = await _embeddingService.SearchWithConfidenceAsync(chatId, searchQuery, limit: 20, ct);
+                // Two-stage search: original first, then rewrite if confidence is low
+                searchResponse = await TwoStageSearchAsync(chatId, question, debugReport, ct);
             }
 
             // Handle confidence gate and build context
@@ -753,5 +743,56 @@ public class AskHandler
             _logger.LogWarning(ex, "[QueryRewrite] Failed, using original query");
             return (query, sw.ElapsedMilliseconds);
         }
+    }
+
+    /// <summary>
+    /// Two-stage search: original query first, rewrite only if confidence is low
+    /// </summary>
+    private async Task<SearchResponse> TwoStageSearchAsync(
+        long chatId, string question, DebugReport debugReport, CancellationToken ct)
+    {
+        // Stage 1: Search with original query
+        _logger.LogInformation("[ASK] Stage 1: searching with original query");
+        var originalResponse = await _embeddingService.SearchWithConfidenceAsync(chatId, question, limit: 20, ct);
+
+        // If confidence is High or Medium, use original results
+        if (originalResponse.Confidence >= SearchConfidence.Medium)
+        {
+            _logger.LogInformation("[ASK] Original query confidence={Conf}, using original results",
+                originalResponse.Confidence);
+            return originalResponse;
+        }
+
+        // Stage 2: Try rewritten query
+        _logger.LogInformation("[ASK] Original confidence={Conf}, trying rewritten query",
+            originalResponse.Confidence);
+
+        var (rewritten, rewriteMs) = await RewriteQueryForSearchAsync(question, ct);
+        debugReport.RewrittenQuery = rewritten;
+        debugReport.QueryRewriteTimeMs = rewriteMs;
+
+        // If rewrite is same as original, no point searching again
+        if (rewritten.Equals(question, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug("[ASK] Rewritten query same as original, using original results");
+            return originalResponse;
+        }
+
+        var rewrittenResponse = await _embeddingService.SearchWithConfidenceAsync(chatId, rewritten, limit: 20, ct);
+
+        // Use rewritten if it has better confidence or score
+        if (rewrittenResponse.Confidence > originalResponse.Confidence ||
+            (rewrittenResponse.Confidence == originalResponse.Confidence &&
+             rewrittenResponse.BestScore > originalResponse.BestScore + 0.05))
+        {
+            _logger.LogInformation("[ASK] Rewritten query better: {OrigConf}/{OrigScore:F3} → {NewConf}/{NewScore:F3}",
+                originalResponse.Confidence, originalResponse.BestScore,
+                rewrittenResponse.Confidence, rewrittenResponse.BestScore);
+            return rewrittenResponse;
+        }
+
+        // Original was better or same
+        _logger.LogInformation("[ASK] Original query still better, using original results");
+        return originalResponse;
     }
 }

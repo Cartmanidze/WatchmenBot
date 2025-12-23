@@ -668,6 +668,34 @@ public class EmbeddingService
             // Determine confidence level
             (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, response.HasFullTextMatch);
 
+            // If confidence is low and no full-text match, try ILIKE fallback for slang
+            if (response.Confidence <= SearchConfidence.Low && !response.HasFullTextMatch)
+            {
+                var ilikeResults = await SimpleTextSearchAsync(chatId, query, 10, ct);
+                if (ilikeResults.Count > 0)
+                {
+                    _logger.LogInformation("[Search] ILIKE fallback found {Count} additional results", ilikeResults.Count);
+
+                    // Merge ILIKE results with vector results (avoiding duplicates)
+                    var existingIds = results.Select(r => r.MessageId).ToHashSet();
+                    var newResults = ilikeResults.Where(r => !existingIds.Contains(r.MessageId)).ToList();
+
+                    if (newResults.Count > 0)
+                    {
+                        results.AddRange(newResults);
+                        results = results.OrderByDescending(r => r.Similarity).ToList();
+                        response.Results = results;
+
+                        // Recalculate confidence with ILIKE boost
+                        response.HasFullTextMatch = true;
+                        best = results[0].Similarity;
+                        response.BestScore = best;
+                        (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, true);
+                        response.ConfidenceReason += " (ILIKE fallback)";
+                    }
+                }
+            }
+
             _logger.LogInformation(
                 "[Search] Query: '{Query}' | Best: {Best:F3} | Gap: {Gap:F3} | FullText: {FT} | Confidence: {Conf}",
                 TruncateForLog(query, 50), best, gap, response.HasFullTextMatch, response.Confidence);
@@ -724,6 +752,72 @@ public class EmbeddingService
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Full-text search failed for query: {Query}", query);
+            return new List<SearchResult>();
+        }
+    }
+
+    /// <summary>
+    /// Simple ILIKE search for slang/toxic words that embeddings miss
+    /// </summary>
+    public async Task<List<SearchResult>> SimpleTextSearchAsync(
+        long chatId,
+        string query,
+        int limit = 10,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            // Extract words longer than 3 chars for ILIKE search
+            var words = query
+                .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => w.Length > 3)
+                .Select(w => w.ToLowerInvariant())
+                .Distinct()
+                .Take(5) // Limit to avoid huge queries
+                .ToList();
+
+            if (words.Count == 0)
+                return new List<SearchResult>();
+
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            // Build ILIKE conditions for each word
+            var conditions = words.Select((w, i) => $"LOWER(chunk_text) LIKE @Word{i}").ToList();
+            var whereClause = string.Join(" OR ", conditions);
+
+            var parameters = new DynamicParameters();
+            parameters.Add("ChatId", chatId);
+            parameters.Add("Limit", limit);
+            for (var i = 0; i < words.Count; i++)
+            {
+                parameters.Add($"Word{i}", $"%{words[i]}%");
+            }
+
+            var sql = $"""
+                SELECT
+                    chat_id as ChatId,
+                    message_id as MessageId,
+                    chunk_index as ChunkIndex,
+                    chunk_text as ChunkText,
+                    metadata as MetadataJson,
+                    0.0 as Distance,
+                    0.6 as Similarity
+                FROM message_embeddings
+                WHERE chat_id = @ChatId AND ({whereClause})
+                ORDER BY message_id DESC
+                LIMIT @Limit
+                """;
+
+            var results = await connection.QueryAsync<SearchResult>(sql, parameters);
+
+            _logger.LogDebug("[ILIKE] Found {Count} results for words: {Words}",
+                results.Count(), string.Join(", ", words));
+
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ILIKE search failed for query: {Query}", query);
             return new List<SearchResult>();
         }
     }
