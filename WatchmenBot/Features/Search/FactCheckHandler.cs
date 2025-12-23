@@ -70,7 +70,12 @@ public class FactCheckHandler
             }
 
             // Build conversation context
-            var context = BuildContext(messages);
+            var rawContext = BuildContext(messages);
+
+            // Expand abbreviations and names for better Perplexity understanding
+            var (context, rewriteMs) = await ExpandContextForFactCheckAsync(rawContext, ct);
+            debugReport.RewrittenQuery = context != rawContext ? context : null;
+            debugReport.QueryRewriteTimeMs = rewriteMs;
 
             // Collect debug info for context
             debugReport.ContextSent = context;
@@ -184,5 +189,70 @@ public class FactCheckHandler
             sb.AppendLine($"[{m.DateUtc.ToLocalTime():HH:mm}] {name}: {text}");
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Expand abbreviations and names in context for better Perplexity fact-checking
+    /// </summary>
+    private async Task<(string expanded, long timeMs)> ExpandContextForFactCheckAsync(string context, CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            var systemPrompt = """
+                Ты — помощник для подготовки текста к фактчеку.
+
+                Твоя задача: расшифровать аббревиатуры и сокращения в сообщениях, чтобы поисковик лучше понял о чём речь.
+
+                Правила:
+                1. Расшифруй известные аббревиатуры: SGA → SGA (Shai Gilgeous-Alexander), МУ → МУ (Манчестер Юнайтед)
+                2. Добавь контекст в скобках рядом с первым упоминанием
+                3. НЕ меняй структуру сообщений — только добавляй пояснения
+                4. НЕ меняй имена авторов сообщений
+                5. Если нет аббревиатур — верни текст как есть
+                6. Сохрани формат [время] автор: текст
+
+                Пример:
+                Вход: "[14:30] Вася: SGA лучше Эдварда"
+                Выход: "[14:30] Вася: SGA (Shai Gilgeous-Alexander, NBA) лучше Эдварда (Anthony Edwards, NBA)"
+
+                Отвечай ТОЛЬКО обработанным текстом, без объяснений.
+                """;
+
+            var response = await _llmRouter.CompleteWithFallbackAsync(
+                new LlmRequest
+                {
+                    SystemPrompt = systemPrompt,
+                    UserPrompt = context,
+                    Temperature = 0.1 // Very low for consistency
+                },
+                preferredTag: null, // Use default cheap provider
+                ct: ct);
+
+            sw.Stop();
+
+            var expanded = response.Content.Trim();
+
+            // Safety checks
+            if (string.IsNullOrWhiteSpace(expanded) ||
+                expanded.Length > context.Length * 3 || // Too much expansion
+                expanded.Length < context.Length / 2)   // Lost content
+            {
+                _logger.LogWarning("[FactCheck] Context expansion returned invalid result, using original");
+                return (context, sw.ElapsedMilliseconds);
+            }
+
+            _logger.LogInformation("[FactCheck] Expanded context: {Original} → {Expanded} chars ({Ms}ms)",
+                context.Length, expanded.Length, sw.ElapsedMilliseconds);
+
+            return (expanded, sw.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            _logger.LogWarning(ex, "[FactCheck] Context expansion failed, using original");
+            return (context, sw.ElapsedMilliseconds);
+        }
     }
 }

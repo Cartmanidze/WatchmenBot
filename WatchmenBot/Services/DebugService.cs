@@ -183,6 +183,13 @@ public class DebugService
         sb.AppendLine($"📍 Chat: <code>{report.ChatId}</code>");
         sb.AppendLine($"❓ Query: <i>{EscapeHtml(report.Query)}</i>");
 
+        // Show rewritten query if different
+        if (!string.IsNullOrEmpty(report.RewrittenQuery) && report.RewrittenQuery != report.Query)
+        {
+            sb.AppendLine($"🔄 Rewritten ({report.QueryRewriteTimeMs}ms):");
+            sb.AppendLine($"   <i>{EscapeHtml(TruncateText(report.RewrittenQuery, 300))}</i>");
+        }
+
         // Personal retrieval indicator
         if (!string.IsNullOrEmpty(report.PersonalTarget))
         {
@@ -215,13 +222,20 @@ public class DebugService
     private static string FormatSearchResults(DebugReport report)
     {
         var sb = new StringBuilder();
+
+        var included = report.SearchResults.Where(r => r.IncludedInContext).ToList();
+        var excluded = report.SearchResults.Where(r => !r.IncludedInContext).ToList();
+
         sb.AppendLine($"<b>🎯 Результаты поиска ({report.SearchResults.Count}):</b>");
+        sb.AppendLine($"   ✅ В контексте: {included.Count} | ❌ Исключено: {excluded.Count}");
+        sb.AppendLine();
 
         foreach (var result in report.SearchResults.Take(10))
         {
             var scoreBar = GetScoreBar(result.Similarity);
             var newsFlag = result.IsNewsDump ? " 📰" : "";
-            sb.AppendLine($"{scoreBar} sim=<b>{result.Similarity:F3}</b> dist={result.Distance:F3}{newsFlag}");
+            var contextFlag = result.IncludedInContext ? "✅" : $"❌{result.ExcludedReason}";
+            sb.AppendLine($"{scoreBar} sim=<b>{result.Similarity:F3}</b> dist={result.Distance:F3}{newsFlag} [{contextFlag}]");
             sb.AppendLine($"   ids: {string.Join(",", result.MessageIds.Take(3))}");
             sb.AppendLine($"   <i>{EscapeHtml(TruncateText(result.Text, 100))}</i>");
         }
@@ -229,6 +243,20 @@ public class DebugService
         if (report.SearchResults.Count > 10)
         {
             sb.AppendLine($"   ... и ещё {report.SearchResults.Count - 10}");
+        }
+
+        // Show excluded reasons summary
+        if (excluded.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("<b>❌ Исключённые:</b>");
+            var byReason = excluded.GroupBy(r => r.ExcludedReason ?? "unknown")
+                .OrderByDescending(g => g.Count());
+            foreach (var group in byReason)
+            {
+                var ids = string.Join(",", group.SelectMany(r => r.MessageIds).Take(5));
+                sb.AppendLine($"   {group.Key}: {group.Count()} (ids: {ids})");
+            }
         }
 
         sb.AppendLine();
@@ -306,6 +334,8 @@ public class DebugReport
     public string Command { get; set; } = "";
     public long ChatId { get; set; }
     public string Query { get; set; } = "";
+    public string? RewrittenQuery { get; set; } // Query after LLM rewrite for better search
+    public long QueryRewriteTimeMs { get; set; }
 
     // Search results
     public List<DebugSearchResult> SearchResults { get; set; } = new();
@@ -354,6 +384,10 @@ public class DebugSearchResult
     public string Text { get; set; } = "";
     public DateTimeOffset? Timestamp { get; set; }
     public bool IsNewsDump { get; set; }
+
+    // Context inclusion tracking
+    public bool IncludedInContext { get; set; }
+    public string? ExcludedReason { get; set; } // "ok", "no_text", "duplicate", etc.
 }
 
 public class DebugStage

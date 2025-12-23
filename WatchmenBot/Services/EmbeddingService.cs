@@ -626,16 +626,34 @@ public class EmbeddingService
                 return response;
             }
 
-            // Apply news dump penalty
+            // Apply adjustments: news dump penalty + recency boost
+            var now = DateTimeOffset.UtcNow;
             foreach (var r in results)
             {
+                // News dump penalty
                 if (r.IsNewsDump)
                 {
-                    r.Similarity -= 0.05; // Penalty for news dumps
+                    r.Similarity -= 0.05;
+                }
+
+                // Recency boost: newer messages get up to +0.1 boost
+                var timestamp = ParseTimestampFromMetadata(r.MetadataJson);
+                if (timestamp != DateTimeOffset.MinValue)
+                {
+                    var ageInDays = (now - timestamp).TotalDays;
+                    // Last 7 days: +0.1, 30 days: +0.05, 90 days: +0.02, older: 0
+                    var recencyBoost = ageInDays switch
+                    {
+                        <= 7 => 0.10,
+                        <= 30 => 0.05,
+                        <= 90 => 0.02,
+                        _ => 0.0
+                    };
+                    r.Similarity += recencyBoost;
                 }
             }
 
-            // Re-sort after penalty
+            // Re-sort after adjustments
             results = results.OrderByDescending(r => r.Similarity).ToList();
             response.Results = results;
 
@@ -931,11 +949,13 @@ public class EmbeddingService
 
     /// <summary>
     /// Combined personal retrieval: user's messages + mentions of user
+    /// Now with proper vector search within the pool!
     /// </summary>
     public async Task<SearchResponse> GetPersonalContextAsync(
         long chatId,
         string usernameOrName,
         string? displayName,
+        string question,  // The actual question to search for relevance
         int days = 7,
         CancellationToken ct = default)
     {
@@ -954,57 +974,85 @@ public class EmbeddingService
                 !searchNames.Any(n => n.Equals(displayName, StringComparison.OrdinalIgnoreCase)))
                 searchNames.Add(displayName);
 
-            var allResults = new List<SearchResult>();
+            // Step 1: Collect pool of message IDs from user's messages + mentions
+            var poolMessageIds = new HashSet<long>();
 
             foreach (var name in searchNames)
             {
-                // Get user's own messages
-                var userMessages = await GetUserMessagesAsync(chatId, name, days, 20, ct);
-                allResults.AddRange(userMessages);
+                // Get user's own messages (larger pool)
+                var userMessages = await GetUserMessagesAsync(chatId, name, days, 100, ct);
+                foreach (var msg in userMessages)
+                    poolMessageIds.Add(msg.MessageId);
 
                 // Get mentions of user
-                var mentions = await GetMentionsOfUserAsync(chatId, name, days, 15, ct);
-                allResults.AddRange(mentions);
+                var mentions = await GetMentionsOfUserAsync(chatId, name, days, 50, ct);
+                foreach (var msg in mentions)
+                    poolMessageIds.Add(msg.MessageId);
             }
 
-            // Deduplicate by message ID
-            var deduped = allResults
-                .GroupBy(r => r.MessageId)
-                .Select(g => g.First())
-                .OrderByDescending(r => ParseTimestampFromMetadata(r.MetadataJson))
-                .Take(30)
-                .ToList();
+            _logger.LogInformation(
+                "[Personal] User: {Names} | Pool size: {Count} messages",
+                string.Join("/", searchNames), poolMessageIds.Count);
 
-            response.Results = deduped;
-            response.HasFullTextMatch = deduped.Count > 0;
-
-            // Confidence based on how much we found
-            if (deduped.Count >= 10)
-            {
-                response.Confidence = SearchConfidence.High;
-                response.ConfidenceReason = $"Найдено {deduped.Count} сообщений про/от пользователя";
-            }
-            else if (deduped.Count >= 3)
-            {
-                response.Confidence = SearchConfidence.Medium;
-                response.ConfidenceReason = $"Найдено {deduped.Count} сообщений";
-            }
-            else if (deduped.Count > 0)
-            {
-                response.Confidence = SearchConfidence.Low;
-                response.ConfidenceReason = $"Мало сообщений ({deduped.Count})";
-            }
-            else
+            if (poolMessageIds.Count == 0)
             {
                 response.Confidence = SearchConfidence.None;
                 response.ConfidenceReason = "Пользователь не найден в истории чата";
+                return response;
             }
 
-            response.BestScore = deduped.Count > 0 ? 1.0 : 0.0;
+            // Step 2: Vector search WITHIN this pool using the question
+            var results = await SearchByVectorInPoolAsync(chatId, question, poolMessageIds.ToList(), 20, ct);
+
+            if (results.Count == 0)
+            {
+                response.Confidence = SearchConfidence.Low;
+                response.ConfidenceReason = $"Найден пул из {poolMessageIds.Count} сообщений, но не релевантных вопросу";
+                return response;
+            }
+
+            // Apply recency boost (same as main search)
+            var now = DateTimeOffset.UtcNow;
+            foreach (var r in results)
+            {
+                if (r.IsNewsDump)
+                    r.Similarity -= 0.05;
+
+                var timestamp = ParseTimestampFromMetadata(r.MetadataJson);
+                if (timestamp != DateTimeOffset.MinValue)
+                {
+                    var ageInDays = (now - timestamp).TotalDays;
+                    var recencyBoost = ageInDays switch
+                    {
+                        <= 7 => 0.10,
+                        <= 30 => 0.05,
+                        <= 90 => 0.02,
+                        _ => 0.0
+                    };
+                    r.Similarity += recencyBoost;
+                }
+            }
+
+            // Re-sort after adjustments
+            results = results.OrderByDescending(r => r.Similarity).ToList();
+            response.Results = results;
+
+            // Calculate confidence metrics
+            var best = results[0].Similarity;
+            var fifth = results.Count >= 5 ? results[4].Similarity : results.Last().Similarity;
+            var gap = best - fifth;
+
+            response.BestScore = best;
+            response.ScoreGap = gap;
+            response.HasFullTextMatch = false; // Could add full-text within pool if needed
+
+            // Determine confidence level (same thresholds as main search)
+            (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, false);
+            response.ConfidenceReason = $"[Персональный пул: {poolMessageIds.Count}] " + response.ConfidenceReason;
 
             _logger.LogInformation(
-                "[Personal] User: {Names} | Found: {Count} | Confidence: {Conf}",
-                string.Join("/", searchNames), deduped.Count, response.Confidence);
+                "[Personal] User: {Names} | Pool: {Pool} | Best: {Best:F3} | Gap: {Gap:F3} | Confidence: {Conf}",
+                string.Join("/", searchNames), poolMessageIds.Count, best, gap, response.Confidence);
 
             return response;
         }
@@ -1014,6 +1062,62 @@ public class EmbeddingService
             response.Confidence = SearchConfidence.None;
             response.ConfidenceReason = "Ошибка поиска";
             return response;
+        }
+    }
+
+    /// <summary>
+    /// Vector search within a specific pool of message IDs
+    /// </summary>
+    private async Task<List<SearchResult>> SearchByVectorInPoolAsync(
+        long chatId,
+        string query,
+        List<long> messageIds,
+        int limit = 20,
+        CancellationToken ct = default)
+    {
+        if (messageIds.Count == 0)
+            return new List<SearchResult>();
+
+        try
+        {
+            var queryEmbedding = await _embeddingClient.GetEmbeddingAsync(query, ct);
+            if (queryEmbedding.Length == 0)
+            {
+                _logger.LogWarning("[Personal] Failed to get embedding for query: {Query}", query);
+                return new List<SearchResult>();
+            }
+
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+            var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
+
+            var results = await connection.QueryAsync<SearchResult>(
+                """
+                SELECT
+                    chat_id as ChatId,
+                    message_id as MessageId,
+                    chunk_index as ChunkIndex,
+                    chunk_text as ChunkText,
+                    metadata as MetadataJson,
+                    embedding <=> @Embedding::vector as Distance,
+                    1 - (embedding <=> @Embedding::vector) as Similarity
+                FROM message_embeddings
+                WHERE chat_id = @ChatId
+                  AND message_id = ANY(@MessageIds)
+                ORDER BY embedding <=> @Embedding::vector
+                LIMIT @Limit
+                """,
+                new { ChatId = chatId, Embedding = embeddingString, MessageIds = messageIds.ToArray(), Limit = limit });
+
+            return results.Select(r =>
+            {
+                r.IsNewsDump = DetectNewsDump(r.ChunkText);
+                return r;
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to search in pool for query: {Query}", query);
+            return new List<SearchResult>();
         }
     }
 

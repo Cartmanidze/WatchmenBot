@@ -337,8 +337,8 @@ public class TelegramPollingService : BackgroundService
             var groupCommands = new BotCommand[]
             {
                 new() { Command = "search", Description = "Поиск по истории чата" },
-                new() { Command = "ask", Description = "Дерзкий вопрос по чату (AI)" },
-                new() { Command = "q", Description = "Серьёзный вопрос (AI)" },
+                new() { Command = "ask", Description = "Вопрос по истории чата (RAG)" },
+                new() { Command = "smart", Description = "Поиск в интернете (Perplexity)" },
                 new() { Command = "summary", Description = "Саммари за N часов" },
                 new() { Command = "recall", Description = "Сообщения пользователя за неделю" },
                 new() { Command = "truth", Description = "Фактчек последних сообщений" },
@@ -348,7 +348,7 @@ public class TelegramPollingService : BackgroundService
             var privateCommands = new BotCommand[]
             {
                 new() { Command = "admin", Description = "Показать справку по админ-командам" },
-                new() { Command = "q", Description = "Серьёзный вопрос (AI)" },
+                new() { Command = "smart", Description = "Поиск в интернете (Perplexity)" },
             };
 
             // Set commands for all group chats
