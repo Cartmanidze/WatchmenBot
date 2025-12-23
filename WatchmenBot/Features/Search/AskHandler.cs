@@ -102,10 +102,20 @@ public class AskHandler
             // Detect if this is a personal question (about self or @someone)
             var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
 
-            // Choose search strategy based on question type
+            // Choose search strategy based on command type
             SearchResponse searchResponse;
 
-            if (personalTarget == "self" && command == "ask")
+            if (command == "smart")
+            {
+                // /smart — чистый запрос к Perplexity, без поиска по чату
+                _logger.LogInformation("[SMART] Direct query to Perplexity (no RAG)");
+                searchResponse = new SearchResponse
+                {
+                    Confidence = SearchConfidence.None,
+                    ConfidenceReason = "Прямой запрос к Perplexity (без RAG)"
+                };
+            }
+            else if (personalTarget == "self")
             {
                 // Personal question about self — use personal retrieval
                 _logger.LogInformation("[ASK] Personal question detected: self ({Name}/{Username})", askerName, askerUsername);
@@ -116,7 +126,7 @@ public class AskHandler
                     days: 7,
                     ct);
             }
-            else if (personalTarget != null && personalTarget.StartsWith("@") && command == "ask")
+            else if (personalTarget != null && personalTarget.StartsWith("@"))
             {
                 // Question about @someone — use personal retrieval for that user
                 var targetUsername = personalTarget.TrimStart('@');
@@ -130,7 +140,7 @@ public class AskHandler
             }
             else
             {
-                // Regular semantic search
+                // Regular semantic search for /ask
                 searchResponse = await _embeddingService.SearchWithConfidenceAsync(chatId, question, limit: 20, ct);
             }
 
@@ -156,9 +166,14 @@ public class AskHandler
             string? context = null;
             string? confidenceWarning = null;
 
-            if (command == "ask")
+            if (command == "smart")
             {
-                // /ask requires context
+                // /smart — без контекста, прямой запрос к Perplexity
+                context = null;
+            }
+            else // /ask
+            {
+                // /ask requires context from chat
                 if (searchResponse.Confidence == SearchConfidence.None)
                 {
                     await _bot.SendMessage(
@@ -177,18 +192,6 @@ public class AskHandler
                 }
 
                 context = BuildContext(results);
-            }
-            else // /smart
-            {
-                // /smart - context is optional, but warn if weak
-                if (results.Count > 0 && searchResponse.Confidence != SearchConfidence.None)
-                {
-                    context = BuildContext(results);
-                    if (searchResponse.Confidence == SearchConfidence.Low)
-                    {
-                        confidenceWarning = "⚠️ <i>Контекст из чата слабый</i>\n\n";
-                    }
-                }
             }
 
             // Collect debug info for context
