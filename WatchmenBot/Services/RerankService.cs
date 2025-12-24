@@ -50,16 +50,20 @@ public class RerankService
                 .Take(5) // Max 5 keyword matches
                 .ToList();
 
-            // Take top N, but ensure keyword matches are included
+            // PRIORITIZE keyword matches - put them first, then fill with top by score
             var topByScore = results.Take(MaxResultsToRerank).ToList();
-            var toRerank = topByScore
-                .Union(keywordMatches) // Add keyword matches if not already in top N
+            var keywordMatchIds = keywordMatches.Select(r => r.MessageId).ToHashSet();
+            var nonKeywordTopResults = topByScore.Where(r => !keywordMatchIds.Contains(r.MessageId)).ToList();
+
+            // Keyword matches first, then fill remaining slots with top results
+            var toRerank = keywordMatches
+                .Concat(nonKeywordTopResults)
                 .Take(MaxResultsToRerank)
                 .ToList();
 
             if (keywordMatches.Count > 0)
             {
-                _logger.LogInformation("[Rerank] Boosted {Count} keyword matches: {Keywords}",
+                _logger.LogInformation("[Rerank] Prioritized {Count} keyword matches (keywords: {Keywords})",
                     keywordMatches.Count, string.Join(", ", keywords.Take(3)));
             }
 
@@ -178,6 +182,14 @@ public class RerankService
                 json = string.Join("\n", lines.Skip(1).TakeWhile(l => !l.StartsWith("```")));
             }
 
+            // Try to find JSON array in the response
+            var startIdx = json.IndexOf('[');
+            var endIdx = json.LastIndexOf(']');
+            if (startIdx >= 0 && endIdx > startIdx)
+            {
+                json = json[startIdx..(endIdx + 1)];
+            }
+
             using var doc = JsonDocument.Parse(json);
             var array = doc.RootElement.EnumerateArray().ToList();
 
@@ -191,10 +203,13 @@ public class RerankService
                 var score = item.GetProperty("score").GetInt32();
                 scores.Add(Math.Clamp(score, 0, 3)); // Clamp to valid range
             }
+
+            _logger.LogDebug("[Rerank] Parsed {Count} scores successfully", scores.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Rerank] Failed to parse scores, using defaults");
+            _logger.LogWarning("[Rerank] Failed to parse scores from: {Content}. Error: {Error}",
+                TruncateText(content, 200), ex.Message);
             // Return default scores (2 = medium relevance)
             scores = Enumerable.Repeat(2, expectedCount).ToList();
         }
