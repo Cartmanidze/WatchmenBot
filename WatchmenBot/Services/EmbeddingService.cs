@@ -871,7 +871,11 @@ public class EmbeddingService
                 parameters.Add($"Word{i}", $"%{wordList[i]}%");
             }
 
-            var sql = $"""
+            // First try embeddings table
+            var embeddingsConditions = wordList.Select((w, i) => $"LOWER(chunk_text) LIKE @Word{i}").ToList();
+            var embeddingsWhere = string.Join(" OR ", embeddingsConditions);
+
+            var embeddingsSql = $"""
                 SELECT
                     me.chat_id as ChatId,
                     me.message_id as MessageId,
@@ -879,20 +883,65 @@ public class EmbeddingService
                     me.chunk_text as ChunkText,
                     me.metadata as MetadataJson,
                     0.0 as Distance,
-                    0.9 as Similarity
+                    0.95 as Similarity
                 FROM message_embeddings me
                 JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
-                WHERE me.chat_id = @ChatId AND ({whereClause})
+                WHERE me.chat_id = @ChatId AND ({embeddingsWhere})
                 ORDER BY m.date_utc DESC
                 LIMIT @Limit
                 """;
 
-            var results = await connection.QueryAsync<SearchResult>(sql, parameters);
+            var results = (await connection.QueryAsync<SearchResult>(embeddingsSql, parameters)).ToList();
 
-            _logger.LogDebug("[ILIKE] Found {Count} results for words: {Words}",
-                results.Count(), string.Join(", ", wordList));
+            _logger.LogDebug("[ILIKE] Embeddings: {Count} results for words: {Words}",
+                results.Count, string.Join(", ", wordList));
 
-            return results.ToList();
+            // Fallback: search raw messages table ONLY if embeddings found nothing
+            // This catches messages not yet embedded (new or too short)
+            // Limited to last 30 days to avoid slow full table scans
+            if (results.Count == 0)
+            {
+                var messagesConditions = wordList.Select((w, i) => $"LOWER(text) LIKE @Word{i}").ToList();
+                var messagesWhere = string.Join(" OR ", messagesConditions);
+
+                parameters.Add("Since", DateTimeOffset.UtcNow.AddDays(-30));
+
+                var messagesSql = $"""
+                    SELECT
+                        chat_id as ChatId,
+                        id as MessageId,
+                        0 as ChunkIndex,
+                        text as ChunkText,
+                        jsonb_build_object(
+                            'Username', username,
+                            'DisplayName', display_name,
+                            'DateUtc', date_utc
+                        )::text as MetadataJson,
+                        0.0 as Distance,
+                        0.9 as Similarity
+                    FROM messages
+                    WHERE chat_id = @ChatId
+                      AND text IS NOT NULL
+                      AND date_utc >= @Since
+                      AND ({messagesWhere})
+                    ORDER BY date_utc DESC
+                    LIMIT @Limit
+                    """;
+
+                var rawResults = (await connection.QueryAsync<SearchResult>(messagesSql, parameters)).ToList();
+
+                if (rawResults.Count > 0)
+                {
+                    _logger.LogInformation("[ILIKE] Raw messages fallback found {Count} results (last 30 days)",
+                        rawResults.Count);
+                    results.AddRange(rawResults);
+                }
+            }
+
+            _logger.LogDebug("[ILIKE] Total: {Count} results for words: {Words}",
+                results.Count, string.Join(", ", wordList));
+
+            return results;
         }
         catch (Exception ex)
         {
