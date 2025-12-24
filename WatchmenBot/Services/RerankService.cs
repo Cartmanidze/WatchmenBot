@@ -249,4 +249,35 @@ public class RerankResponse
 
         return !origTop3.SetEquals(newTop3);
     }
+
+    /// <summary>
+    /// Get results filtered by minimum rerank score
+    /// Removes results with score below threshold (0-1 = irrelevant)
+    /// </summary>
+    public List<SearchResult> GetFilteredResults(int minScore = 2)
+    {
+        if (Scores.Count == 0 || Results.Count == 0)
+            return Results;
+
+        var filtered = new List<SearchResult>();
+        for (var i = 0; i < Results.Count && i < Scores.Count; i++)
+        {
+            if (Scores[i] >= minScore)
+                filtered.Add(Results[i]);
+        }
+
+        // Always keep at least top result if nothing passes filter
+        if (filtered.Count == 0 && Results.Count > 0)
+            filtered.Add(Results[0]);
+
+        return filtered;
+    }
+
+    /// <summary>
+    /// Count of results filtered out due to low score
+    /// </summary>
+    public int FilteredOutCount(int minScore = 2)
+    {
+        return Scores.Count(s => s < minScore);
+    }
 }

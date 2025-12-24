@@ -172,9 +172,15 @@ public class AskHandler
 
                     if (rerankResponse.Error == null)
                     {
-                        searchResponse.Results = rerankResponse.Results;
-                        _logger.LogInformation("[ASK] Reranked {Count} results (order changed: {Changed})",
-                            rerankResponse.Results.Count, rerankResponse.HasSignificantChange());
+                        // Filter out low-relevance results (score 0-1 = irrelevant)
+                        var filteredResults = rerankResponse.GetFilteredResults(minScore: 2);
+                        var filteredOut = rerankResponse.FilteredOutCount(minScore: 2);
+
+                        searchResponse.Results = filteredResults;
+                        debugReport.RerankFilteredOut = filteredOut;
+
+                        _logger.LogInformation("[ASK] Reranked {Count} results, filtered out {Filtered} low-relevance (order changed: {Changed})",
+                            filteredResults.Count, filteredOut, rerankResponse.HasSignificantChange());
                     }
                 }
             }
@@ -339,7 +345,7 @@ public class AskHandler
     private const int ContextCharBudget = ContextTokenBudget * CharsPerToken; // ~16000 chars
 
     // Context window settings
-    private const int ContextWindowSize = 2; // ±2 messages around each found message
+    private const int ContextWindowSize = 1; // ±1 messages around each found message (reduced from ±2 to minimize noise)
 
     /// <summary>
     /// Build context with context windows around found messages
@@ -500,27 +506,33 @@ public class AskHandler
         var factsSystemPrompt = """
             Ты — аналитик чата. Извлекай факты СТРОГО из контекста.
 
-            ВАЖНО: Отвечай ТОЛЬКО JSON, без markdown, без пояснений.
-            Если факт не подтверждён контекстом — НЕ добавляй его.
+            КРИТИЧЕСКИ ВАЖНО:
+            1. Отвечай ТОЛЬКО JSON, без markdown, без пояснений
+            2. Извлекай ТОЛЬКО факты, НАПРЯМУЮ связанные с вопросом
+            3. ИГНОРИРУЙ сообщения, которые не относятся к теме вопроса
+            4. Если в контексте несколько диалогов — используй только релевантные
+            5. Если факт не подтверждён контекстом — НЕ добавляй его
 
             Формат ответа:
             {
               "facts": [
-                {"who": "Имя", "said": "прямая цитата или пересказ", "context": "что обсуждали"}
+                {"who": "Имя", "said": "прямая цитата или пересказ", "relevance": "как связано с вопросом"}
               ],
-              "answer": "краткий ответ на вопрос из фактов",
+              "answer": "краткий ответ на вопрос ТОЛЬКО из релевантных фактов",
               "roast_target": "кого подколоть (имя) или null",
-              "best_quote": "самая смешная/глупая цитата или null"
+              "best_quote": "самая смешная/глупая цитата ПО ТЕМЕ или null",
+              "irrelevant_ignored": true/false
             }
             """;
 
         var factsPrompt = $"""
-            Контекст из чата:
+            ВОПРОС от {askerName}: {question}
+
+            Контекст из чата (может содержать нерелевантные сообщения — игнорируй их):
             {context}
 
-            Вопрос от {askerName}: {question}
-
-            Извлеки факты ТОЛЬКО из контекста выше. Не додумывай.
+            Извлеки ТОЛЬКО факты, которые НАПРЯМУЮ отвечают на вопрос "{question}".
+            Нерелевантные диалоги — пропускай.
             """;
 
         var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
@@ -549,6 +561,63 @@ public class AskHandler
 
         _logger.LogInformation("[ASK] Stage 1 (structured facts): {Length} chars", factsResponse.Content.Length);
 
+        // Check if facts extraction returned empty - fallback to direct generation
+        var factsEmpty = IsFactsEmpty(factsResponse.Content);
+        if (factsEmpty)
+        {
+            _logger.LogWarning("[ASK] Facts extraction returned empty, falling back to direct generation");
+
+            // Fallback: direct single-stage generation with context
+            var directPrompt = $"""
+                Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
+
+                Контекст из чата:
+                {context}
+
+                Спрашивает: {askerName}
+                Вопрос: {question}
+                """;
+
+            var directResponse = await _llmRouter.CompleteWithFallbackAsync(
+                new LlmRequest
+                {
+                    SystemPrompt = settings.SystemPrompt,
+                    UserPrompt = directPrompt,
+                    Temperature = 0.6
+                },
+                preferredTag: settings.LlmTag,
+                ct: ct);
+
+            totalSw.Stop();
+
+            // Update debug info for fallback
+            debugReport.SystemPrompt = settings.SystemPrompt;
+            debugReport.UserPrompt = directPrompt;
+            debugReport.LlmProvider = directResponse.Provider;
+            debugReport.LlmModel = directResponse.Model;
+            debugReport.LlmTag = settings.LlmTag;
+            debugReport.Temperature = 0.6;
+            debugReport.LlmResponse = directResponse.Content;
+            debugReport.PromptTokens = factsResponse.PromptTokens + directResponse.PromptTokens;
+            debugReport.CompletionTokens = factsResponse.CompletionTokens + directResponse.CompletionTokens;
+            debugReport.TotalTokens = factsResponse.TotalTokens + directResponse.TotalTokens;
+            debugReport.LlmTimeMs = totalSw.ElapsedMilliseconds;
+
+            debugReport.Stages.Add(new DebugStage
+            {
+                StageNumber = 2,
+                Name = "Direct (fallback)",
+                Temperature = 0.6,
+                SystemPrompt = settings.SystemPrompt,
+                UserPrompt = directPrompt,
+                Response = directResponse.Content,
+                Tokens = directResponse.TotalTokens,
+                TimeMs = totalSw.ElapsedMilliseconds - stage1Sw.ElapsedMilliseconds
+            });
+
+            return directResponse.Content;
+        }
+
         // STAGE 2: Add humor based ONLY on structured facts
         var humorPrompt = $"""
             Спрашивает: {askerName}
@@ -558,14 +627,15 @@ public class AskHandler
             {factsResponse.Content}
 
             ПРАВИЛА:
-            1. Используй ТОЛЬКО факты из JSON выше
+            1. Используй ТОЛЬКО факты из JSON выше — они уже отфильтрованы по релевантности
             2. НЕ придумывай новых фактов или цитат
-            3. Если в JSON есть "roast_target" — подколи его
-            4. ОБЯЗАТЕЛЬНО включи цитату: если есть "best_quote" — вставь её дословно в <i>кавычках</i>
-            5. Ссылайся на конкретные высказывания из "facts" — кто что сказал
+            3. Отвечай СТРОГО на вопрос "{question}"
+            4. Если в JSON есть "roast_target" — подколи его
+            5. Если есть "best_quote" — вставь её дословно в <i>кавычках</i>
             6. Ответ должен быть дерзким и с матом
+            7. Если facts пустой — честно скажи что ничего не нашёл по теме
 
-            Формат: 2-4 предложения с цитатой, HTML для <b> и <i>.
+            Формат: 2-4 предложения, HTML для <b> и <i>.
             """;
 
         var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
@@ -660,6 +730,53 @@ public class AskHandler
             .Replace("&", "&amp;")
             .Replace("<", "&lt;")
             .Replace(">", "&gt;");
+    }
+
+    /// <summary>
+    /// Check if facts extraction returned empty or unusable result
+    /// </summary>
+    private static bool IsFactsEmpty(string factsJson)
+    {
+        if (string.IsNullOrWhiteSpace(factsJson))
+            return true;
+
+        try
+        {
+            // Remove markdown code blocks if present
+            var json = factsJson.Trim();
+            if (json.StartsWith("```"))
+            {
+                var lines = json.Split('\n');
+                json = string.Join("\n", lines.Skip(1).TakeWhile(l => !l.StartsWith("```")));
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            // Check if facts array exists and is not empty
+            if (root.TryGetProperty("facts", out var factsArray))
+            {
+                if (factsArray.ValueKind == System.Text.Json.JsonValueKind.Array && factsArray.GetArrayLength() > 0)
+                    return false; // Has facts
+            }
+
+            // Check if answer exists and is meaningful
+            if (root.TryGetProperty("answer", out var answer))
+            {
+                var answerText = answer.GetString() ?? "";
+                if (!string.IsNullOrWhiteSpace(answerText) &&
+                    !answerText.Contains("не найден") &&
+                    !answerText.Contains("нет данных") &&
+                    !answerText.Contains("не упоминается"))
+                    return false; // Has meaningful answer
+            }
+
+            return true; // Empty or unusable
+        }
+        catch
+        {
+            return true; // Parse error = treat as empty
+        }
     }
 
     private static string GetDisplayName(User? user)

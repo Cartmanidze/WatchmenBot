@@ -204,7 +204,8 @@ public class DebugService
         if (report.RerankTimeMs > 0)
         {
             var changed = report.RerankOrderChanged ? "🔄 порядок изменился" : "✓ порядок сохранён";
-            sb.AppendLine($"📊 <b>Rerank</b> ({report.RerankTimeMs}ms, {report.RerankTokensUsed} tokens) {changed}");
+            var filtered = report.RerankFilteredOut > 0 ? $" | ❌ отфильтровано: {report.RerankFilteredOut}" : "";
+            sb.AppendLine($"📊 <b>Rerank</b> ({report.RerankTimeMs}ms, {report.RerankTokensUsed} tokens) {changed}{filtered}");
             if (report.RerankScores.Count > 0)
             {
                 var scoreStrs = report.RerankScores.Take(5).Select((s, i) => $"#{i + 1}:{s}");
@@ -368,6 +369,7 @@ public class DebugReport
     public int RerankTokensUsed { get; set; }
     public List<int> RerankScores { get; set; } = new(); // LLM scores (0-3)
     public bool RerankOrderChanged { get; set; }
+    public int RerankFilteredOut { get; set; } // Count of results filtered out due to low score
 
     // Search results
     public List<DebugSearchResult> SearchResults { get; set; } = new();
