@@ -84,6 +84,13 @@ public class RerankService
                 topBySimilarity.Count(s => toRerank.Any(r => r.MessageId == s.MessageId)),
                 topByRrf.Count(rrf => toRerank.Any(r => r.MessageId == rrf.MessageId)));
 
+            // Log documents being sent to LLM
+            for (var i = 0; i < Math.Min(5, toRerank.Count); i++)
+            {
+                _logger.LogDebug("[Rerank] ToRerank[{i}]: MsgId={MsgId} | Sim={Sim:F3} | Text: {Text}",
+                    i, toRerank[i].MessageId, toRerank[i].Similarity, TruncateText(toRerank[i].ChunkText, 60));
+            }
+
             // Build documents list for LLM
             var documents = toRerank.Select((r, i) => new
             {
@@ -137,16 +144,27 @@ public class RerankService
             var scores = ParseScores(llmResponse.Content, toRerank.Count);
             response.Scores = scores;
 
+            // Log original similarities before combining
+            _logger.LogDebug("[Rerank] Before combine: {Sims}",
+                string.Join(", ", toRerank.Take(5).Select((r, i) => $"#{i}:sim={r.Similarity:F3}")));
+
             // Apply scores and rerank
             for (var i = 0; i < toRerank.Count && i < scores.Count; i++)
             {
-                toRerank[i].Similarity = CombineScores(toRerank[i].Similarity, scores[i]);
+                var origSim = toRerank[i].Similarity;
+                toRerank[i].Similarity = CombineScores(origSim, scores[i]);
+                if (i < 5)
+                {
+                    _logger.LogDebug("[Rerank] Doc#{i}: origSim={Orig:F3} + score={Score} → combined={Combined:F3}",
+                        i, origSim, scores[i], toRerank[i].Similarity);
+                }
             }
 
-            // Sort by new scores
+            // Sort by new scores and add remaining results (excluding already included)
+            var rerankedIds = new HashSet<long>(toRerank.Select(r => r.MessageId));
             var reranked = toRerank
                 .OrderByDescending(r => r.Similarity)
-                .Concat(results.Skip(MaxResultsToRerank)) // Add remaining results
+                .Concat(results.Where(r => !rerankedIds.Contains(r.MessageId)))
                 .ToList();
 
             response.Results = reranked;
@@ -160,13 +178,16 @@ public class RerankService
                 "[Rerank] Query: '{Query}' | Reranked {Count} results | Time: {Ms}ms | Tokens: {Tokens}",
                 TruncateText(query, 30), toRerank.Count, response.TimeMs, response.TokensUsed);
 
-            // Log score changes
-            for (var i = 0; i < Math.Min(5, scores.Count); i++)
+            // Log top 5 reranked results with their scores
+            for (var i = 0; i < Math.Min(5, reranked.Count); i++)
             {
-                var origPos = response.OriginalOrder.IndexOf(response.RerankedOrder[i]);
-                _logger.LogDebug("[Rerank] #{NewPos} ← #{OldPos} (score={Score})",
-                    i + 1, origPos + 1, scores.Count > i ? scores[response.OriginalOrder.IndexOf(response.RerankedOrder[i])] : -1);
+                var r = reranked[i];
+                _logger.LogDebug("[Rerank] #{Pos}: MsgId={MsgId} | Combined={Sim:F3} | Text: {Text}",
+                    i + 1, r.MessageId, r.Similarity, TruncateText(r.ChunkText, 50));
             }
+
+            // Log LLM scores (before combining)
+            _logger.LogDebug("[Rerank] LLM scores: {Scores}", string.Join(", ", scores.Select((s, i) => $"#{i}:{s}")));
 
             return response;
         }
@@ -242,12 +263,13 @@ public class RerankService
 
     /// <summary>
     /// Combine original similarity with rerank score
-    /// Formula: 0.5 * original + 0.5 * (rerank_score / 3)
+    /// Formula: 0.3 * original + 0.7 * (rerank_score / 3)
+    /// Rerank score weighted higher because LLM judgment is more accurate for relevance
     /// </summary>
     private static double CombineScores(double originalSimilarity, int rerankScore)
     {
         var normalizedRerank = rerankScore / 3.0; // 0-1 range
-        return 0.5 * originalSimilarity + 0.5 * normalizedRerank;
+        return 0.3 * originalSimilarity + 0.7 * normalizedRerank;
     }
 
     private static string TruncateText(string text, int maxLength)
