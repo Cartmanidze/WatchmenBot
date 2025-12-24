@@ -830,7 +830,7 @@ public class EmbeddingService
         try
         {
             // Extract words longer than 3 chars for ILIKE search
-            var words = query
+            var rawWords = query
                 .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries)
                 .Where(w => w.Length > 3)
                 .Select(w => w.ToLowerInvariant())
@@ -838,21 +838,37 @@ public class EmbeddingService
                 .Take(5) // Limit to avoid huge queries
                 .ToList();
 
-            if (words.Count == 0)
+            if (rawWords.Count == 0)
                 return new List<SearchResult>();
+
+            // Add stems (word roots) to catch different word forms
+            // e.g., "сосунов" -> also search for "сосун"
+            var words = new HashSet<string>(rawWords);
+            foreach (var word in rawWords)
+            {
+                var stem = GetRussianStem(word);
+                if (!string.IsNullOrEmpty(stem) && stem.Length >= 3 && stem != word)
+                {
+                    words.Add(stem);
+                }
+            }
+
+            _logger.LogDebug("[ILIKE] Words: [{Raw}] + stems: [{All}]",
+                string.Join(", ", rawWords), string.Join(", ", words));
 
             using var connection = await _connectionFactory.CreateConnectionAsync();
 
             // Build ILIKE conditions for each word
-            var conditions = words.Select((w, i) => $"LOWER(chunk_text) LIKE @Word{i}").ToList();
+            var wordList = words.ToList();
+            var conditions = wordList.Select((w, i) => $"LOWER(chunk_text) LIKE @Word{i}").ToList();
             var whereClause = string.Join(" OR ", conditions);
 
             var parameters = new DynamicParameters();
             parameters.Add("ChatId", chatId);
             parameters.Add("Limit", limit);
-            for (var i = 0; i < words.Count; i++)
+            for (var i = 0; i < wordList.Count; i++)
             {
-                parameters.Add($"Word{i}", $"%{words[i]}%");
+                parameters.Add($"Word{i}", $"%{wordList[i]}%");
             }
 
             var sql = $"""
@@ -874,7 +890,7 @@ public class EmbeddingService
             var results = await connection.QueryAsync<SearchResult>(sql, parameters);
 
             _logger.LogDebug("[ILIKE] Found {Count} results for words: {Words}",
-                results.Count(), string.Join(", ", words));
+                results.Count(), string.Join(", ", wordList));
 
             return results.ToList();
         }
@@ -883,6 +899,40 @@ public class EmbeddingService
             _logger.LogDebug(ex, "ILIKE search failed for query: {Query}", query);
             return new List<SearchResult>();
         }
+    }
+
+    /// <summary>
+    /// Simple Russian stemmer - strips common word endings
+    /// </summary>
+    private static string GetRussianStem(string word)
+    {
+        if (string.IsNullOrEmpty(word) || word.Length < 4)
+            return word;
+
+        // Common Russian endings (ordered by length, longest first)
+        var endings = new[]
+        {
+            // Noun endings (plural/genitive/etc)
+            "ами", "ями", "ов", "ев", "ей", "ах", "ях", "ом", "ем", "ём",
+            "ам", "ям", "ы", "и", "а", "я", "у", "ю", "е", "о",
+            // Adjective endings
+            "ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие",
+            "ого", "его", "ому", "ему", "ым", "им", "ой", "ей", "ую", "юю",
+            // Verb endings
+            "ать", "ять", "еть", "ить", "ут", "ют", "ет", "ит", "ешь", "ишь"
+        };
+
+        var lowerWord = word.ToLowerInvariant();
+
+        foreach (var ending in endings)
+        {
+            if (lowerWord.Length > ending.Length + 2 && lowerWord.EndsWith(ending))
+            {
+                return lowerWord[..^ending.Length];
+            }
+        }
+
+        return lowerWord;
     }
 
     /// <summary>
