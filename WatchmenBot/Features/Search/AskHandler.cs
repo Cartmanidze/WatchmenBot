@@ -11,6 +11,7 @@ public class AskHandler
 {
     private readonly ITelegramBotClient _bot;
     private readonly EmbeddingService _embeddingService;
+    private readonly RagFusionService _ragFusionService;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
     private readonly DebugService _debugService;
@@ -19,6 +20,7 @@ public class AskHandler
     public AskHandler(
         ITelegramBotClient bot,
         EmbeddingService embeddingService,
+        RagFusionService ragFusionService,
         LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
         DebugService debugService,
@@ -26,6 +28,7 @@ public class AskHandler
     {
         _bot = bot;
         _embeddingService = embeddingService;
+        _ragFusionService = ragFusionService;
         _llmRouter = llmRouter;
         _promptSettings = promptSettings;
         _debugService = debugService;
@@ -143,8 +146,15 @@ public class AskHandler
             }
             else
             {
-                // Two-stage search: original first, then rewrite if confidence is low
-                searchResponse = await TwoStageSearchAsync(chatId, question, debugReport, ct);
+                // RAG Fusion: generate query variations, search each, merge with RRF
+                var fusionResponse = await _ragFusionService.SearchWithFusionAsync(
+                    chatId, question, variationCount: 3, resultsPerQuery: 15, ct);
+
+                // Store fusion-specific debug info
+                debugReport.QueryVariations = fusionResponse.QueryVariations;
+                debugReport.RagFusionTimeMs = fusionResponse.TotalTimeMs;
+
+                searchResponse = fusionResponse.ToSearchResponse();
             }
 
             // Handle confidence gate and build context
@@ -685,114 +695,4 @@ public class AskHandler
         return null;
     }
 
-    /// <summary>
-    /// Rewrite query for better search: expand abbreviations, add context, transliterate names
-    /// </summary>
-    private async Task<(string rewritten, long timeMs)> RewriteQueryForSearchAsync(string query, CancellationToken ct)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        try
-        {
-            var systemPrompt = """
-                Ты — помощник для улучшения поисковых запросов.
-
-                Твоя задача: переписать запрос пользователя так, чтобы он лучше находился в базе сообщений.
-
-                Правила:
-                1. Расшифруй аббревиатуры и сокращения (SGA → Shai Gilgeous-Alexander, МУ → Манчестер Юнайтед)
-                2. Добавь альтернативные написания имён (Лука Дончич → Luka Dončić)
-                3. Добавь контекст/категорию если очевидно (баскетболисты → NBA, футболисты → футбол)
-                4. Сохрани оригинальные слова тоже
-                5. Используй и русский, и английский варианты
-                6. Максимум 3 строки, разделённые переносом
-
-                Отвечай ТОЛЬКО переписанным запросом, без объяснений.
-                Если запрос уже хороший — верни как есть.
-                """;
-
-            var response = await _llmRouter.CompleteWithFallbackAsync(
-                new LlmRequest
-                {
-                    SystemPrompt = systemPrompt,
-                    UserPrompt = query,
-                    Temperature = 0.2 // Low for consistency
-                },
-                preferredTag: null, // Use default cheap provider
-                ct: ct);
-
-            sw.Stop();
-
-            var rewritten = response.Content.Trim();
-
-            // Safety: if LLM returned garbage or too long, use original
-            if (string.IsNullOrWhiteSpace(rewritten) || rewritten.Length > 500 || rewritten.Length < query.Length / 2)
-            {
-                _logger.LogWarning("[QueryRewrite] LLM returned invalid response, using original query");
-                return (query, sw.ElapsedMilliseconds);
-            }
-
-            _logger.LogInformation("[QueryRewrite] '{Original}' → '{Rewritten}' ({Ms}ms)",
-                TruncateText(query, 50), TruncateText(rewritten, 100), sw.ElapsedMilliseconds);
-
-            return (rewritten, sw.ElapsedMilliseconds);
-        }
-        catch (Exception ex)
-        {
-            sw.Stop();
-            _logger.LogWarning(ex, "[QueryRewrite] Failed, using original query");
-            return (query, sw.ElapsedMilliseconds);
-        }
-    }
-
-    /// <summary>
-    /// Two-stage search: original query first, rewrite only if confidence is low
-    /// </summary>
-    private async Task<SearchResponse> TwoStageSearchAsync(
-        long chatId, string question, DebugReport debugReport, CancellationToken ct)
-    {
-        // Stage 1: Search with original query
-        _logger.LogInformation("[ASK] Stage 1: searching with original query");
-        var originalResponse = await _embeddingService.SearchWithConfidenceAsync(chatId, question, limit: 20, ct);
-
-        // If confidence is High or Medium, use original results
-        if (originalResponse.Confidence >= SearchConfidence.Medium)
-        {
-            _logger.LogInformation("[ASK] Original query confidence={Conf}, using original results",
-                originalResponse.Confidence);
-            return originalResponse;
-        }
-
-        // Stage 2: Try rewritten query
-        _logger.LogInformation("[ASK] Original confidence={Conf}, trying rewritten query",
-            originalResponse.Confidence);
-
-        var (rewritten, rewriteMs) = await RewriteQueryForSearchAsync(question, ct);
-        debugReport.RewrittenQuery = rewritten;
-        debugReport.QueryRewriteTimeMs = rewriteMs;
-
-        // If rewrite is same as original, no point searching again
-        if (rewritten.Equals(question, StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogDebug("[ASK] Rewritten query same as original, using original results");
-            return originalResponse;
-        }
-
-        var rewrittenResponse = await _embeddingService.SearchWithConfidenceAsync(chatId, rewritten, limit: 20, ct);
-
-        // Use rewritten if it has better confidence or score
-        if (rewrittenResponse.Confidence > originalResponse.Confidence ||
-            (rewrittenResponse.Confidence == originalResponse.Confidence &&
-             rewrittenResponse.BestScore > originalResponse.BestScore + 0.05))
-        {
-            _logger.LogInformation("[ASK] Rewritten query better: {OrigConf}/{OrigScore:F3} → {NewConf}/{NewScore:F3}",
-                originalResponse.Confidence, originalResponse.BestScore,
-                rewrittenResponse.Confidence, rewrittenResponse.BestScore);
-            return rewrittenResponse;
-        }
-
-        // Original was better or same
-        _logger.LogInformation("[ASK] Original query still better, using original results");
-        return originalResponse;
-    }
 }

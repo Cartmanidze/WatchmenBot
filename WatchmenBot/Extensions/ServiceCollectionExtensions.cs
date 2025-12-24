@@ -129,6 +129,9 @@ public static class ServiceCollectionExtensions
         // Embedding Service for RAG
         services.AddScoped<EmbeddingService>();
 
+        // RAG Fusion Service (multi-query search with RRF)
+        services.AddScoped<RagFusionService>();
+
         // Smart Summary Service (uses embeddings for topic extraction)
         services.AddScoped<SmartSummaryService>();
 

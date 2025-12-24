@@ -190,6 +190,16 @@ public class DebugService
             sb.AppendLine($"   <i>{EscapeHtml(TruncateText(report.RewrittenQuery, 300))}</i>");
         }
 
+        // Show RAG Fusion variations
+        if (report.QueryVariations.Count > 0)
+        {
+            sb.AppendLine($"🔀 <b>RAG Fusion</b> ({report.RagFusionTimeMs}ms):");
+            for (var i = 0; i < report.QueryVariations.Count; i++)
+            {
+                sb.AppendLine($"   {i + 1}. <i>{EscapeHtml(TruncateText(report.QueryVariations[i], 100))}</i>");
+            }
+        }
+
         // Personal retrieval indicator
         if (!string.IsNullOrEmpty(report.PersonalTarget))
         {
@@ -336,6 +346,10 @@ public class DebugReport
     public string Query { get; set; } = "";
     public string? RewrittenQuery { get; set; } // Query after LLM rewrite for better search
     public long QueryRewriteTimeMs { get; set; }
+
+    // RAG Fusion info
+    public List<string> QueryVariations { get; set; } = new(); // Generated query variations
+    public long RagFusionTimeMs { get; set; } // Total time for RAG Fusion search
 
     // Search results
     public List<DebugSearchResult> SearchResults { get; set; } = new();
