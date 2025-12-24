@@ -200,6 +200,18 @@ public class DebugService
             }
         }
 
+        // Show Rerank info
+        if (report.RerankTimeMs > 0)
+        {
+            var changed = report.RerankOrderChanged ? "🔄 порядок изменился" : "✓ порядок сохранён";
+            sb.AppendLine($"📊 <b>Rerank</b> ({report.RerankTimeMs}ms, {report.RerankTokensUsed} tokens) {changed}");
+            if (report.RerankScores.Count > 0)
+            {
+                var scoreStrs = report.RerankScores.Take(5).Select((s, i) => $"#{i + 1}:{s}");
+                sb.AppendLine($"   Scores: {string.Join(", ", scoreStrs)}");
+            }
+        }
+
         // Personal retrieval indicator
         if (!string.IsNullOrEmpty(report.PersonalTarget))
         {
@@ -350,6 +362,12 @@ public class DebugReport
     // RAG Fusion info
     public List<string> QueryVariations { get; set; } = new(); // Generated query variations
     public long RagFusionTimeMs { get; set; } // Total time for RAG Fusion search
+
+    // Rerank info
+    public long RerankTimeMs { get; set; }
+    public int RerankTokensUsed { get; set; }
+    public List<int> RerankScores { get; set; } = new(); // LLM scores (0-3)
+    public bool RerankOrderChanged { get; set; }
 
     // Search results
     public List<DebugSearchResult> SearchResults { get; set; } = new();

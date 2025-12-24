@@ -12,6 +12,7 @@ public class AskHandler
     private readonly ITelegramBotClient _bot;
     private readonly EmbeddingService _embeddingService;
     private readonly RagFusionService _ragFusionService;
+    private readonly RerankService _rerankService;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
     private readonly DebugService _debugService;
@@ -21,6 +22,7 @@ public class AskHandler
         ITelegramBotClient bot,
         EmbeddingService embeddingService,
         RagFusionService ragFusionService,
+        RerankService rerankService,
         LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
         DebugService debugService,
@@ -29,6 +31,7 @@ public class AskHandler
         _bot = bot;
         _embeddingService = embeddingService;
         _ragFusionService = ragFusionService;
+        _rerankService = rerankService;
         _llmRouter = llmRouter;
         _promptSettings = promptSettings;
         _debugService = debugService;
@@ -155,6 +158,25 @@ public class AskHandler
                 debugReport.RagFusionTimeMs = fusionResponse.TotalTimeMs;
 
                 searchResponse = fusionResponse.ToSearchResponse();
+
+                // Rerank results using LLM for better relevance (only if we have results)
+                if (searchResponse.Results.Count > 0 && searchResponse.Confidence != SearchConfidence.None)
+                {
+                    var rerankResponse = await _rerankService.RerankAsync(question, searchResponse.Results, ct);
+
+                    // Store rerank debug info
+                    debugReport.RerankTimeMs = rerankResponse.TimeMs;
+                    debugReport.RerankTokensUsed = rerankResponse.TokensUsed;
+                    debugReport.RerankScores = rerankResponse.Scores;
+                    debugReport.RerankOrderChanged = rerankResponse.HasSignificantChange();
+
+                    if (rerankResponse.Error == null)
+                    {
+                        searchResponse.Results = rerankResponse.Results;
+                        _logger.LogInformation("[ASK] Reranked {Count} results (order changed: {Changed})",
+                            rerankResponse.Results.Count, rerankResponse.HasSignificantChange());
+                    }
+                }
             }
 
             // Handle confidence gate and build context
@@ -213,7 +235,7 @@ public class AskHandler
                     confidenceWarning = "⚠️ <i>Контекст слабый, ответ может быть неточным</i>\n\n";
                 }
 
-                (context, contextTracker) = BuildContextWithTracking(results);
+                (context, contextTracker) = await BuildContextWithWindowsAsync(chatId, results, ct);
             }
 
             // Collect debug info for search results WITH context tracking
@@ -316,97 +338,89 @@ public class AskHandler
     private const int CharsPerToken = 4;
     private const int ContextCharBudget = ContextTokenBudget * CharsPerToken; // ~16000 chars
 
-    private (string context, Dictionary<long, (bool included, string reason)> tracker) BuildContextWithTracking(List<SearchResult> results)
+    // Context window settings
+    private const int ContextWindowSize = 2; // ±2 messages around each found message
+
+    /// <summary>
+    /// Build context with context windows around found messages
+    /// </summary>
+    private async Task<(string context, Dictionary<long, (bool included, string reason)> tracker)> BuildContextWithWindowsAsync(
+        long chatId, List<SearchResult> results, CancellationToken ct)
     {
-        _logger.LogDebug("[BuildContext] Processing {Count} search results with budget {Budget} tokens",
-            results.Count, ContextTokenBudget);
+        _logger.LogDebug("[BuildContext] Processing {Count} search results with windows (±{Window})",
+            results.Count, ContextWindowSize);
 
         var tracker = new Dictionary<long, (bool included, string reason)>();
-        var seenTexts = new HashSet<string>();
-        var usedChars = 0;
 
-        // Sort by similarity DESC - prioritize most relevant messages
-        var sortedResults = results.OrderByDescending(r => r.Similarity).ToList();
+        if (results.Count == 0)
+            return ("", tracker);
 
-        // First pass: filter and deduplicate, respecting budget
-        var validMessages = new List<(long MessageId, string Text, DateTimeOffset Time, double Similarity)>();
+        // Sort by similarity and take top messages
+        var sortedResults = results
+            .OrderByDescending(r => r.Similarity)
+            .Where(r => !string.IsNullOrWhiteSpace(r.ChunkText))
+            .Take(10) // Top 10 for context windows
+            .ToList();
 
-        foreach (var r in sortedResults)
+        foreach (var r in results)
         {
-            // Check for empty text
             if (string.IsNullOrWhiteSpace(r.ChunkText))
-            {
                 tracker[r.MessageId] = (false, "empty_text");
-                _logger.LogDebug("[BuildContext] msg={Id} EXCLUDED: empty_text", r.MessageId);
-                continue;
-            }
-
-            // Check for duplicate text
-            var textKey = r.ChunkText.Trim().ToLowerInvariant();
-            if (seenTexts.Contains(textKey))
-            {
-                tracker[r.MessageId] = (false, "duplicate_text");
-                _logger.LogDebug("[BuildContext] msg={Id} EXCLUDED: duplicate_text", r.MessageId);
-                continue;
-            }
-
-            // Check token budget
-            var msgChars = r.ChunkText.Length + 30; // +30 for timestamp formatting
-            if (usedChars + msgChars > ContextCharBudget)
-            {
-                tracker[r.MessageId] = (false, "budget_exceeded");
-                _logger.LogDebug("[BuildContext] msg={Id} EXCLUDED: budget_exceeded (sim={Sim:F3})",
-                    r.MessageId, r.Similarity);
-                continue;
-            }
-
-            seenTexts.Add(textKey);
-            usedChars += msgChars;
-
-            // Parse timestamp
-            DateTimeOffset time = DateTimeOffset.MinValue;
-            if (!string.IsNullOrEmpty(r.MetadataJson))
-            {
-                try
-                {
-                    using var doc = System.Text.Json.JsonDocument.Parse(r.MetadataJson);
-                    if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
-                    {
-                        time = dateEl.GetDateTimeOffset();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "[BuildContext] Failed to parse metadata: {Json}", r.MetadataJson);
-                }
-            }
-
-            tracker[r.MessageId] = (true, "ok");
-            validMessages.Add((r.MessageId, r.ChunkText, time, r.Similarity));
-            _logger.LogDebug("[BuildContext] msg={Id} INCLUDED sim={Sim:F3} chars={Chars}",
-                r.MessageId, r.Similarity, msgChars);
+            else if (!sortedResults.Any(sr => sr.MessageId == r.MessageId))
+                tracker[r.MessageId] = (false, "not_in_top10");
         }
 
-        // Sort included messages chronologically for better context flow
-        validMessages = validMessages.OrderBy(m => m.Time).ToList();
+        // Get context windows for top messages
+        var messageIds = sortedResults.Select(r => r.MessageId).ToList();
+        var windows = await _embeddingService.GetMergedContextWindowsAsync(chatId, messageIds, ContextWindowSize, ct);
 
-        _logger.LogInformation("[BuildContext] Built context: {Count}/{Total} messages, {Chars}/{Budget} chars, sim range: {MinSim:F3}-{MaxSim:F3}",
-            validMessages.Count, results.Count,
-            usedChars, ContextCharBudget,
-            validMessages.Count > 0 ? validMessages.Min(m => m.Similarity) : 0,
-            validMessages.Count > 0 ? validMessages.Max(m => m.Similarity) : 0);
-
+        // Build context string with budget control
         var sb = new StringBuilder();
-        sb.AppendLine("Релевантные сообщения из чата (хронологически):");
+        sb.AppendLine("Контекст из чата (сообщения сгруппированы по диалогам):");
         sb.AppendLine();
 
-        foreach (var msg in validMessages)
+        var usedChars = sb.Length;
+        var includedWindows = 0;
+        var seenMessageIds = new HashSet<long>();
+
+        foreach (var window in windows)
         {
-            var timeStr = msg.Time != DateTimeOffset.MinValue
-                ? $"[{msg.Time.ToLocalTime():dd.MM HH:mm}] "
-                : "";
-            sb.AppendLine($"{timeStr}{msg.Text}");
+            // Estimate window size
+            var windowText = window.ToFormattedText();
+            var windowChars = windowText.Length + 50; // +50 for separators
+
+            if (usedChars + windowChars > ContextCharBudget)
+            {
+                _logger.LogDebug("[BuildContext] Budget exceeded, stopping at {Windows} windows", includedWindows);
+                break;
+            }
+
+            // Mark center message as included
+            tracker[window.CenterMessageId] = (true, "ok");
+
+            // Add window header
+            sb.AppendLine($"--- Диалог #{includedWindows + 1} ---");
+            sb.Append(windowText);
+            sb.AppendLine();
+
+            usedChars += windowChars;
+            includedWindows++;
+
+            // Track all messages in window
+            foreach (var msg in window.Messages)
+                seenMessageIds.Add(msg.MessageId);
         }
+
+        // Mark remaining messages
+        foreach (var r in sortedResults)
+        {
+            if (!tracker.ContainsKey(r.MessageId))
+                tracker[r.MessageId] = (false, "budget_exceeded");
+        }
+
+        _logger.LogInformation(
+            "[BuildContext] Built context: {Windows} windows, {Messages} total messages, {Chars}/{Budget} chars",
+            includedWindows, seenMessageIds.Count, usedChars, ContextCharBudget);
 
         return (sb.ToString(), tracker);
     }

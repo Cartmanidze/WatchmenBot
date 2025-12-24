@@ -132,6 +132,9 @@ public static class ServiceCollectionExtensions
         // RAG Fusion Service (multi-query search with RRF)
         services.AddScoped<RagFusionService>();
 
+        // Rerank Service (LLM-based reranking)
+        services.AddScoped<RerankService>();
+
         // Smart Summary Service (uses embeddings for topic extraction)
         services.AddScoped<SmartSummaryService>();
 
