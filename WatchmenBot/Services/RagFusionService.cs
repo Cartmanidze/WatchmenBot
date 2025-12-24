@@ -58,13 +58,28 @@ public class RagFusionService
             var allResults = await Task.WhenAll(searchTasks);
 
             // Step 2.5: ILIKE fallback for slang/exact matches that embeddings miss
-            var ilikeResults = await _embeddingService.SimpleTextSearchAsync(chatId, query, resultsPerQuery, ct);
-            if (ilikeResults.Count > 0)
+            // Search with ALL queries (original + variations) to catch synonyms
+            var ilikeQueries = new List<string> { query };
+            ilikeQueries.AddRange(variations);
+
+            var allIlikeResults = new List<SearchResult>();
+            var seenMessageIds = new HashSet<long>();
+
+            foreach (var ilikeQuery in ilikeQueries)
+            {
+                var ilikeResults = await _embeddingService.SimpleTextSearchAsync(chatId, ilikeQuery, resultsPerQuery / 2, ct);
+                foreach (var r in ilikeResults.Where(r => seenMessageIds.Add(r.MessageId)))
+                {
+                    allIlikeResults.Add(r);
+                }
+            }
+
+            if (allIlikeResults.Count > 0)
             {
                 // Add ILIKE results as an additional "query" for RRF
-                allResults = allResults.Append(ilikeResults).ToArray();
-                _logger.LogInformation("[RAG Fusion] ILIKE fallback added {Count} results for: {Query}",
-                    ilikeResults.Count, TruncateForLog(query, 30));
+                allResults = allResults.Append(allIlikeResults).ToArray();
+                _logger.LogInformation("[RAG Fusion] ILIKE added {Count} results from {Queries} queries",
+                    allIlikeResults.Count, ilikeQueries.Count);
             }
 
             // Step 3: Apply Reciprocal Rank Fusion
