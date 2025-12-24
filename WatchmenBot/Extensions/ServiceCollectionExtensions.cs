@@ -135,6 +135,9 @@ public static class ServiceCollectionExtensions
         // Rerank Service (LLM-based reranking)
         services.AddScoped<RerankService>();
 
+        // LLM Memory Service (user profiles + conversation memory)
+        services.AddScoped<LlmMemoryService>();
+
         // Smart Summary Service (uses embeddings for topic extraction)
         services.AddScoped<SmartSummaryService>();
 

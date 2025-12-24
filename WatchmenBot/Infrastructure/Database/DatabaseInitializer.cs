@@ -33,6 +33,8 @@ public class DatabaseInitializer : IHostedService
             await CreateEmbeddingsTableAsync(connection);
             await CreateAdminSettingsTableAsync(connection);
             await CreatePromptSettingsTableAsync(connection);
+            await CreateUserProfilesTableAsync(connection);
+            await CreateConversationMemoryTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -162,6 +164,50 @@ public class DatabaseInitializer : IHostedService
             """;
 
         await connection.ExecuteAsync(addColumnSql);
+    }
+
+    private static async Task CreateUserProfilesTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                display_name VARCHAR(255) NULL,
+                username VARCHAR(255) NULL,
+                facts JSONB NOT NULL DEFAULT '[]'::jsonb,
+                traits JSONB NOT NULL DEFAULT '[]'::jsonb,
+                interests JSONB NOT NULL DEFAULT '[]'::jsonb,
+                notable_quotes JSONB NOT NULL DEFAULT '[]'::jsonb,
+                interaction_count INT NOT NULL DEFAULT 0,
+                last_interaction TIMESTAMP WITH TIME ZONE NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (chat_id, user_id)
+            );
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateConversationMemoryTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS conversation_memory (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                query TEXT NOT NULL,
+                response_summary TEXT NOT NULL,
+                topics JSONB NOT NULL DEFAULT '[]'::jsonb,
+                extracted_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conv_memory_user_chat
+            ON conversation_memory (chat_id, user_id, created_at DESC);
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
     }
 
     private async Task CreateIndexesAsync(System.Data.IDbConnection connection)

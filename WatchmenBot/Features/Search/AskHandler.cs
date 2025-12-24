@@ -13,6 +13,7 @@ public class AskHandler
     private readonly EmbeddingService _embeddingService;
     private readonly RagFusionService _ragFusionService;
     private readonly RerankService _rerankService;
+    private readonly LlmMemoryService _memoryService;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
     private readonly DebugService _debugService;
@@ -23,6 +24,7 @@ public class AskHandler
         EmbeddingService embeddingService,
         RagFusionService ragFusionService,
         RerankService rerankService,
+        LlmMemoryService memoryService,
         LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
         DebugService debugService,
@@ -32,6 +34,7 @@ public class AskHandler
         _embeddingService = embeddingService;
         _ragFusionService = ragFusionService;
         _rerankService = rerankService;
+        _memoryService = memoryService;
         _llmRouter = llmRouter;
         _promptSettings = promptSettings;
         _debugService = debugService;
@@ -105,6 +108,18 @@ public class AskHandler
             // Get asker's name for personal retrieval
             var askerName = GetDisplayName(message.From);
             var askerUsername = message.From?.Username;
+            var askerId = message.From?.Id ?? 0;
+
+            // Fetch user memory context (profile + recent interactions)
+            string? memoryContext = null;
+            if (askerId != 0)
+            {
+                memoryContext = await _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
+                if (memoryContext != null)
+                {
+                    _logger.LogDebug("[{Command}] Loaded memory for user {User}", command.ToUpper(), askerName);
+                }
+            }
 
             // Detect if this is a personal question (about self or @someone)
             var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
@@ -172,9 +187,10 @@ public class AskHandler
 
                     if (rerankResponse.Error == null)
                     {
-                        // Filter out low-relevance results (score 0-1 = irrelevant)
-                        var filteredResults = rerankResponse.GetFilteredResults(minScore: 2);
-                        var filteredOut = rerankResponse.FilteredOutCount(minScore: 2);
+                        // Filter out only completely irrelevant results (score 0)
+                        // Score 1 = low but might still be useful, keep it
+                        var filteredResults = rerankResponse.GetFilteredResults(minScore: 1);
+                        var filteredOut = rerankResponse.FilteredOutCount(minScore: 1);
 
                         searchResponse.Results = filteredResults;
                         debugReport.RerankFilteredOut = filteredOut;
@@ -271,7 +287,7 @@ public class AskHandler
             }
 
             // Generate answer using LLM with command-specific prompt
-            var answer = await GenerateAnswerWithDebugAsync(command, question, context, askerName, debugReport, ct);
+            var answer = await GenerateAnswerWithDebugAsync(command, question, context, memoryContext, askerName, debugReport, ct);
 
             // Format response with confidence warning if needed
             var rawResponse = (confidenceWarning ?? "") + FormatResponse(question, answer, results.Take(3).ToList());
@@ -289,6 +305,24 @@ public class AskHandler
 
             _logger.LogInformation("[{Command}] Answered question: {Question} (confidence: {Conf})",
                 command.ToUpper(), question, searchResponse.Confidence);
+
+            // Store memory and update profile (fire and forget)
+            if (askerId != 0)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _memoryService.StoreMemoryAsync(chatId, askerId, question, answer, CancellationToken.None);
+                        await _memoryService.UpdateProfileFromInteractionAsync(
+                            chatId, askerId, askerName, askerUsername, question, answer, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Memory] Failed to store memory for user {UserId}", askerId);
+                    }
+                });
+            }
 
             // Send debug report to admin
             await _debugService.SendDebugReportAsync(debugReport, ct);
@@ -432,7 +466,7 @@ public class AskHandler
     }
 
     private async Task<string> GenerateAnswerWithDebugAsync(
-        string command, string question, string? context, string askerName, DebugReport debugReport, CancellationToken ct)
+        string command, string question, string? context, string? memoryContext, string askerName, DebugReport debugReport, CancellationToken ct)
     {
         var settings = await _promptSettings.GetSettingsAsync(command);
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -440,20 +474,25 @@ public class AskHandler
         // For /ask with context - use two-stage generation
         if (command == "ask" && !string.IsNullOrWhiteSpace(context))
         {
-            return await GenerateTwoStageAnswerWithDebugAsync(question, context, askerName, settings, debugReport, ct);
+            return await GenerateTwoStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, debugReport, ct);
         }
+
+        // Build memory section if available
+        var memorySection = !string.IsNullOrWhiteSpace(memoryContext)
+            ? $"\n{memoryContext}\n"
+            : "";
 
         // For /q or /ask without context - single stage
         var userPrompt = string.IsNullOrWhiteSpace(context)
             ? $"""
                 Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
-
+                {memorySection}
                 Спрашивает: {askerName}
                 Вопрос: {question}
                 """
             : $"""
                 Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
-
+                {memorySection}
                 Контекст из чата:
                 {context}
 
@@ -496,7 +535,7 @@ public class AskHandler
     /// Two-stage generation for /ask: extract facts first, then add humor
     /// </summary>
     private async Task<string> GenerateTwoStageAnswerWithDebugAsync(
-        string question, string context, string askerName, PromptSettings settings, DebugReport debugReport, CancellationToken ct)
+        string question, string context, string? memoryContext, string askerName, PromptSettings settings, DebugReport debugReport, CancellationToken ct)
     {
         debugReport.IsMultiStage = true;
         debugReport.StageCount = 2;
@@ -567,10 +606,15 @@ public class AskHandler
         {
             _logger.LogWarning("[ASK] Facts extraction returned empty, falling back to direct generation");
 
+            // Build memory section for fallback
+            var fallbackMemory = !string.IsNullOrWhiteSpace(memoryContext)
+                ? $"\n{memoryContext}\n"
+                : "";
+
             // Fallback: direct single-stage generation with context
             var directPrompt = $"""
                 Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
-
+                {fallbackMemory}
                 Контекст из чата:
                 {context}
 
@@ -618,11 +662,16 @@ public class AskHandler
             return directResponse.Content;
         }
 
+        // Build memory section for personalization
+        var memorySection = !string.IsNullOrWhiteSpace(memoryContext)
+            ? $"\n{memoryContext}\n"
+            : "";
+
         // STAGE 2: Add humor based ONLY on structured facts
         var humorPrompt = $"""
             Спрашивает: {askerName}
             Вопрос: {question}
-
+            {memorySection}
             Структурированные факты из чата (JSON):
             {factsResponse.Content}
 
@@ -634,6 +683,7 @@ public class AskHandler
             5. Если есть "best_quote" — вставь её дословно в <i>кавычках</i>
             6. Ответ должен быть дерзким и с матом
             7. Если facts пустой — честно скажи что ничего не нашёл по теме
+            8. ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ — используй для персонализации подколов
 
             Формат: 2-4 предложения, HTML для <b> и <i>.
             """;

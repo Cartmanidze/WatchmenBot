@@ -57,6 +57,16 @@ public class RagFusionService
 
             var allResults = await Task.WhenAll(searchTasks);
 
+            // Step 2.5: ILIKE fallback for slang/exact matches that embeddings miss
+            var ilikeResults = await _embeddingService.SimpleTextSearchAsync(chatId, query, resultsPerQuery, ct);
+            if (ilikeResults.Count > 0)
+            {
+                // Add ILIKE results as an additional "query" for RRF
+                allResults = allResults.Append(ilikeResults).ToArray();
+                _logger.LogInformation("[RAG Fusion] ILIKE fallback added {Count} results for: {Query}",
+                    ilikeResults.Count, TruncateForLog(query, 30));
+            }
+
             // Step 3: Apply Reciprocal Rank Fusion
             var fusedResults = ApplyRrfFusion(allResults, allQueries);
             response.Results = fusedResults;
