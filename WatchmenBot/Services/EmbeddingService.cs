@@ -668,8 +668,11 @@ public class EmbeddingService
                 }
             }
 
-            // Re-sort after adjustments
-            results = results.OrderByDescending(r => r.Similarity).ToList();
+            // Re-sort after adjustments (primary: similarity, secondary: date for tie-breaking)
+            results = results
+                .OrderByDescending(r => r.Similarity)
+                .ThenByDescending(r => ParseTimestampFromMetadata(r.MetadataJson))
+                .ToList();
             response.Results = results;
 
             // Calculate confidence metrics
@@ -813,16 +816,17 @@ public class EmbeddingService
 
             var sql = $"""
                 SELECT
-                    chat_id as ChatId,
-                    message_id as MessageId,
-                    chunk_index as ChunkIndex,
-                    chunk_text as ChunkText,
-                    metadata as MetadataJson,
+                    me.chat_id as ChatId,
+                    me.message_id as MessageId,
+                    me.chunk_index as ChunkIndex,
+                    me.chunk_text as ChunkText,
+                    me.metadata as MetadataJson,
                     0.0 as Distance,
-                    0.6 as Similarity
-                FROM message_embeddings
-                WHERE chat_id = @ChatId AND ({whereClause})
-                ORDER BY message_id DESC
+                    0.9 as Similarity
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId AND ({whereClause})
+                ORDER BY m.date_utc DESC
                 LIMIT @Limit
                 """;
 
@@ -1145,8 +1149,11 @@ public class EmbeddingService
                 }
             }
 
-            // Re-sort after adjustments
-            results = results.OrderByDescending(r => r.Similarity).ToList();
+            // Re-sort after adjustments (primary: similarity, secondary: date for tie-breaking)
+            results = results
+                .OrderByDescending(r => r.Similarity)
+                .ThenByDescending(r => ParseTimestampFromMetadata(r.MetadataJson))
+                .ToList();
             response.Results = results;
 
             // Calculate confidence metrics
