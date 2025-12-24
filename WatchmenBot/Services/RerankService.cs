@@ -40,8 +40,28 @@ public class RerankService
 
         try
         {
-            // Take top N for reranking
-            var toRerank = results.Take(MaxResultsToRerank).ToList();
+            // Extract keywords from query (words > 3 chars, excluding common words)
+            var keywords = ExtractKeywords(query);
+
+            // Find results containing query keywords (these are high-value matches)
+            var keywordMatches = results
+                .Where(r => keywords.Any(kw =>
+                    r.ChunkText.Contains(kw, StringComparison.OrdinalIgnoreCase)))
+                .Take(5) // Max 5 keyword matches
+                .ToList();
+
+            // Take top N, but ensure keyword matches are included
+            var topByScore = results.Take(MaxResultsToRerank).ToList();
+            var toRerank = topByScore
+                .Union(keywordMatches) // Add keyword matches if not already in top N
+                .Take(MaxResultsToRerank)
+                .ToList();
+
+            if (keywordMatches.Count > 0)
+            {
+                _logger.LogInformation("[Rerank] Boosted {Count} keyword matches: {Keywords}",
+                    keywordMatches.Count, string.Join(", ", keywords.Take(3)));
+            }
 
             // Build documents list for LLM
             var documents = toRerank.Select((r, i) => new
@@ -51,15 +71,21 @@ public class RerankService
             }).ToList();
 
             var systemPrompt = """
-                Ты — эксперт по оценке релевантности текстов.
+                Ты — эксперт по оценке релевантности текстов из неформального чата.
 
                 Тебе дан ВОПРОС и список ДОКУМЕНТОВ. Оцени релевантность каждого документа для ответа на вопрос.
 
+                ВАЖНО:
+                - Это неформальный чат, в нём много слэнга, мата, шуток и оскорблений
+                - Если в вопросе есть слово/термин и документ содержит это же слово — это ВЫСОКАЯ релевантность
+                - Слова типа "сосун", "пидор", "хуй" и т.п. — это обычная лексика чата, оценивай по смыслу
+                - НЕ обнуляй релевантность из-за "неприличного" содержания
+
                 Правила оценки:
-                - 3 = высокая релевантность (документ напрямую отвечает на вопрос)
-                - 2 = средняя релевантность (документ связан с темой вопроса)
-                - 1 = низкая релевантность (документ косвенно связан)
-                - 0 = нерелевантен (документ не имеет отношения к вопросу)
+                - 3 = документ содержит ключевые слова из вопроса ИЛИ напрямую отвечает на вопрос
+                - 2 = документ связан с темой вопроса
+                - 1 = документ косвенно связан
+                - 0 = документ вообще не связан с вопросом
 
                 Отвечай ТОЛЬКО JSON массивом с id и score, без пояснений:
                 [{"id": 0, "score": 3}, {"id": 1, "score": 1}, ...]
@@ -195,6 +221,67 @@ public class RerankService
         if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
             return text;
         return text[..(maxLength - 3)] + "...";
+    }
+
+    /// <summary>
+    /// Extract meaningful keywords from query for keyword matching
+    /// </summary>
+    private static List<string> ExtractKeywords(string query)
+    {
+        var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "кто", "что", "где", "когда", "как", "почему", "зачем", "какой", "какая", "какое", "какие",
+            "это", "эта", "этот", "эти", "тот", "та", "то", "те", "чем", "про", "об", "обо",
+            "составь", "найди", "покажи", "расскажи", "напиши", "сделай",
+            "рейтинг", "список", "топ", "лучший", "лучшие", "самый", "самые",
+            "чата", "чате", "этого", "этом", "нашего", "нашем"
+        };
+
+        var words = query
+            .ToLowerInvariant()
+            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' },
+                StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length > 3 && !stopWords.Contains(w))
+            .Distinct()
+            .ToList();
+
+        // Also add stemmed versions (simple Russian stemming)
+        var withStems = new List<string>(words);
+        foreach (var word in words)
+        {
+            var stem = GetRussianStem(word);
+            if (!string.IsNullOrEmpty(stem) && stem.Length >= 3 && stem != word)
+            {
+                withStems.Add(stem);
+            }
+        }
+
+        return withStems.Distinct().Take(10).ToList();
+    }
+
+    /// <summary>
+    /// Simple Russian stemmer - strips common word endings
+    /// </summary>
+    private static string GetRussianStem(string word)
+    {
+        if (string.IsNullOrEmpty(word) || word.Length < 4)
+            return word;
+
+        var endings = new[]
+        {
+            "ами", "ями", "ов", "ев", "ей", "ах", "ях", "ом", "ем", "ём",
+            "ам", "ям", "ы", "и", "а", "я", "у", "ю", "е", "о"
+        };
+
+        foreach (var ending in endings)
+        {
+            if (word.Length > ending.Length + 2 && word.EndsWith(ending))
+            {
+                return word[..^ending.Length];
+            }
+        }
+
+        return word;
     }
 }
 
