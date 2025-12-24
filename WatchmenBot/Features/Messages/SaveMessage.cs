@@ -74,23 +74,26 @@ public class SaveMessageHandler
             _logger.LogDebug("[DB] Saved msg #{MessageId} to chat {ChatId}",
                 message.MessageId, message.Chat.Id);
 
-            // Create embedding immediately (fire and forget, don't block message saving)
+            // Create embedding immediately with timeout (don't block webhook too long)
             // Skip short messages (< 10 chars) - they add noise to embeddings
             if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length > 10)
             {
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
-                    {
-                        await _embeddingService.StoreMessageEmbeddingAsync(record, cancellationToken);
-                        _logCollector.IncrementEmbeddings();
-                        _logger.LogDebug("[Embedding] Created embedding for msg #{MessageId}", message.MessageId);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "[Embedding] Failed to create embedding for msg #{MessageId}", message.MessageId);
-                    }
-                }, cancellationToken);
+                    // Use separate timeout token to avoid cancellation when webhook completes
+                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                    await _embeddingService.StoreMessageEmbeddingAsync(record, timeoutCts.Token);
+                    _logCollector.IncrementEmbeddings();
+                    _logger.LogDebug("[Embedding] Created embedding for msg #{MessageId}", message.MessageId);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogWarning("[Embedding] Timeout creating embedding for msg #{MessageId} - will be picked up by background service", message.MessageId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Embedding] Failed to create embedding for msg #{MessageId} - will retry in background", message.MessageId);
+                }
             }
 
             return SaveMessageResponse.Success(message.MessageId, message.Chat.Id);

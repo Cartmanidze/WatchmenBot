@@ -614,11 +614,26 @@ public class EmbeddingService
         try
         {
             // First, try full-text search for exact matches
-            var fullTextResults = await FullTextSearchAsync(chatId, query, 5, ct);
+            var fullTextResults = await FullTextSearchAsync(chatId, query, 10, ct);
             response.HasFullTextMatch = fullTextResults.Count > 0;
 
             // Then, vector search
             var results = await SearchSimilarAsync(chatId, query, limit, ct);
+
+            // Merge full-text results with vector results (full-text takes priority)
+            if (fullTextResults.Count > 0)
+            {
+                var existingIds = results.Select(r => r.MessageId).ToHashSet();
+                var newResults = fullTextResults.Where(r => !existingIds.Contains(r.MessageId)).ToList();
+
+                if (newResults.Count > 0)
+                {
+                    _logger.LogInformation("[Search] Full-text added {Count} exact matches", newResults.Count);
+                    // Full-text results go first (they have exact word matches)
+                    results = newResults.Concat(results).ToList();
+                }
+            }
+
             if (results.Count == 0)
             {
                 response.Confidence = SearchConfidence.None;
@@ -668,30 +683,33 @@ public class EmbeddingService
             // Determine confidence level
             (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, response.HasFullTextMatch);
 
-            // If confidence is low and no full-text match, try ILIKE fallback for slang
-            if (response.Confidence <= SearchConfidence.Low && !response.HasFullTextMatch)
+            // Always try ILIKE fallback to catch exact matches that PostgreSQL stemming might miss
+            // This is especially important for slang/profanity where morphology can fail
+            var ilikeResults = await SimpleTextSearchAsync(chatId, query, 10, ct);
+            if (ilikeResults.Count > 0)
             {
-                var ilikeResults = await SimpleTextSearchAsync(chatId, query, 10, ct);
-                if (ilikeResults.Count > 0)
+                // Merge ILIKE results with vector results (avoiding duplicates)
+                var existingIds = results.Select(r => r.MessageId).ToHashSet();
+                var newResults = ilikeResults.Where(r => !existingIds.Contains(r.MessageId)).ToList();
+
+                if (newResults.Count > 0)
                 {
-                    _logger.LogInformation("[Search] ILIKE fallback found {Count} additional results", ilikeResults.Count);
+                    _logger.LogInformation("[Search] ILIKE fallback added {Count} new results (total: {Total})",
+                        newResults.Count, ilikeResults.Count);
 
-                    // Merge ILIKE results with vector results (avoiding duplicates)
-                    var existingIds = results.Select(r => r.MessageId).ToHashSet();
-                    var newResults = ilikeResults.Where(r => !existingIds.Contains(r.MessageId)).ToList();
+                    results.AddRange(newResults);
+                    results = results.OrderByDescending(r => r.Similarity).ToList();
+                    response.Results = results;
 
-                    if (newResults.Count > 0)
+                    // Update confidence if ILIKE brought better results
+                    var newBest = results[0].Similarity;
+                    if (newBest > best || !response.HasFullTextMatch)
                     {
-                        results.AddRange(newResults);
-                        results = results.OrderByDescending(r => r.Similarity).ToList();
-                        response.Results = results;
-
-                        // Recalculate confidence with ILIKE boost
                         response.HasFullTextMatch = true;
-                        best = results[0].Similarity;
+                        best = newBest;
                         response.BestScore = best;
                         (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, true);
-                        response.ConfidenceReason += " (ILIKE fallback)";
+                        response.ConfidenceReason += " (ILIKE boost)";
                     }
                 }
             }
