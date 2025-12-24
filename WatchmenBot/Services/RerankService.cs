@@ -50,22 +50,39 @@ public class RerankService
                 .Take(5) // Max 5 keyword matches
                 .ToList();
 
-            // PRIORITIZE keyword matches - put them first, then fill with top by score
-            var topByScore = results.Take(MaxResultsToRerank).ToList();
-            var keywordMatchIds = keywordMatches.Select(r => r.MessageId).ToHashSet();
-            var nonKeywordTopResults = topByScore.Where(r => !keywordMatchIds.Contains(r.MessageId)).ToList();
+            // Get top by RRF score (original order)
+            var topByRrf = results.Take(MaxResultsToRerank).ToList();
 
-            // Keyword matches first, then fill remaining slots with top results
-            var toRerank = keywordMatches
-                .Concat(nonKeywordTopResults)
-                .Take(MaxResultsToRerank)
+            // ALSO get top by similarity (semantic matches might have lower RRF)
+            var topBySimilarity = results
+                .OrderByDescending(r => r.Similarity)
+                .Take(5) // Top 5 by similarity
                 .ToList();
 
-            if (keywordMatches.Count > 0)
-            {
-                _logger.LogInformation("[Rerank] Prioritized {Count} keyword matches (keywords: {Keywords})",
-                    keywordMatches.Count, string.Join(", ", keywords.Take(3)));
-            }
+            // Combine: keyword matches FIRST, then similarity, then RRF
+            var alreadyIncluded = new HashSet<long>();
+            var toRerank = new List<SearchResult>();
+
+            // 1. Keyword matches (highest priority)
+            foreach (var r in keywordMatches.Where(r => alreadyIncluded.Add(r.MessageId)))
+                toRerank.Add(r);
+
+            // 2. Top by similarity (semantic relevance)
+            foreach (var r in topBySimilarity.Where(r => alreadyIncluded.Add(r.MessageId)))
+                toRerank.Add(r);
+
+            // 3. Top by RRF (multi-query consensus)
+            foreach (var r in topByRrf.Where(r => alreadyIncluded.Add(r.MessageId)))
+                toRerank.Add(r);
+
+            // Limit to max
+            toRerank = toRerank.Take(MaxResultsToRerank).ToList();
+
+            _logger.LogInformation("[Rerank] Selected {Count} for rerank: {Keyword} keyword, {Sim} similarity, {Rrf} RRF",
+                toRerank.Count,
+                keywordMatches.Count(k => toRerank.Any(r => r.MessageId == k.MessageId)),
+                topBySimilarity.Count(s => toRerank.Any(r => r.MessageId == s.MessageId)),
+                topByRrf.Count(rrf => toRerank.Any(r => r.MessageId == rrf.MessageId)));
 
             // Build documents list for LLM
             var documents = toRerank.Select((r, i) => new
@@ -75,23 +92,23 @@ public class RerankService
             }).ToList();
 
             var systemPrompt = """
-                Ты — эксперт по оценке релевантности текстов из неформального чата.
-
-                Тебе дан ВОПРОС и список ДОКУМЕНТОВ. Оцени релевантность каждого документа для ответа на вопрос.
+                Ты оцениваешь релевантность документов для поиска в чате.
 
                 ВАЖНО:
-                - Это неформальный чат, в нём много слэнга, мата, шуток и оскорблений
-                - Если в вопросе есть слово/термин и документ содержит это же слово — это ВЫСОКАЯ релевантность
-                - Слова типа "сосун", "пидор", "хуй" и т.п. — это обычная лексика чата, оценивай по смыслу
-                - НЕ обнуляй релевантность из-за "неприличного" содержания
+                - Это НЕФОРМАЛЬНЫЙ чат с матом, слэнгом, шутками про секс и т.п.
+                - Оценивай ТОЛЬКО семантическую связь с вопросом
+                - Мат и "неприличное" содержание — это НОРМА, не снижай за это оценку
+                - Синонимы и перефразирования = высокая релевантность (анал ≈ очко ≈ попа)
 
-                Правила оценки:
-                - 3 = документ содержит ключевые слова из вопроса ИЛИ напрямую отвечает на вопрос
-                - 2 = документ связан с темой вопроса
-                - 1 = документ косвенно связан
-                - 0 = документ вообще не связан с вопросом
+                Шкала:
+                - 3 = прямой ответ на вопрос или содержит ключевые слова
+                - 2 = связано с темой вопроса (синонимы, та же тема)
+                - 1 = косвенно связано
+                - 0 = ТОЛЬКО если вообще никак не связано
 
-                Отвечай ТОЛЬКО JSON массивом с id и score, без пояснений:
+                ЗАПРЕЩЕНО: давать всем документам одинаковую оценку. Выбери лучшие!
+
+                Формат ответа — ТОЛЬКО JSON без пояснений:
                 [{"id": 0, "score": 3}, {"id": 1, "score": 1}, ...]
                 """;
 
@@ -113,6 +130,8 @@ public class RerankService
                 },
                 preferredTag: null,
                 ct: ct);
+
+            _logger.LogDebug("[Rerank] LLM response: {Response}", TruncateText(llmResponse.Content, 500));
 
             // Parse scores
             var scores = ParseScores(llmResponse.Content, toRerank.Count);
