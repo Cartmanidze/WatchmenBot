@@ -266,8 +266,8 @@ public class EmbeddingService
 
             _logger.LogDebug("[Search] Got query embedding with {Dims} dimensions", queryEmbedding.Length);
 
-            var results = await SearchByVectorAsync(chatId, queryEmbedding, limit, ct);
-            _logger.LogInformation("[Search] Found {Count} results for query in chat {ChatId}", results.Count, chatId);
+            var results = await SearchByVectorAsync(chatId, queryEmbedding, limit, ct, queryText: query);
+            _logger.LogInformation("[Search] Found {Count} results for query in chat {ChatId} (hybrid)", results.Count, chatId);
 
             return results;
         }
@@ -566,32 +566,73 @@ public class EmbeddingService
             });
     }
 
+    // Weight for hybrid search: 70% semantic, 30% keyword
+    private const double DenseWeight = 0.7;
+    private const double SparseWeight = 0.3;
+
     private async Task<List<SearchResult>> SearchByVectorAsync(
         long chatId,
         float[] queryEmbedding,
         int limit,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? queryText = null)
     {
         using var connection = await _connectionFactory.CreateConnectionAsync();
 
         var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
+        // Extract search terms for tsvector (skip stop words)
+        var searchTerms = !string.IsNullOrWhiteSpace(queryText)
+            ? ExtractSearchTerms(queryText)
+            : null;
+
+        // Use hybrid scoring if we have query text, otherwise pure vector
+        var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+
+        var sql = useHybrid
+            ? $"""
+                SELECT
+                    chat_id as ChatId,
+                    message_id as MessageId,
+                    chunk_index as ChunkIndex,
+                    chunk_text as ChunkText,
+                    metadata as MetadataJson,
+                    embedding <=> @Embedding::vector as Distance,
+                    -- Hybrid score: dense + sparse (tsvector)
+                    {DenseWeight} * (1 - (embedding <=> @Embedding::vector))
+                    + {SparseWeight} * COALESCE(
+                        ts_rank_cd(
+                            to_tsvector('russian', chunk_text),
+                            websearch_to_tsquery('russian', @SearchTerms),
+                            32  -- normalization: rank / (rank + 1)
+                        ),
+                        0
+                    ) as Similarity
+                FROM message_embeddings
+                WHERE chat_id = @ChatId
+                ORDER BY Similarity DESC
+                LIMIT @Limit
+                """
+            : """
+                SELECT
+                    chat_id as ChatId,
+                    message_id as MessageId,
+                    chunk_index as ChunkIndex,
+                    chunk_text as ChunkText,
+                    metadata as MetadataJson,
+                    embedding <=> @Embedding::vector as Distance,
+                    1 - (embedding <=> @Embedding::vector) as Similarity
+                FROM message_embeddings
+                WHERE chat_id = @ChatId
+                ORDER BY embedding <=> @Embedding::vector
+                LIMIT @Limit
+                """;
+
         var results = await connection.QueryAsync<SearchResult>(
-            """
-            SELECT
-                chat_id as ChatId,
-                message_id as MessageId,
-                chunk_index as ChunkIndex,
-                chunk_text as ChunkText,
-                metadata as MetadataJson,
-                embedding <=> @Embedding::vector as Distance,
-                1 - (embedding <=> @Embedding::vector) as Similarity
-            FROM message_embeddings
-            WHERE chat_id = @ChatId
-            ORDER BY embedding <=> @Embedding::vector
-            LIMIT @Limit
-            """,
-            new { ChatId = chatId, Embedding = embeddingString, Limit = limit });
+            sql,
+            new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, Limit = limit });
+
+        _logger.LogDebug("[Search] Hybrid={Hybrid}, Terms='{Terms}'", useHybrid, searchTerms ?? "none");
 
         return results.Select(r =>
         {
@@ -1185,7 +1226,7 @@ public class EmbeddingService
     }
 
     /// <summary>
-    /// Vector search within a specific pool of message IDs
+    /// Vector search within a specific pool of message IDs (with hybrid scoring)
     /// </summary>
     private async Task<List<SearchResult>> SearchByVectorInPoolAsync(
         long chatId,
@@ -1209,23 +1250,54 @@ public class EmbeddingService
             using var connection = await _connectionFactory.CreateConnectionAsync();
             var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
+            // Extract search terms for hybrid scoring
+            var searchTerms = ExtractSearchTerms(query);
+            var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+
+            var sql = useHybrid
+                ? $"""
+                    SELECT
+                        chat_id as ChatId,
+                        message_id as MessageId,
+                        chunk_index as ChunkIndex,
+                        chunk_text as ChunkText,
+                        metadata as MetadataJson,
+                        embedding <=> @Embedding::vector as Distance,
+                        -- Hybrid score
+                        {DenseWeight} * (1 - (embedding <=> @Embedding::vector))
+                        + {SparseWeight} * COALESCE(
+                            ts_rank_cd(
+                                to_tsvector('russian', chunk_text),
+                                websearch_to_tsquery('russian', @SearchTerms),
+                                32
+                            ),
+                            0
+                        ) as Similarity
+                    FROM message_embeddings
+                    WHERE chat_id = @ChatId
+                      AND message_id = ANY(@MessageIds)
+                    ORDER BY Similarity DESC
+                    LIMIT @Limit
+                    """
+                : """
+                    SELECT
+                        chat_id as ChatId,
+                        message_id as MessageId,
+                        chunk_index as ChunkIndex,
+                        chunk_text as ChunkText,
+                        metadata as MetadataJson,
+                        embedding <=> @Embedding::vector as Distance,
+                        1 - (embedding <=> @Embedding::vector) as Similarity
+                    FROM message_embeddings
+                    WHERE chat_id = @ChatId
+                      AND message_id = ANY(@MessageIds)
+                    ORDER BY embedding <=> @Embedding::vector
+                    LIMIT @Limit
+                    """;
+
             var results = await connection.QueryAsync<SearchResult>(
-                """
-                SELECT
-                    chat_id as ChatId,
-                    message_id as MessageId,
-                    chunk_index as ChunkIndex,
-                    chunk_text as ChunkText,
-                    metadata as MetadataJson,
-                    embedding <=> @Embedding::vector as Distance,
-                    1 - (embedding <=> @Embedding::vector) as Similarity
-                FROM message_embeddings
-                WHERE chat_id = @ChatId
-                  AND message_id = ANY(@MessageIds)
-                ORDER BY embedding <=> @Embedding::vector
-                LIMIT @Limit
-                """,
-                new { ChatId = chatId, Embedding = embeddingString, MessageIds = messageIds.ToArray(), Limit = limit });
+                sql,
+                new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, MessageIds = messageIds.ToArray(), Limit = limit });
 
             return results.Select(r =>
             {
