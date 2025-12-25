@@ -36,10 +36,12 @@ services:
       Llm__Providers__1__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__2__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__3__ApiKey: ${OPENROUTER_API_KEY}
-      Embeddings__ApiKey: ${OPENAI_API_KEY}
-      Embeddings__BaseUrl: https://api.openai.com/v1
-      Embeddings__Model: text-embedding-3-small
-      Embeddings__Dimensions: "1536"
+      # Embeddings (HuggingFace deepvk/USER-bge-m3)
+      Embeddings__Provider: ${EMBEDDINGS_PROVIDER:-huggingface}
+      Embeddings__ApiKey: ${HUGGINGFACE_API_KEY}
+      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://api-inference.huggingface.co/models/deepvk/USER-bge-m3}
+      Embeddings__Model: ${EMBEDDINGS_MODEL:-deepvk/USER-bge-m3}
+      Embeddings__Dimensions: ${EMBEDDINGS_DIMENSIONS:-1024}
       DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}
       Admin__UserId: ${ADMIN_USER_ID}
       Admin__Username: ${ADMIN_USERNAME}

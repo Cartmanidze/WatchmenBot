@@ -95,7 +95,7 @@ public static class ServiceCollectionExtensions
             return new OpenRouterClient(router, logger);
         });
 
-        // Embedding Client (OpenAI text-embedding-3-small)
+        // Embedding Client (OpenAI or HuggingFace)
         services.AddHttpClient<EmbeddingClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
@@ -106,24 +106,36 @@ public static class ServiceCollectionExtensions
             })
             .ConfigureHttpClient(client =>
             {
-                client.Timeout = TimeSpan.FromSeconds(60); // Explicit timeout
+                client.Timeout = TimeSpan.FromSeconds(120); // Longer timeout for HuggingFace cold starts
             })
             .AddTypedClient<EmbeddingClient>((httpClient, serviceProvider) =>
             {
                 var apiKey = configuration["Embeddings:ApiKey"] ?? string.Empty;
-                var baseUrl = configuration["Embeddings:BaseUrl"] ?? "https://api.openai.com/v1";
-                var model = configuration["Embeddings:Model"] ?? "text-embedding-3-small";
-                var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+                var baseUrl = configuration["Embeddings:BaseUrl"] ?? string.Empty;
+                var model = configuration["Embeddings:Model"] ?? string.Empty;
+                var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 0);
+                var providerStr = configuration["Embeddings:Provider"] ?? "openai";
                 var logger = serviceProvider.GetRequiredService<ILogger<EmbeddingClient>>();
+
+                // Parse provider
+                var provider = providerStr.ToLowerInvariant() switch
+                {
+                    "huggingface" or "hf" => EmbeddingProvider.HuggingFace,
+                    _ => EmbeddingProvider.OpenAI
+                };
 
                 // Embeddings are optional - if no API key, RAG will be disabled
                 if (string.IsNullOrWhiteSpace(apiKey))
                 {
-                    serviceProvider.GetRequiredService<ILogger<EmbeddingClient>>()
-                        .LogWarning("Embeddings:ApiKey not configured. RAG features will be disabled.");
+                    logger.LogWarning("Embeddings:ApiKey not configured. RAG features will be disabled.");
+                }
+                else
+                {
+                    logger.LogInformation("Embeddings configured: Provider={Provider}, Dimensions={Dimensions}",
+                        provider, dimensions > 0 ? dimensions : (provider == EmbeddingProvider.HuggingFace ? 1024 : 1536));
                 }
 
-                return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, logger);
+                return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, provider, logger);
             });
 
         // Embedding Service for RAG

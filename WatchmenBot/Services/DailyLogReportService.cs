@@ -110,8 +110,8 @@ public class DailyLogReportService : BackgroundService
             }
 
             // Add embeddings usage
-            var embeddingStats = EmbeddingClient.GetUsageStats();
-            if (embeddingStats.TotalRequests > 0)
+            var embeddingStats = GetEmbeddingStats();
+            if (embeddingStats != null && embeddingStats.TotalRequests > 0)
             {
                 message += "\n" + embeddingStats.ToTelegramHtml();
             }
@@ -145,6 +145,21 @@ public class DailyLogReportService : BackgroundService
         }
     }
 
+    private EmbeddingUsageStats? GetEmbeddingStats()
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var embeddingClient = scope.ServiceProvider.GetRequiredService<EmbeddingClient>();
+            return embeddingClient.GetUsageStats();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[LogReport] Failed to get embedding stats");
+            return null;
+        }
+    }
+
     /// <summary>
     /// Send immediate report (for /admin report command)
     /// </summary>
@@ -164,8 +179,8 @@ public class DailyLogReportService : BackgroundService
             }
 
             // Add embeddings usage
-            var embeddingStats = EmbeddingClient.GetUsageStats();
-            if (embeddingStats.TotalRequests > 0)
+            var embeddingStats = GetEmbeddingStats();
+            if (embeddingStats != null && embeddingStats.TotalRequests > 0)
             {
                 message += "\n" + embeddingStats.ToTelegramHtml();
             }

@@ -5,6 +5,12 @@ using System.Text.Json;
 
 namespace WatchmenBot.Services;
 
+public enum EmbeddingProvider
+{
+    OpenAI,
+    HuggingFace
+}
+
 public class EmbeddingClient
 {
     private readonly HttpClient _httpClient;
@@ -12,6 +18,7 @@ public class EmbeddingClient
     private readonly string _apiKey;
     private readonly string _baseUrl;
     private readonly int _dimensions;
+    private readonly EmbeddingProvider _provider;
     private readonly ILogger<EmbeddingClient> _logger;
     private readonly bool _isConfigured;
 
@@ -20,8 +27,9 @@ public class EmbeddingClient
     private static int _totalRequests;
     private static readonly object _statsLock = new();
 
-    // Pricing: text-embedding-3-small = $0.00002 / 1K tokens
-    private const double PricePerThousandTokens = 0.00002;
+    // Pricing varies by provider
+    private const double OpenAiPricePerThousandTokens = 0.00002; // text-embedding-3-small
+    private const double HuggingFacePricePerThousandTokens = 0.0; // Free tier
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -35,18 +43,37 @@ public class EmbeddingClient
         string baseUrl,
         string model,
         int dimensions,
+        EmbeddingProvider provider,
         ILogger<EmbeddingClient> logger)
     {
         _httpClient = httpClient;
         _apiKey = apiKey;
-        _baseUrl = string.IsNullOrWhiteSpace(baseUrl) ? "https://api.openai.com/v1" : baseUrl.TrimEnd('/');
-        _model = string.IsNullOrWhiteSpace(model) ? "text-embedding-3-small" : model;
-        _dimensions = dimensions > 0 ? dimensions : 1536;
+        _provider = provider;
         _logger = logger;
         _isConfigured = !string.IsNullOrWhiteSpace(apiKey);
+
+        // Set defaults based on provider
+        if (_provider == EmbeddingProvider.HuggingFace)
+        {
+            _baseUrl = string.IsNullOrWhiteSpace(baseUrl)
+                ? "https://api-inference.huggingface.co/models/deepvk/USER-bge-m3"
+                : baseUrl.TrimEnd('/');
+            _model = model; // Not used in HuggingFace requests
+            _dimensions = dimensions > 0 ? dimensions : 1024;
+        }
+        else // OpenAI
+        {
+            _baseUrl = string.IsNullOrWhiteSpace(baseUrl)
+                ? "https://api.openai.com/v1"
+                : baseUrl.TrimEnd('/');
+            _model = string.IsNullOrWhiteSpace(model) ? "text-embedding-3-small" : model;
+            _dimensions = dimensions > 0 ? dimensions : 1536;
+        }
     }
 
     public bool IsConfigured => _isConfigured;
+    public EmbeddingProvider Provider => _provider;
+    public int Dimensions => _dimensions;
 
     public async Task<float[]> GetEmbeddingAsync(string text, CancellationToken ct = default)
     {
@@ -62,14 +89,20 @@ public class EmbeddingClient
 
         if (!_isConfigured)
         {
-            _logger.LogDebug("[OpenAI] Skipping embeddings - API key not configured");
+            _logger.LogDebug("[Embeddings] Skipping - API key not configured");
             return new List<float[]>();
         }
 
+        return _provider == EmbeddingProvider.HuggingFace
+            ? await GetEmbeddingsHuggingFaceAsync(textList, ct)
+            : await GetEmbeddingsOpenAiAsync(textList, ct);
+    }
+
+    private async Task<List<float[]>> GetEmbeddingsOpenAiAsync(List<string> textList, CancellationToken ct)
+    {
         var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/embeddings");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
-        var totalChars = textList.Sum(t => t.Length);
         var body = new
         {
             model = _model,
@@ -130,18 +163,87 @@ public class EmbeddingClient
         return result;
     }
 
+    private async Task<List<float[]>> GetEmbeddingsHuggingFaceAsync(List<string> textList, CancellationToken ct)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, _baseUrl);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+
+        // HuggingFace format: {"inputs": ["text1", "text2"]}
+        var body = new { inputs = textList };
+
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(body, JsonOptions),
+            Encoding.UTF8,
+            "application/json");
+
+        var sw = Stopwatch.StartNew();
+
+        using var response = await _httpClient.SendAsync(request, ct);
+        var json = await response.Content.ReadAsStringAsync(ct);
+        sw.Stop();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            // HuggingFace may return model loading status
+            if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+            {
+                _logger.LogWarning("[HuggingFace] Model is loading, retry in 30s: {Response}", json);
+            }
+            else
+            {
+                _logger.LogError("[HuggingFace] Embeddings API error {StatusCode}: {Response}", response.StatusCode, json);
+            }
+            response.EnsureSuccessStatusCode();
+        }
+
+        // HuggingFace response format: [[0.123, -0.456, ...], [0.789, -0.012, ...]]
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var result = new List<float[]>();
+
+        foreach (var embeddingArray in root.EnumerateArray())
+        {
+            var embedding = new float[embeddingArray.GetArrayLength()];
+            var i = 0;
+            foreach (var value in embeddingArray.EnumerateArray())
+            {
+                embedding[i++] = value.GetSingle();
+            }
+            result.Add(embedding);
+        }
+
+        // Track stats (HuggingFace doesn't return token count, estimate from chars)
+        var estimatedTokens = textList.Sum(t => t.Length) / 4; // rough estimate
+        lock (_statsLock)
+        {
+            _totalTokensUsed += estimatedTokens;
+            _totalRequests++;
+        }
+
+        _logger.LogDebug("[HuggingFace] Embeddings: {Count} texts, ~{Tokens} tokens, {Ms}ms, dim={Dim}",
+            textList.Count, estimatedTokens, sw.ElapsedMilliseconds, result.FirstOrDefault()?.Length ?? 0);
+
+        return result;
+    }
+
     /// <summary>
     /// Get usage statistics since app start
     /// </summary>
-    public static EmbeddingUsageStats GetUsageStats()
+    public EmbeddingUsageStats GetUsageStats()
     {
         lock (_statsLock)
         {
+            var pricePerK = _provider == EmbeddingProvider.HuggingFace
+                ? HuggingFacePricePerThousandTokens
+                : OpenAiPricePerThousandTokens;
+
             return new EmbeddingUsageStats
             {
                 TotalTokens = _totalTokensUsed,
                 TotalRequests = _totalRequests,
-                EstimatedCost = _totalTokensUsed / 1000.0 * PricePerThousandTokens
+                EstimatedCost = _totalTokensUsed / 1000.0 * pricePerK,
+                Provider = _provider.ToString()
             };
         }
     }
@@ -164,14 +266,16 @@ public class EmbeddingUsageStats
     public long TotalTokens { get; set; }
     public int TotalRequests { get; set; }
     public double EstimatedCost { get; set; }
+    public string Provider { get; set; } = "OpenAI";
 
     public string ToTelegramHtml()
     {
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("<b>🔤 OpenAI Embeddings:</b>");
-        sb.AppendLine($"• Токенов: {TotalTokens:N0}");
-        sb.AppendLine($"• Запросов: {TotalRequests:N0}");
-        sb.AppendLine($"• Потрачено: ~${EstimatedCost:F4}");
+        sb.AppendLine($"<b>Embeddings ({Provider}):</b>");
+        sb.AppendLine($"  Токенов: {TotalTokens:N0}");
+        sb.AppendLine($"  Запросов: {TotalRequests:N0}");
+        if (EstimatedCost > 0)
+            sb.AppendLine($"  Потрачено: ~${EstimatedCost:F4}");
         return sb.ToString();
     }
 }

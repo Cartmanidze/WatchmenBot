@@ -90,14 +90,22 @@ public class TestConfiguration : IDisposable
     public EmbeddingClient CreateEmbeddingClient()
     {
         if (!HasOpenAiKey)
-            throw new InvalidOperationException("OpenAI API key not configured");
+            throw new InvalidOperationException("Embeddings API key not configured");
+
+        var providerStr = Configuration["Embeddings:Provider"] ?? "openai";
+        var provider = providerStr.ToLowerInvariant() switch
+        {
+            "huggingface" or "hf" => EmbeddingProvider.HuggingFace,
+            _ => EmbeddingProvider.OpenAI
+        };
 
         return new EmbeddingClient(
             _httpClient,
             OpenAiApiKey!,
-            Configuration["Embeddings:BaseUrl"] ?? "https://api.openai.com/v1",
-            Configuration["Embeddings:Model"] ?? "text-embedding-3-small",
-            Configuration.GetValue<int>("Embeddings:Dimensions", 1536),
+            Configuration["Embeddings:BaseUrl"] ?? string.Empty,
+            Configuration["Embeddings:Model"] ?? string.Empty,
+            Configuration.GetValue<int>("Embeddings:Dimensions", 0),
+            provider,
             NullLogger<EmbeddingClient>.Instance);
     }
 

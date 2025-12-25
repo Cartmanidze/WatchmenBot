@@ -231,7 +231,7 @@ public class MessageStore
             LEFT JOIN message_embeddings e ON m.chat_id = e.chat_id AND m.id = e.message_id
             WHERE e.id IS NULL
               AND m.text IS NOT NULL
-              AND LENGTH(m.text) > 10
+              AND LENGTH(m.text) > 5
             ORDER BY m.date_utc DESC
             LIMIT @Limit;
             """;
@@ -256,7 +256,7 @@ public class MessageStore
     {
         const string sql = """
             SELECT
-                (SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND LENGTH(text) > 10) as total,
+                (SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND LENGTH(text) > 5) as total,
                 (SELECT COUNT(DISTINCT (chat_id, message_id)) FROM message_embeddings) as indexed;
             """;
 

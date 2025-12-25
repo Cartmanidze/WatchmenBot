@@ -42,11 +42,12 @@ services:
       OpenRouter__Model: deepseek/deepseek-chat
       OpenRouter__UseProxy: "false"
 
-      # Embeddings (OpenAI)
-      Embeddings__ApiKey: ${OPENAI_API_KEY:-}
-      Embeddings__BaseUrl: https://api.openai.com/v1
-      Embeddings__Model: text-embedding-3-small
-      Embeddings__Dimensions: "1536"
+      # Embeddings (HuggingFace deepvk/USER-bge-m3)
+      Embeddings__Provider: ${EMBEDDINGS_PROVIDER:-huggingface}
+      Embeddings__ApiKey: ${HUGGINGFACE_API_KEY:-}
+      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://api-inference.huggingface.co/models/deepvk/USER-bge-m3}
+      Embeddings__Model: ${EMBEDDINGS_MODEL:-deepvk/USER-bge-m3}
+      Embeddings__Dimensions: ${EMBEDDINGS_DIMENSIONS:-1024}
 
       # Daily Summary
       DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}

@@ -106,24 +106,47 @@ public class DatabaseInitializer : IHostedService
     {
         var dimensions = _configuration.GetValue<int>("Embeddings:Dimensions", 1536);
 
-        var createTableSql = $"""
-            CREATE TABLE IF NOT EXISTS message_embeddings (
-                id BIGSERIAL PRIMARY KEY,
-                chat_id BIGINT NOT NULL,
-                message_id BIGINT NOT NULL,
-                chunk_index INT NOT NULL DEFAULT 0,
-                chunk_text TEXT NOT NULL,
-                embedding vector({dimensions}),
-                metadata JSONB,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                UNIQUE(chat_id, message_id, chunk_index)
-            );
-            """;
-
         try
         {
+            // Check if table exists and has correct dimensions
+            var checkDimensionsSql = """
+                SELECT atttypmod
+                FROM pg_attribute a
+                JOIN pg_class c ON a.attrelid = c.oid
+                WHERE c.relname = 'message_embeddings'
+                  AND a.attname = 'embedding'
+                  AND a.atttypid = (SELECT oid FROM pg_type WHERE typname = 'vector');
+                """;
+
+            var currentDimensions = await connection.QueryFirstOrDefaultAsync<int?>(checkDimensionsSql);
+
+            if (currentDimensions.HasValue && currentDimensions.Value != dimensions)
+            {
+                _logger.LogWarning(
+                    "Embedding dimensions changed from {OldDim} to {NewDim}. Recreating table (all embeddings will be lost!)",
+                    currentDimensions.Value, dimensions);
+
+                // Drop old table and indexes
+                await connection.ExecuteAsync("DROP TABLE IF EXISTS message_embeddings CASCADE;");
+                _logger.LogInformation("Old message_embeddings table dropped");
+            }
+
+            var createTableSql = $"""
+                CREATE TABLE IF NOT EXISTS message_embeddings (
+                    id BIGSERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    chunk_index INT NOT NULL DEFAULT 0,
+                    chunk_text TEXT NOT NULL,
+                    embedding vector({dimensions}),
+                    metadata JSONB,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    UNIQUE(chat_id, message_id, chunk_index)
+                );
+                """;
+
             await connection.ExecuteAsync(createTableSql);
-            _logger.LogInformation("Embeddings table created with {Dimensions} dimensions", dimensions);
+            _logger.LogInformation("Embeddings table ready with {Dimensions} dimensions", dimensions);
         }
         catch (Exception ex)
         {
