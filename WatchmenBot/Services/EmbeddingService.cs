@@ -65,7 +65,7 @@ public class EmbeddingService
     public async Task StoreMessageEmbeddingsBatchAsync(IEnumerable<MessageRecord> messages, CancellationToken ct = default)
     {
         var messageList = messages
-            .Where(m => !string.IsNullOrWhiteSpace(m.Text) && m.Text.Length > 10)
+            .Where(m => !string.IsNullOrWhiteSpace(m.Text) && m.Text.Length > 5)
             .OrderBy(m => m.DateUtc)
             .ToList();
 
