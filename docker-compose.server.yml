@@ -39,7 +39,7 @@ services:
       # Embeddings (HuggingFace deepvk/USER-bge-m3)
       Embeddings__Provider: ${EMBEDDINGS_PROVIDER:-huggingface}
       Embeddings__ApiKey: ${HUGGINGFACE_API_KEY}
-      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://api-inference.huggingface.co/models/deepvk/USER-bge-m3}
+      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://router.huggingface.co/hf-inference/models/deepvk/USER-bge-m3/pipeline/feature-extraction}
       Embeddings__Model: ${EMBEDDINGS_MODEL:-deepvk/USER-bge-m3}
       Embeddings__Dimensions: ${EMBEDDINGS_DIMENSIONS:-1024}
       DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}

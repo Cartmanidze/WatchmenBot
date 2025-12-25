@@ -56,7 +56,7 @@ public class EmbeddingClient
         if (_provider == EmbeddingProvider.HuggingFace)
         {
             _baseUrl = string.IsNullOrWhiteSpace(baseUrl)
-                ? "https://api-inference.huggingface.co/models/deepvk/USER-bge-m3"
+                ? "https://router.huggingface.co/hf-inference/models/deepvk/USER-bge-m3/pipeline/feature-extraction"
                 : baseUrl.TrimEnd('/');
             _model = model; // Not used in HuggingFace requests
             _dimensions = dimensions > 0 ? dimensions : 1024;
