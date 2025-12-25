@@ -65,7 +65,9 @@ public class LlmMemoryService
                 Interests = ParseJsonArray(profile.interests),
                 NotableQuotes = ParseJsonArray(profile.notable_quotes),
                 InteractionCount = profile.interaction_count,
-                LastInteraction = profile.last_interaction
+                LastInteraction = profile.last_interaction.HasValue
+                    ? new DateTimeOffset(profile.last_interaction.Value, TimeSpan.Zero)
+                    : null
             };
         }
         catch (Exception ex)
@@ -198,7 +200,7 @@ public class LlmMemoryService
                 ResponseSummary = r.response_summary,
                 Topics = ParseJsonArray(r.topics),
                 ExtractedFacts = ParseJsonArray(r.extracted_facts),
-                CreatedAt = r.created_at
+                CreatedAt = new DateTimeOffset(r.created_at, TimeSpan.Zero)
             }).ToList();
         }
         catch (Exception ex)
@@ -539,15 +541,32 @@ public class ConversationMemory
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-// Internal records for Dapper mapping
-internal record UserProfileRecord(
-    long user_id, long chat_id, string? display_name, string? username,
-    string? facts, string? traits, string? interests, string? notable_quotes,
-    int interaction_count, DateTimeOffset? last_interaction);
+// Internal classes for Dapper mapping (records don't work well with nullable DateTimeOffset)
+internal class UserProfileRecord
+{
+    public long user_id { get; set; }
+    public long chat_id { get; set; }
+    public string? display_name { get; set; }
+    public string? username { get; set; }
+    public string? facts { get; set; }
+    public string? traits { get; set; }
+    public string? interests { get; set; }
+    public string? notable_quotes { get; set; }
+    public int interaction_count { get; set; }
+    public DateTime? last_interaction { get; set; }
+}
 
-internal record ConversationMemoryRecord(
-    long id, long user_id, long chat_id, string query, string response_summary,
-    string? topics, string? extracted_facts, DateTimeOffset created_at);
+internal class ConversationMemoryRecord
+{
+    public long id { get; set; }
+    public long user_id { get; set; }
+    public long chat_id { get; set; }
+    public string query { get; set; } = "";
+    public string response_summary { get; set; } = "";
+    public string? topics { get; set; }
+    public string? extracted_facts { get; set; }
+    public DateTime created_at { get; set; }
+}
 
 internal class ProfileExtraction
 {
