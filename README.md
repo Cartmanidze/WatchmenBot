@@ -1,33 +1,34 @@
 # WatchmenBot
 
-**Telegram-бот для анализа и суммирования группового общения с использованием AI и векторного поиска.**
+**Telegram-бот для анализа группового общения с AI-памятью, векторным поиском и персональными профилями.**
 
-WatchmenBot сохраняет историю сообщений группы, создаёт семантические embeddings и использует их для умных выжимок, поиска и ответов на вопросы о контексте чата.
+WatchmenBot сохраняет историю сообщений, создаёт семантические embeddings, строит профили пользователей и отвечает на вопросы с учётом контекста и личности каждого участника.
 
 ---
 
 ## Возможности
 
-### Для пользователей
+### Команды для пользователей
 
 | Команда | Описание |
 |---------|----------|
 | `/summary [N]` | Выжимка чата за N часов (по умолчанию 24). Форматы: `48`, `48h`, `2d` |
-| `/ask <вопрос>` | Вопрос по истории чата — про людей, события, обсуждения (RAG + Grok) |
-| `/smart <вопрос>` | Умный поиск в интернете (Perplexity, без контекста чата) |
-| `/search <запрос>` | Семантический поиск по истории чата |
-| `/recall @username` | Все сообщения пользователя за последние 7 дней |
+| `/ask <вопрос>` | Вопрос по истории чата с памятью о пользователе (RAG + профили) |
+| `/smart <вопрос>` | Поиск в интернете (Perplexity, без контекста чата) |
+| `/recall @username` | Сообщения пользователя за последние 7 дней |
 | `/truth [N]` | Fact-check последних N сообщений (по умолчанию 5) |
 
 ### Автоматические функции
 
 - **Ежедневная выжимка** — отправляется в настроенное время (по умолчанию 21:00)
 - **Фоновая индексация** — все сообщения автоматически получают embeddings
+- **Профилирование** — извлечение фактов о пользователях каждые 15 минут
+- **Ночные профили** — глубокий анализ пользователей в 03:00 UTC
 - **Отчёт администратору** — ежедневная статистика использования
 
-### Для администратора
+### Команды администратора
 
-Полный набор команд через `/admin`:
+Полный набор через `/admin`:
 
 ```
 /admin status              — текущие настройки
@@ -58,25 +59,18 @@ WatchmenBot сохраняет историю сообщений группы, �
 
 ## Архитектура
 
-### Обзор
+### Обзор системы
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Telegram Bot API                         │
-│                         (Webhook/Polling)                        │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      ASP.NET Core WebAPI                         │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │              TelegramWebhookController                       │ │
-│  │         (валидация secret token + IP range)                  │ │
-│  └──────────────────────────┬──────────────────────────────────┘ │
-│                             │                                    │
-│                             ▼                                    │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │               ProcessTelegramUpdate                          │ │
+│  │              ProcessTelegramUpdate                           │ │
 │  │            (роутинг по типу сообщения)                       │ │
 │  └──────────────────────────┬──────────────────────────────────┘ │
 │                             │                                    │
@@ -90,368 +84,209 @@ WatchmenBot сохраняет историю сообщений группы, �
 │         ▼                 ▼                                      │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │                      Services Layer                          │ │
-│  │  ┌───────────┐ ┌───────────┐ ┌───────────┐                   │ │
-│  │  │ LlmRouter │ │ Embedding │ │  Message  │                   │ │
-│  │  │           │ │  Service  │ │   Store   │                   │ │
-│  │  └─────┬─────┘ └─────┬─────┘ └─────┬─────┘                   │ │
-│  └────────┼─────────────┼─────────────┼────────────────────────┘ │
-│           │             │             │                          │
-└───────────┼─────────────┼─────────────┼──────────────────────────┘
-            │             │             │
-            ▼             ▼             ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────────────────┐
-│   OpenRouter  │ │    OpenAI     │ │       PostgreSQL          │
-│  (LLM API)    │ │  (Embeddings) │ │  + pgvector extension     │
-└───────────────┘ └───────────────┘ └───────────────────────────┘
+│  │  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌─────────────┐   │ │
+│  │  │ LlmRouter │ │ Embedding │ │  Message  │ │   Profile   │   │ │
+│  │  │           │ │  Service  │ │   Store   │ │   System    │   │ │
+│  │  └─────┬─────┘ └─────┬─────┘ └─────┬─────┘ └──────┬──────┘   │ │
+│  └────────┼─────────────┼─────────────┼──────────────┼─────────┘ │
+└───────────┼─────────────┼─────────────┼──────────────┼───────────┘
+            │             │             │              │
+            ▼             ▼             ▼              ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────────────────────┐
+│   OpenRouter  │ │  HuggingFace  │ │         PostgreSQL            │
+│  (LLM API)    │ │  (Embeddings) │ │    + pgvector extension       │
+└───────────────┘ └───────────────┘ └───────────────────────────────┘
 ```
 
 ### Структура проекта
 
 ```
 WatchmenBot/
-├── Program.cs                      # Точка входа
-├── appsettings.json                # Конфигурация
+├── Features/                       # Вертикальные слайсы
+│   ├── Admin/                      # Админские команды
+│   ├── Messages/                   # Обработка сообщений
+│   ├── Search/                     # RAG поиск (/ask, /recall, /truth)
+│   ├── Summary/                    # Дневные саммари
+│   └── Webhook/                    # Telegram webhook
 │
-├── Controllers/
-│   ├── TelegramWebhookController   # Приём webhook от Telegram
-│   └── TelegramAdminController     # Административные эндпоинты
+├── Infrastructure/                 # Инфраструктурный слой
+│   └── Database/                   # БД, миграции
 │
-├── Features/                       # Бизнес-логика (Clean Architecture)
-│   ├── Webhook/
-│   │   └── ProcessTelegramUpdate   # Роутинг обновлений
-│   ├── Messages/
-│   │   └── SaveMessage             # Сохранение сообщений
-│   ├── Summary/
-│   │   └── GenerateSummary         # Генерация выжимок
-│   ├── Search/
-│   │   ├── SearchHandler           # /search
-│   │   ├── AskHandler              # /ask и /smart
-│   │   ├── RecallHandler           # /recall
-│   │   └── FactCheckHandler        # /truth
-│   └── Admin/
-│       └── AdminCommandHandler     # Все /admin команды
+├── Services/                       # Общие сервисы
+│   ├── Llm/                        # LLM провайдеры
+│   ├── ProfileQueueService         # Очередь на профилирование
+│   ├── ProfileWorkerService        # Извлечение фактов (каждые 15 мин)
+│   ├── ProfileGeneratorService     # Глубокие профили (03:00 UTC)
+│   ├── LlmMemoryService            # Память о пользователях
+│   ├── RagFusionService            # Multi-query RAG с RRF
+│   ├── RerankService               # LLM-ранжирование результатов
+│   ├── EmbeddingService            # Векторный поиск
+│   └── SmartSummaryService         # Умные выжимки
 │
-├── Services/
-│   ├── LLM/
-│   │   ├── ILlmProvider            # Интерфейс провайдера
-│   │   ├── OpenAiCompatibleProvider # OpenAI-совместимые API
-│   │   ├── LlmRouter               # Маршрутизация по тегам
-│   │   └── LlmProviderFactory      # Фабрика провайдеров
-│   ├── EmbeddingClient             # HTTP-клиент для OpenAI
-│   ├── EmbeddingService            # Управление embeddings
-│   ├── MessageStore                # CRUD сообщений + поиск
-│   ├── SmartSummaryService         # Умные выжимки с темами
-│   ├── DailySummaryService         # Фоновый сервис выжимок
-│   ├── DailyLogReportService       # Отчёты администратору
-│   ├── BackgroundEmbeddingService  # Фоновая индексация
-│   ├── OpenRouterUsageService      # Отслеживание баланса API
-│   ├── ChatImportService           # Импорт истории
-│   ├── TelegramExportParser        # Парсинг экспорта Telegram
-│   ├── AdminSettingsStore          # Настройки в БД
-│   ├── PromptSettingsStore         # Промпты в БД
-│   └── LogCollector                # Сбор логов
-│
-├── Models/
-│   └── MessageRecord               # DTO сообщения
-│
-├── Infrastructure/
-│   └── Database/
-│       ├── IDbConnectionFactory    # Интерфейс подключения
-│       ├── PostgreSqlConnectionFactory
-│       ├── DatabaseInitializer     # Автосоздание таблиц
-│       └── DatabaseHealthCheck     # Health check
-│
-└── Extensions/
-    ├── ServiceCollectionExtensions # DI конфигурация
-    ├── TelegramSecurityExtensions  # Валидация безопасности
-    └── TelegramUpdateParserExtensions
+└── Extensions/                     # Extension методы
 ```
-
-### Ключевые компоненты
-
-#### LLM Router (многопровайдерная архитектура)
-
-Бот не привязан к одному LLM провайдеру. Поддерживается:
-
-- **Маршрутизация по тегам** — каждая команда может использовать свой провайдер
-- **Fallback по приоритету** — автоматическое переключение при ошибках
-- **Динамическое управление** — включение/отключение провайдеров на лету
-
-```
-/ask     →  tag: "uncensored"  →  Grok (дерзкие ответы)
-/smart   →  tag: "factcheck"   →  Perplexity (поиск в интернете)
-/summary →  tag: "default"     →  Grok или Qwen (по приоритету)
-```
-
-#### RAG (Retrieval-Augmented Generation)
-
-Все ответы основаны на реальном контексте чата:
-
-1. **Сохранение** — каждое сообщение сохраняется в PostgreSQL
-2. **Индексация** — фоновый сервис создаёт embeddings (text-embedding-3-small)
-3. **Поиск** — семантически похожие сообщения через pgvector (cosine similarity)
-4. **Генерация** — найденный контекст передаётся в LLM для ответа
-
-#### Smart Summary (умные выжимки)
-
-Двухэтапный процесс:
-
-1. **Извлечение тем** — LLM выделяет 3-7 основных топиков из сообщений
-2. **Поиск контекста** — для каждой темы ищутся релевантные сообщения
-3. **Генерация** — сначала факты (temp 0.3), потом юмор (temp 0.6)
-
-#### Группировка сообщений
-
-Для экономии на API и улучшения качества:
-
-- Последовательные сообщения одного пользователя объединяются
-- Окно: 5 минут, максимум 10 сообщений
-- Metadata (автор, время) сохраняется в JSONB
 
 ---
 
-## Алгоритмы генерации ответов
+## Система профилей пользователей
 
-### Обзор LLM и Embeddings
-
-| Компонент | Провайдер | Модель | Назначение |
-|-----------|-----------|--------|------------|
-| **Embeddings** | OpenAI | `text-embedding-3-small` | Векторизация сообщений (1536 dims) |
-| **LLM Default** | OpenRouter | `x-ai/grok-4-fast` | Основные запросы, креатив |
-| **LLM Uncensored** | OpenRouter | `x-ai/grok-4-fast` | Дерзкие ответы без цензуры |
-| **LLM Factcheck** | OpenRouter | `perplexity/sonar` | Поиск в интернете, проверка фактов |
-| **LLM Cheap** | OpenRouter | `qwen/qwen-2.5-72b-instruct` | Экономичные запросы |
-| **LLM Fallback** | OpenRouter | `meta-llama/llama-3.3-70b-instruct` | Резервный провайдер |
-
-### Embeddings (OpenAI)
+### Трёхуровневая архитектура
 
 ```
-Сообщение → OpenAI API → vector(1536) → PostgreSQL + pgvector
-                         ↓
-              Cosine Similarity Search
+┌─────────────────────────────────────────────────────────────────┐
+│  РЕАЛТАЙМ: При каждом сообщении                                 │
+│  • Обновляем счётчики (message_count, last_message_at)          │
+│  • Добавляем сообщение в очередь на анализ                      │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  ФОНОВЫЙ ВОРКЕР: Каждые 15 минут                                │
+│  • Берёт сообщения из очереди (батчами по 50)                   │
+│  • Группирует по пользователю                                   │
+│  • Извлекает факты через LLM                                    │
+│  • Сохраняет в user_facts                                       │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  НОЧНОЙ ПЕРЕСЧЁТ: Раз в сутки (03:00 UTC)                       │
+│  • Для каждого активного пользователя:                          │
+│    - Собирает все факты из user_facts                           │
+│    - Сэмплирует 40 сообщений                                    │
+│    - Генерирует глубокий профиль через LLM                      │
+│    - Обновляет user_profiles                                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Параметры:**
-- **Модель**: `text-embedding-3-small`
-- **Размерность**: 1536
-- **Batch size**: 50 сообщений
-- **Группировка**: последовательные сообщения одного юзера (окно 5 мин, макс 10)
+### Типы фактов
+
+| Тип | Описание | Пример |
+|-----|----------|--------|
+| `likes` | Что нравится | "любит футбол" |
+| `dislikes` | Что не нравится | "терпеть не может понедельники" |
+| `said` | Прямые высказывания | "сказал что переезжает" |
+| `does` | Действия, привычки | "использует ник Gun Done" |
+| `knows` | Экспертиза | "разбирается в криптовалютах" |
+| `opinion` | Мнения | "считает что Python лучше" |
+
+### Глубокий профиль
+
+Генерируется раз в сутки и включает:
+- **summary** — краткое описание человека
+- **communication_style** — стиль общения
+- **role_in_chat** — роль (активист/наблюдатель/эксперт/тролль)
+- **interests** — массив интересов
+- **traits** — черты характера
+- **roast_material** — темы для добрых подколов
 
 ---
 
-### `/summary` — Умная выжимка
+## Алгоритмы команд
+
+### `/ask` — Вопрос с памятью
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. СБОР ДАННЫХ                                                 │
-│     messages table → фильтрация ботов → human messages          │
+│  1. ЗАГРУЗКА ПАМЯТИ                                             │
+│     BuildEnhancedContextAsync()                                 │
+│     → Профиль + релевантные факты из user_facts                 │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  2. РАЗНООБРАЗНАЯ ВЫБОРКА (Embeddings)                          │
-│     GetDiverseMessagesAsync() → 100 разных сообщений            │
-│     (максимально охватывает все темы периода)                   │
+│  2. RAG FUSION (если не персональный вопрос)                    │
+│     • Генерация 3 вариаций запроса                              │
+│     • Параллельный поиск по каждой                              │
+│     • Объединение через RRF (Reciprocal Rank Fusion)            │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  3. ИЗВЛЕЧЕНИЕ ТЕМ                                              │
-│     LLM (temp=0.3) → JSON: ["тема1", "тема2", ...]              │
-│     Провайдер: default (Grok/Qwen)                              │
+│  3. RERANK                                                      │
+│     LLM-ранжирование результатов по релевантности               │
+│     Фильтрация нерелевантных (score < 1)                        │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  4. ПОИСК КОНТЕКСТА ПО ТЕМАМ                                    │
-│     Для каждой темы:                                            │
-│       SearchSimilarInRangeAsync(тема, limit=25)                 │
-│       → релевантные сообщения (similarity > 0.25)               │
+│  4. КОНТЕКСТНЫЕ ОКНА                                            │
+│     Для топ-10 результатов загружаются ±1 соседних сообщения    │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  5. ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ                                       │
 │                                                                 │
-│     Stage 1: ФАКТЫ (temp=0.3)                                   │
-│     → Точное извлечение: кто, что, когда, цитаты                │
-│     Провайдер: default (дешёвый)                                │
+│     Stage 1: ФАКТЫ (temp=0.1)                                   │
+│     → JSON с извлечёнными фактами, цитатами, roast_target       │
 │                                                                 │
-│     Stage 2: ЮМОР (temp=0.6)                                    │
-│     → Саркастичная подача тех же фактов                         │
-│     Провайдер: по тегу команды (default)                        │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  РЕЗУЛЬТАТ: Структурированная выжимка                           │
-│  🔥 Главное → 😂 Лучшие моменты → 💬 Темы → 🏆 Герои → 🎭 Итог │
+│     Stage 2: ОТВЕТ (temp=0.6)                                   │
+│     → Два источника: ПАМЯТЬ + КОНТЕКСТ ЧАТА                     │
+│     → Выбирает релевантный источник для ответа                  │
+│     → Дерзкий стиль с подколами                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**LLM**: `default` (Grok) или `summary` тег
-**Temperature**: 0.3 (факты) → 0.6 (юмор)
+**Ключевая особенность**: Если в памяти есть прямой ответ (например, "использует ник Gun Done"), он будет использован даже если RAG нашёл другую информацию.
 
----
-
-### `/ask` — Вопрос по истории чата
+### `/summary` — Умная выжимка
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. ОПРЕДЕЛЕНИЕ ТИПА ВОПРОСА                                    │
-│     DetectPersonalQuestion(вопрос)                              │
-│     → "self" (про себя) / "@username" / null (общий)            │
+│  1. РАЗНООБРАЗНАЯ ВЫБОРКА                                       │
+│     GetDiverseMessagesAsync() → 100 разных сообщений            │
+│     (максимально охватывает все темы периода)                   │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  2. ПОИСК КОНТЕКСТА                                             │
-│                                                                 │
-│     Если "я ...?" или "@user":                                  │
-│       GetPersonalContextAsync() → сообщения юзера + упоминания  │
-│                                                                 │
-│     Иначе:                                                      │
-│       SearchWithConfidenceAsync() → RAG поиск + гейт уверенности│
+│  2. ИЗВЛЕЧЕНИЕ ТЕМ                                              │
+│     LLM (temp=0.3) → JSON: ["тема1", "тема2", ...]              │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  3. ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ                                       │
-│                                                                 │
-│     Stage 1: ФАКТЫ (temp=0.3)                                   │
-│     → Точные факты из контекста                                 │
-│                                                                 │
-│     Stage 2: ПОДЪЁБКА (temp=0.6)                                │
-│     → Едкий юмор с матом                                        │
+│  3. ПОИСК КОНТЕКСТА ПО ТЕМАМ                                    │
+│     Для каждой темы: векторный поиск релевантных сообщений      │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  РЕЗУЛЬТАТ: Дерзкий ответ на основе истории чата                │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**LLM**: `uncensored` тег → Grok (без цензуры)
-**Temperature**: 0.3 → 0.6
-**Требует**: контекст из embeddings (иначе "не нашёл")
-
----
-
-### `/smart` — Поиск в интернете
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  БЕЗ ПОИСКА ПО ЧАТУ                                             │
-│  Прямой запрос к Perplexity                                     │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  ГЕНЕРАЦИЯ ОТВЕТА                                               │
-│  LLM с поиском в интернете                                      │
-│  Prompt: вопрос + дата                                          │
-│  → Ответ с источниками                                          │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  РЕЗУЛЬТАТ: Информативный ответ + ссылки на источники           │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**LLM**: `factcheck` тег → Perplexity (поиск в интернете)
-**Temperature**: 0.5
-**НЕ использует**: контекст чата
-
----
-
-### `/search` — Семантический поиск
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  1. ВЕКТОРИЗАЦИЯ ЗАПРОСА                                        │
-│     OpenAI Embeddings API → vector(1536)                        │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  2. ПОИСК В PGVECTOR                                            │
-│     SELECT ... ORDER BY embedding <=> query_vector LIMIT 1      │
-│     (cosine similarity)                                         │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  РЕЗУЛЬТАТ: Самое релевантное сообщение                         │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**LLM**: не используется
-**Embeddings**: OpenAI `text-embedding-3-small`
-
----
-
-### `/truth` — Fact-check
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  1. ПОЛУЧЕНИЕ СООБЩЕНИЙ                                         │
-│     GetLatestMessagesAsync(chat_id, N)                          │
-│     → Последние N сообщений из БД                               │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  2. ПРОВЕРКА ФАКТОВ                                             │
-│     LLM с поиском в интернете                                   │
-│     Prompt: "Проверь факты, укажи кто прав/не прав"             │
+│  4. ДВУХЭТАПНАЯ ГЕНЕРАЦИЯ                                       │
+│     Stage 1: Факты (temp=0.3)                                   │
+│     Stage 2: Юмор (temp=0.6)                                    │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  РЕЗУЛЬТАТ:                                                     │
-│  ✅ [факт] — верно                                              │
-│  ❌ [имя] не прав: [почему]                                     │
-│  🤷 [что-то] — не проверить                                     │
+│  🔥 Главное → 😂 Лучшие моменты → 💬 Темы → 🏆 Герои → 🎭 Итог  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**LLM**: `factcheck` тег → Perplexity (поиск в интернете)
-**Temperature**: 0.5
-**Embeddings**: не используется
+### `/smart` — Поиск в интернете
 
----
+Прямой запрос к Perplexity без использования контекста чата.
+
+### `/truth` — Fact-check
+
+Проверка последних N сообщений через Perplexity с поиском в интернете.
 
 ### `/recall` — История пользователя
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  1. ПОИСК СООБЩЕНИЙ                                             │
-│     SELECT * FROM messages                                      │
-│     WHERE from_user_name = @username                            │
-│     AND date_utc > NOW() - 7 days                               │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  2. ГРУППИРОВКА                                                 │
-│     По дням → до 5 дней × 10 сообщений                          │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  РЕЗУЛЬТАТ: Хронология сообщений пользователя                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**LLM**: не используется
-**Embeddings**: не используется
+Показывает сообщения пользователя за последние 7 дней, сгруппированные по дням.
 
 ---
 
-### Сводная таблица
+## Сводная таблица команд
 
-| Команда | Embeddings | LLM | Тег | Temp | Этапов |
-|---------|:----------:|:---:|:---:|:----:|:------:|
-| `/summary` | поиск тем | Grok/Qwen | default | 0.3→0.6 | 2 |
-| `/ask` | RAG + персональный | Grok | uncensored | 0.3→0.6 | 2 |
-| `/smart` | ❌ нет | Perplexity | factcheck | 0.5 | 1 |
-| `/search` | поиск | — | — | — | 0 |
-| `/truth` | — | Perplexity | factcheck | 0.5 | 1 |
-| `/recall` | — | — | — | — | 0 |
+| Команда | Embeddings | LLM | Память | Этапов |
+|---------|:----------:|:---:|:------:|:------:|
+| `/summary` | поиск тем | Grok | ❌ | 2 |
+| `/ask` | RAG Fusion + Rerank | Grok | ✅ | 2 |
+| `/smart` | ❌ | Perplexity | ❌ | 1 |
+| `/truth` | ❌ | Perplexity | ❌ | 1 |
+| `/recall` | ❌ | ❌ | ❌ | 0 |
 
 ---
 
 ## База данных
 
-### Схема
+### Основные таблицы
 
 ```sql
--- Основные сообщения
+-- Сообщения
 CREATE TABLE messages (
     chat_id BIGINT NOT NULL,
     id BIGINT NOT NULL,
@@ -462,52 +297,61 @@ CREATE TABLE messages (
     PRIMARY KEY (chat_id, id)
 );
 
--- Векторные embeddings (pgvector)
+-- Векторные embeddings (pgvector, 1024 dims для HuggingFace)
 CREATE TABLE message_embeddings (
     id SERIAL PRIMARY KEY,
     chat_id BIGINT NOT NULL,
     message_ids BIGINT[] NOT NULL,
-    embedding vector(1536) NOT NULL,
+    embedding vector(1024) NOT NULL,
     text TEXT NOT NULL,
     metadata JSONB,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Информация о чатах
-CREATE TABLE chats (
-    id BIGINT PRIMARY KEY,
-    title TEXT,
-    type TEXT,
-    updated_at TIMESTAMP DEFAULT NOW()
+-- Очередь на профилирование
+CREATE TABLE message_queue (
+    id SERIAL PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    message_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    display_name TEXT,
+    text TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    processed BOOLEAN DEFAULT FALSE,
+    UNIQUE(chat_id, message_id)
 );
 
--- Настройки администратора
-CREATE TABLE admin_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TIMESTAMP DEFAULT NOW()
+-- Факты о пользователях
+CREATE TABLE user_facts (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    chat_id BIGINT NOT NULL,
+    fact_type TEXT NOT NULL,
+    fact_text TEXT NOT NULL,
+    confidence FLOAT DEFAULT 0.7,
+    source_message_ids BIGINT[],
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(chat_id, user_id, fact_text)
 );
 
--- Кастомные промпты
-CREATE TABLE prompt_settings (
-    command TEXT PRIMARY KEY,
-    description TEXT,
-    system_prompt TEXT,
-    llm_tag TEXT,
-    updated_at TIMESTAMP DEFAULT NOW()
+-- Профили пользователей
+CREATE TABLE user_profiles (
+    chat_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    display_name TEXT,
+    message_count INT DEFAULT 0,
+    last_message_at TIMESTAMPTZ,
+    active_hours JSONB DEFAULT '{}',
+    summary TEXT,
+    communication_style TEXT,
+    role_in_chat TEXT,
+    interests JSONB DEFAULT '[]',
+    traits JSONB DEFAULT '[]',
+    roast_material JSONB DEFAULT '[]',
+    profile_version INT DEFAULT 1,
+    last_profile_update TIMESTAMPTZ,
+    PRIMARY KEY (chat_id, user_id)
 );
-```
-
-### Индексы
-
-```sql
--- Для быстрого поиска сообщений
-CREATE INDEX idx_messages_chat_date ON messages(chat_id, date_utc DESC);
-CREATE INDEX idx_messages_user ON messages(from_user_id);
-
--- Для векторного поиска (IVFFlat)
-CREATE INDEX idx_embeddings_vector ON message_embeddings
-    USING ivfflat (embedding vector_cosine_ops);
 ```
 
 ---
@@ -521,9 +365,8 @@ CREATE INDEX idx_embeddings_vector ON message_embeddings
 | Database | PostgreSQL 16 + pgvector |
 | ORM | Dapper |
 | Telegram | Telegram.Bot SDK |
-| LLM | OpenRouter (Grok, Qwen, Perplexity, Llama) |
-| Embeddings | OpenAI text-embedding-3-small |
-| HTML Parsing | HtmlAgilityPack |
+| LLM | OpenRouter (Grok, Qwen, Perplexity) |
+| Embeddings | HuggingFace (1024 dims) |
 
 ---
 
@@ -535,52 +378,39 @@ CREATE INDEX idx_embeddings_vector ON message_embeddings
 {
   "Telegram": {
     "BotToken": "YOUR_BOT_TOKEN",
-    "AdminId": 123456789,
-    "WebhookUrl": "https://your-domain.com/telegram/update",
-    "SecretToken": "random-secret-for-webhook-validation"
+    "AdminId": 123456789
   },
-
   "Database": {
-    "ConnectionString": "Host=localhost;Database=watchmen;Username=...;Password=..."
+    "ConnectionString": "Host=localhost;Database=watchmen;..."
   },
-
   "Embeddings": {
-    "ApiKey": "sk-...",
-    "Model": "text-embedding-3-small",
-    "Dimensions": 1536
+    "Provider": "huggingface",
+    "ApiKey": "hf_...",
+    "Dimensions": 1024
   },
-
   "Llm": {
-    "DefaultProvider": "openrouter",
     "Providers": [
       {
         "Name": "grok",
         "Type": "openrouter",
         "Model": "x-ai/grok-4-fast",
         "Priority": 1,
-        "Tags": ["default", "uncensored", "creative"],
-        "Enabled": true
+        "Tags": ["default", "uncensored"]
       },
       {
         "Name": "perplexity",
         "Model": "perplexity/sonar",
-        "Priority": 3,
-        "Tags": ["factcheck", "online"],
-        "Enabled": true
+        "Tags": ["factcheck"]
       }
     ]
+  },
+  "ProfileService": {
+    "QueueProcessingIntervalMinutes": 15,
+    "MinMessagesForFactExtraction": 3,
+    "NightlyProfileTime": "03:00",
+    "MinMessagesForProfile": 10
   }
 }
-```
-
-### Переменные окружения
-
-```bash
-TELEGRAM__BOTTOKEN=your_bot_token
-TELEGRAM__ADMINID=123456789
-DATABASE__CONNECTIONSTRING=Host=...
-EMBEDDINGS__APIKEY=sk-...
-LLM__OPENROUTERKEY=sk-or-...
 ```
 
 ---
@@ -590,7 +420,6 @@ LLM__OPENROUTERKEY=sk-or-...
 ### Docker Compose
 
 ```yaml
-version: '3.8'
 services:
   bot:
     build: .
@@ -599,8 +428,6 @@ services:
       - DATABASE__CONNECTIONSTRING=Host=db;Database=watchmen;...
     depends_on:
       - db
-    ports:
-      - "8080:8080"
 
   db:
     image: pgvector/pgvector:pg16
@@ -617,71 +444,7 @@ volumes:
 ### Требования
 
 - PostgreSQL 16 с расширением pgvector
-- HTTPS для webhook (или polling mode для разработки)
-- API ключи: Telegram Bot, OpenRouter, OpenAI
-
-### Webhook (Telegram)
-
-- **HTTPS обязателен** — HTTP не поддерживается
-- **Порты**: только 443, 80, 88, 8443
-- **TLS 1.2+** — старые версии отклоняются
-- **IP диапазоны Telegram**: `149.154.160.0/20` и `91.108.4.0/22`
-
-### Управление webhook
-
-```bash
-# Установить webhook
-curl -X POST "https://yourdomain.com/admin/set-webhook"
-
-# Проверить статус
-curl "https://yourdomain.com/admin/webhook-info"
-
-# Удалить webhook
-curl -X POST "https://yourdomain.com/admin/delete-webhook"
-```
-
----
-
-## Безопасность
-
-- **Webhook validation** — проверка Secret Token в заголовке
-- **IP filtering** — только запросы из диапазонов Telegram
-- **Admin-only** — `/admin` доступен только указанному AdminId
-- **No secrets in logs** — API ключи не логируются
-
----
-
-## Уникальные особенности
-
-1. **Многопровайдерная LLM архитектура** — автоматический fallback, разные провайдеры для разных задач
-2. **RAG на embeddings** — ответы основаны на реальной истории чата
-3. **Умное выделение тем** — структурированные выжимки вместо случайного сэмпла
-4. **Импорт истории** — поддержка экспорта из Telegram Desktop
-5. **Кастомные промпты** — администратор может менять поведение команд через `/admin prompt`
-6. **Переименование пользователей** — обновляет историю и embeddings глобально
-
----
-
-## Локальная разработка
-
-### PostgreSQL с Docker
-
-```bash
-docker run --name watchmenbot-postgres \
-  -e POSTGRES_PASSWORD=dev_password \
-  -e POSTGRES_DB=watchmenbot_dev \
-  -p 5432:5432 -d \
-  pgvector/pgvector:pg16
-```
-
-### Запуск
-
-```bash
-cd WatchmenBot/WatchmenBot
-dotnet run
-```
-
-Таблицы создаются автоматически при первом запуске (`DatabaseInitializer`).
+- API ключи: Telegram Bot, OpenRouter, HuggingFace
 
 ---
 
