@@ -91,15 +91,27 @@ public class RagFusionService
 
             // Step 3: Apply Reciprocal Rank Fusion
             var fusedResults = ApplyRrfFusion(allResults, allQueries);
-            response.Results = fusedResults;
+
+            // Step 3.5: Filter out near-exact matches (likely the query itself or similar previous queries)
+            var filteredResults = fusedResults
+                .Where(r => r.Similarity < 0.98)
+                .ToList();
+
+            if (filteredResults.Count < fusedResults.Count)
+            {
+                _logger.LogInformation("[RAG Fusion] Filtered {Count} near-exact matches (sim >= 0.98)",
+                    fusedResults.Count - filteredResults.Count);
+            }
+
+            response.Results = filteredResults;
 
             // Step 4: Calculate confidence based on fused scores
-            if (fusedResults.Count > 0)
+            if (filteredResults.Count > 0)
             {
-                var bestScore = fusedResults[0].FusedScore;
-                var fifthScore = fusedResults.Count >= 5
-                    ? fusedResults[4].FusedScore
-                    : fusedResults.Last().FusedScore;
+                var bestScore = filteredResults[0].FusedScore;
+                var fifthScore = filteredResults.Count >= 5
+                    ? filteredResults[4].FusedScore
+                    : filteredResults.Last().FusedScore;
                 var gap = bestScore - fifthScore;
 
                 response.BestScore = bestScore;
@@ -107,7 +119,7 @@ public class RagFusionService
 
                 // RRF scores are typically 0.01-0.05 range, so adjust thresholds
                 (response.Confidence, response.ConfidenceReason) = EvaluateFusionConfidence(
-                    bestScore, gap, fusedResults.Count, allQueries.Count);
+                    bestScore, gap, filteredResults.Count, allQueries.Count);
             }
             else
             {
@@ -163,11 +175,13 @@ public class RagFusionService
                 {participantContext}
                 Правила:
                 1. Каждая вариация должна искать ту же информацию, но другими словами
-                2. Используй синонимы, перефразирования
+                2. Используй синонимы и перефразирования
                 3. Если есть имена/ники — добавь варианты написания (Вася/Василий)
-                4. Если есть аббревиатуры — расшифруй их
-                5. Добавь контекст если очевиден (NBA, футбол, политика)
-                6. Используй и русский, и английский если уместно
+                4. ВАЖНО: Включай ТЕКСТОВЫЕ ПАТТЕРНЫ как люди пишут в чатах:
+                   - Эмоции: "смеется" → ищи "ахахах", "хахаха", "лол", ")))"
+                   - Согласие: "да" → "ага", "угу", "+", "ок"
+                   - Удивление: → "ого", "воу", "wtf", "бля"
+                5. Используй и русский, и английский если уместно
 
                 Отвечай ТОЛЬКО JSON массивом строк, без пояснений:
                 ["вариация 1", "вариация 2", "вариация 3"]
