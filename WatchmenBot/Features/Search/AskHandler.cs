@@ -304,8 +304,8 @@ public class AskHandler
             // Generate answer using LLM with command-specific prompt
             var answer = await GenerateAnswerWithDebugAsync(command, question, context, memoryContext, askerName, debugReport, ct);
 
-            // Format response with confidence warning if needed
-            var rawResponse = (confidenceWarning ?? "") + FormatResponse(question, answer, results.Take(3).ToList());
+            // Add confidence warning if needed (context shown only in debug mode for admins)
+            var rawResponse = (confidenceWarning ?? "") + answer;
 
             // Sanitize HTML for Telegram
             var response = TelegramHtmlSanitizer.Sanitize(rawResponse);
@@ -753,47 +753,6 @@ public class AskHandler
             finalResponse.Provider, finalResponse.Model);
 
         return finalResponse.Content;
-    }
-
-    private static string FormatResponse(string question, string answer, List<SearchResult> topSources)
-    {
-        // If no sources or low quality, just return answer
-        if (topSources.Count == 0 || topSources[0].Similarity < 0.4)
-            return answer;
-
-        // Add source context footer for transparency
-        var sb = new StringBuilder(answer);
-
-        // Show top 2-3 sources with timestamps
-        var sourcesToShow = topSources
-            .Where(s => s.Similarity >= 0.35 && !string.IsNullOrWhiteSpace(s.ChunkText))
-            .Take(3)
-            .ToList();
-
-        if (sourcesToShow.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine();
-            sb.Append("<i>📎 Контекст: ");
-
-            var sourceSnippets = sourcesToShow.Select(s =>
-            {
-                var text = TruncateText(s.ChunkText.Replace("\n", " ").Trim(), 60);
-                return $"\"{text}\"";
-            });
-
-            sb.Append(string.Join(" · ", sourceSnippets));
-            sb.Append("</i>");
-        }
-
-        return sb.ToString();
-    }
-
-    private static string TruncateText(string text, int maxLength)
-    {
-        if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
-            return text;
-        return text[..(maxLength - 3)] + "...";
     }
 
     private static string EscapeHtml(string text)
