@@ -202,16 +202,15 @@ public class AskHandler
 
                     if (rerankResponse.Error == null)
                     {
-                        // Filter out only completely irrelevant results (score 0)
-                        // Score 1 = low but might still be useful, keep it
-                        var filteredResults = rerankResponse.GetFilteredResults(minScore: 1);
-                        var filteredOut = rerankResponse.FilteredOutCount(minScore: 1);
+                        // Don't filter by reranker scores - only reorder
+                        // Reranker may not understand chat-specific patterns (ХАХАХА = laughter)
+                        // Trust RAG Fusion + ILIKE for finding, reranker only for ordering
+                        var rerankedResults = rerankResponse.GetFilteredResults(minScore: 0);
+                        searchResponse.Results = rerankedResults;
+                        debugReport.RerankFilteredOut = 0;
 
-                        searchResponse.Results = filteredResults;
-                        debugReport.RerankFilteredOut = filteredOut;
-
-                        _logger.LogInformation("[ASK] Reranked {Count} results, filtered out {Filtered} low-relevance (order changed: {Changed})",
-                            filteredResults.Count, filteredOut, rerankResponse.HasSignificantChange());
+                        _logger.LogInformation("[ASK] Reranked {Count} results (order changed: {Changed})",
+                            rerankedResults.Count, rerankResponse.HasSignificantChange());
                     }
                 }
             }
