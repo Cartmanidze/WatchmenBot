@@ -1,4 +1,4 @@
-# Задача: Переход на deepvk/USER-bge-m3 через HuggingFace API
+/# Задача: Переход на deepvk/USER-bge-m3 через HuggingFace API
 
 ## Цель
 Улучшить качество поиска по русскому сленгу/мату, заменив OpenAI text-embedding-3-small на русскоязычную модель deepvk/USER-bge-m3.
