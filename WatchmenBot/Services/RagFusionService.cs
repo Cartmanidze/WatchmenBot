@@ -29,9 +29,16 @@ public class RagFusionService
     /// <summary>
     /// Search with RAG Fusion: generate query variations, search each, merge with RRF
     /// </summary>
+    /// <param name="chatId">Chat ID</param>
+    /// <param name="query">Original query</param>
+    /// <param name="participantNames">Names of chat participants for context-aware query variations</param>
+    /// <param name="variationCount">Number of query variations to generate</param>
+    /// <param name="resultsPerQuery">Results per query</param>
+    /// <param name="ct">Cancellation token</param>
     public async Task<RagFusionResponse> SearchWithFusionAsync(
         long chatId,
         string query,
+        List<string>? participantNames = null,
         int variationCount = 3,
         int resultsPerQuery = 15,
         CancellationToken ct = default)
@@ -42,7 +49,7 @@ public class RagFusionService
         try
         {
             // Step 1: Generate query variations
-            var variations = await GenerateQueryVariationsAsync(query, variationCount, ct);
+            var variations = await GenerateQueryVariationsAsync(query, variationCount, participantNames, ct);
             response.QueryVariations = variations;
 
             _logger.LogInformation("[RAG Fusion] Generated {Count} variations for: {Query}",
@@ -134,19 +141,30 @@ public class RagFusionService
     /// Generate query variations using LLM
     /// </summary>
     private async Task<List<string>> GenerateQueryVariationsAsync(
-        string query, int count, CancellationToken ct)
+        string query, int count, List<string>? participantNames, CancellationToken ct)
     {
         try
         {
+            // Build participant context if available
+            var participantContext = "";
+            if (participantNames is { Count: > 0 })
+            {
+                participantContext = $"""
+
+                    УЧАСТНИКИ ЧАТА: {string.Join(", ", participantNames)}
+                    ВАЖНО: Если в запросе встречается слово похожее на имя участника — это ИМЯ ЧЕЛОВЕКА!
+                    """;
+            }
+
             var systemPrompt = $"""
                 Ты — помощник для улучшения поисковых запросов в чате.
 
                 Сгенерируй {count} альтернативных формулировок запроса для поиска в истории сообщений.
-
+                {participantContext}
                 Правила:
                 1. Каждая вариация должна искать ту же информацию, но другими словами
-                2. Используй синонимы, перефразирования, альтернативные написания
-                3. Если есть имена — добавь варианты (Вася/Василий, @username)
+                2. Используй синонимы, перефразирования
+                3. Если есть имена/ники — добавь варианты написания (Вася/Василий)
                 4. Если есть аббревиатуры — расшифруй их
                 5. Добавь контекст если очевиден (NBA, футбол, политика)
                 6. Используй и русский, и английский если уместно

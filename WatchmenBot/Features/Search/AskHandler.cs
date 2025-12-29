@@ -15,6 +15,7 @@ public class AskHandler
     private readonly RerankService _rerankService;
     private readonly LlmMemoryService _memoryService;
     private readonly LlmRouter _llmRouter;
+    private readonly MessageStore _messageStore;
     private readonly PromptSettingsStore _promptSettings;
     private readonly DebugService _debugService;
     private readonly ILogger<AskHandler> _logger;
@@ -26,6 +27,7 @@ public class AskHandler
         RerankService rerankService,
         LlmMemoryService memoryService,
         LlmRouter llmRouter,
+        MessageStore messageStore,
         PromptSettingsStore promptSettings,
         DebugService debugService,
         ILogger<AskHandler> logger)
@@ -36,6 +38,7 @@ public class AskHandler
         _rerankService = rerankService;
         _memoryService = memoryService;
         _llmRouter = llmRouter;
+        _messageStore = messageStore;
         _promptSettings = promptSettings;
         _debugService = debugService;
         _logger = logger;
@@ -168,9 +171,17 @@ public class AskHandler
             }
             else
             {
+                // Get participant names for context-aware query variations
+                var participantData = await _messageStore.GetUniqueDisplayNamesAsync(chatId);
+                var participantNames = participantData
+                    .Where(p => !string.IsNullOrWhiteSpace(p.DisplayName))
+                    .Select(p => p.DisplayName)
+                    .Take(50) // Limit to top 50 active participants
+                    .ToList();
+
                 // RAG Fusion: generate query variations, search each, merge with RRF
                 var fusionResponse = await _ragFusionService.SearchWithFusionAsync(
-                    chatId, question, variationCount: 3, resultsPerQuery: 15, ct);
+                    chatId, question, participantNames, variationCount: 3, resultsPerQuery: 15, ct);
 
                 // Store fusion-specific debug info
                 debugReport.QueryVariations = fusionResponse.QueryVariations;
