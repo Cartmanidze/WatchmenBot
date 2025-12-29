@@ -323,6 +323,126 @@ public class LlmMemoryService
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Build enhanced memory context using new facts system
+    /// </summary>
+    public async Task<string?> BuildEnhancedContextAsync(
+        long chatId, long userId, string? displayName, string? question = null, CancellationToken ct = default)
+    {
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            // Get enhanced profile
+            var profile = await connection.QueryFirstOrDefaultAsync<EnhancedProfileRecord>(
+                """
+                SELECT user_id, chat_id, display_name, username,
+                       message_count, summary, communication_style, role_in_chat,
+                       interests, traits, roast_material
+                FROM user_profiles
+                WHERE chat_id = @ChatId AND user_id = @UserId
+                """,
+                new { ChatId = chatId, UserId = userId });
+
+            // Get relevant facts from user_facts
+            var facts = await connection.QueryAsync<UserFactRecord>(
+                """
+                SELECT fact_type, fact_text, confidence
+                FROM user_facts
+                WHERE chat_id = @ChatId AND user_id = @UserId
+                ORDER BY confidence DESC
+                LIMIT 15
+                """,
+                new { ChatId = chatId, UserId = userId });
+
+            var factsList = facts.ToList();
+
+            if (profile == null && factsList.Count == 0)
+                return null;
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("=== ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ ===");
+
+            var name = displayName ?? profile?.display_name ?? $"User_{userId}";
+            sb.AppendLine($"Пользователь: {name}");
+
+            if (profile != null)
+            {
+                if (profile.message_count > 0)
+                    sb.AppendLine($"Сообщений в чате: {profile.message_count}");
+
+                if (!string.IsNullOrEmpty(profile.summary))
+                    sb.AppendLine($"О пользователе: {profile.summary}");
+
+                if (!string.IsNullOrEmpty(profile.communication_style))
+                    sb.AppendLine($"Стиль общения: {profile.communication_style}");
+
+                if (!string.IsNullOrEmpty(profile.role_in_chat))
+                    sb.AppendLine($"Роль в чате: {profile.role_in_chat}");
+
+                var interests = ParseJsonArray(profile.interests);
+                if (interests.Count > 0)
+                    sb.AppendLine($"Интересы: {string.Join(", ", interests.Take(5))}");
+
+                var roastMaterial = ParseJsonArray(profile.roast_material);
+                if (roastMaterial.Count > 0)
+                    sb.AppendLine($"Над чем подколоть: {string.Join("; ", roastMaterial.Take(3))}");
+            }
+
+            if (factsList.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("Известные факты:");
+
+                // Filter relevant facts if question provided
+                var relevantFacts = question != null
+                    ? FilterRelevantFacts(factsList, question)
+                    : factsList.Take(8).ToList();
+
+                foreach (var fact in relevantFacts)
+                {
+                    sb.AppendLine($"  • [{fact.fact_type}] {fact.fact_text}");
+                }
+            }
+
+            sb.AppendLine("=== КОНЕЦ ПАМЯТИ ===");
+            sb.AppendLine();
+            sb.AppendLine("ВАЖНО: Используй эту информацию ТОЛЬКО если она РЕЛЕВАНТНА текущему вопросу!");
+
+            return sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Memory] Failed to build enhanced context for user {UserId}", userId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Filter facts relevant to the question
+    /// </summary>
+    private static List<UserFactRecord> FilterRelevantFacts(List<UserFactRecord> facts, string question)
+    {
+        var questionLower = question.ToLowerInvariant();
+        var keywords = questionLower.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length > 3)
+            .ToHashSet();
+
+        // Score facts by relevance
+        var scored = facts.Select(f =>
+        {
+            var factLower = f.fact_text.ToLowerInvariant();
+            var matchCount = keywords.Count(k => factLower.Contains(k));
+            return (fact: f, score: matchCount + f.confidence);
+        })
+        .OrderByDescending(x => x.score)
+        .Take(8)
+        .Select(x => x.fact)
+        .ToList();
+
+        return scored;
+    }
+
     #endregion
 
     #region LLM Extraction
@@ -587,6 +707,28 @@ internal class MemorySummary
     public string Summary { get; set; } = "";
     public List<string> Topics { get; set; } = new();
     public List<string> Facts { get; set; } = new();
+}
+
+internal class EnhancedProfileRecord
+{
+    public long user_id { get; set; }
+    public long chat_id { get; set; }
+    public string? display_name { get; set; }
+    public string? username { get; set; }
+    public int message_count { get; set; }
+    public string? summary { get; set; }
+    public string? communication_style { get; set; }
+    public string? role_in_chat { get; set; }
+    public string? interests { get; set; }
+    public string? traits { get; set; }
+    public string? roast_material { get; set; }
+}
+
+internal class UserFactRecord
+{
+    public string fact_type { get; set; } = "";
+    public string fact_text { get; set; } = "";
+    public double confidence { get; set; }
 }
 
 #endregion

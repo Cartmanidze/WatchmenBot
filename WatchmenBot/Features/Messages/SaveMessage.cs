@@ -35,17 +35,20 @@ public class SaveMessageHandler
 {
     private readonly MessageStore _messageStore;
     private readonly EmbeddingService _embeddingService;
+    private readonly ProfileQueueService _profileQueueService;
     private readonly LogCollector _logCollector;
     private readonly ILogger<SaveMessageHandler> _logger;
 
     public SaveMessageHandler(
         MessageStore messageStore,
         EmbeddingService embeddingService,
+        ProfileQueueService profileQueueService,
         LogCollector logCollector,
         ILogger<SaveMessageHandler> logger)
     {
         _messageStore = messageStore;
         _embeddingService = embeddingService;
+        _profileQueueService = profileQueueService;
         _logCollector = logCollector;
         _logger = logger;
     }
@@ -73,6 +76,13 @@ public class SaveMessageHandler
 
             _logger.LogDebug("[DB] Saved msg #{MessageId} to chat {ChatId}",
                 message.MessageId, message.Chat.Id);
+
+            // Queue message for profile analysis (fire-and-forget)
+            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length >= 20)
+            {
+                _ = _profileQueueService.EnqueueMessageAsync(
+                    record.ChatId, record.Id, record.FromUserId, record.DisplayName, record.Text);
+            }
 
             // Create embedding immediately with timeout (don't block webhook too long)
             // Skip short messages (< 10 chars) - they add noise to embeddings

@@ -111,10 +111,14 @@ public class AskHandler
             var askerId = message.From?.Id ?? 0;
 
             // Fetch user memory context (profile + recent interactions)
+            // Use enhanced context for /ask to include new facts system
             string? memoryContext = null;
             if (askerId != 0)
             {
-                memoryContext = await _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
+                memoryContext = command == "ask"
+                    ? await _memoryService.BuildEnhancedContextAsync(chatId, askerId, askerName, question, ct)
+                    : await _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
+
                 if (memoryContext != null)
                 {
                     _logger.LogDebug("[{Command}] Loaded memory for user {User}", command.ToUpper(), askerName);

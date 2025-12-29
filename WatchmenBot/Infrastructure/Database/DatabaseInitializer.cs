@@ -35,6 +35,8 @@ public class DatabaseInitializer : IHostedService
             await CreatePromptSettingsTableAsync(connection);
             await CreateUserProfilesTableAsync(connection);
             await CreateConversationMemoryTableAsync(connection);
+            await CreateMessageQueueTableAsync(connection);
+            await CreateUserFactsTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -210,6 +212,21 @@ public class DatabaseInitializer : IHostedService
             """;
 
         await connection.ExecuteAsync(createTableSql);
+
+        // Add new columns for hybrid profile system
+        const string addColumnsSql = """
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS message_count INT DEFAULT 0;
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS last_message_at TIMESTAMPTZ;
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS active_hours JSONB DEFAULT '{}';
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS summary TEXT;
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS communication_style TEXT;
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS role_in_chat TEXT;
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS roast_material JSONB DEFAULT '[]';
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS profile_version INT DEFAULT 1;
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS last_profile_update TIMESTAMPTZ;
+            """;
+
+        await connection.ExecuteAsync(addColumnsSql);
     }
 
     private static async Task CreateConversationMemoryTableAsync(System.Data.IDbConnection connection)
@@ -228,6 +245,52 @@ public class DatabaseInitializer : IHostedService
 
             CREATE INDEX IF NOT EXISTS idx_conv_memory_user_chat
             ON conversation_memory (chat_id, user_id, created_at DESC);
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateMessageQueueTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS message_queue (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                display_name TEXT,
+                text TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                processed BOOLEAN DEFAULT FALSE,
+                UNIQUE(chat_id, message_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_message_queue_pending
+            ON message_queue (processed, created_at)
+            WHERE processed = FALSE;
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateUserFactsTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS user_facts (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                fact_type TEXT NOT NULL,
+                fact_text TEXT NOT NULL,
+                confidence FLOAT DEFAULT 0.7,
+                source_message_ids BIGINT[],
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                expires_at TIMESTAMPTZ,
+                UNIQUE(chat_id, user_id, fact_text)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_facts_lookup
+            ON user_facts (chat_id, user_id);
             """;
 
         await connection.ExecuteAsync(createTableSql);

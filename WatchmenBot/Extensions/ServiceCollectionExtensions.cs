@@ -166,6 +166,11 @@ public static class ServiceCollectionExtensions
         // Usage tracking
         services.AddHttpClient<OpenRouterUsageService>();
 
+        // Profile System Services
+        services.AddSingleton<ProfileQueueService>();
+        services.AddHostedService<ProfileWorkerService>();
+        services.AddHostedService<ProfileGeneratorService>();
+
         // Background Services
         services.AddHostedService<DailySummaryService>();
         services.AddHostedService<BackgroundEmbeddingService>();
