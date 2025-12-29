@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+- **`/search` command** — удалена как дублирующая `/ask` (был сырой векторный поиск без RAG)
+
 ### Added
 - **Hybrid Profile System** — новая система профилей пользователей:
   - `ProfileQueueService` — очередь сообщений для фонового анализа

@@ -136,13 +136,6 @@ public class TelegramPollingService : BackgroundService
                 return;
             }
 
-            // Check for /search command
-            if (IsSearchCommand(message.Text))
-            {
-                await HandleSearchCommand(scope.ServiceProvider, message, ct);
-                return;
-            }
-
             // Check for /ask command
             if (IsAskCommand(message.Text))
             {
@@ -207,14 +200,6 @@ public class TelegramPollingService : BackgroundService
             return false;
 
         return text.StartsWith("/admin", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsSearchCommand(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        return text.StartsWith("/search", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsAskCommand(string? text)
@@ -285,17 +270,6 @@ public class TelegramPollingService : BackgroundService
         await adminHandler.HandleAsync(message, ct);
     }
 
-    private async Task HandleSearchCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
-    {
-        var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
-        var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
-
-        _logger.LogInformation("[Telegram] [{Chat}] @{User} requested /search", chatName, userName);
-
-        var searchHandler = serviceProvider.GetRequiredService<SearchHandler>();
-        await searchHandler.HandleAsync(message, ct);
-    }
-
     private async Task HandleAskCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
     {
         var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
@@ -336,7 +310,6 @@ public class TelegramPollingService : BackgroundService
             // Commands for group chats
             var groupCommands = new BotCommand[]
             {
-                new() { Command = "search", Description = "Поиск по истории чата" },
                 new() { Command = "ask", Description = "Вопрос по истории чата (RAG)" },
                 new() { Command = "smart", Description = "Поиск в интернете (Perplexity)" },
                 new() { Command = "summary", Description = "Саммари за N часов" },
@@ -344,11 +317,10 @@ public class TelegramPollingService : BackgroundService
                 new() { Command = "truth", Description = "Фактчек последних сообщений" },
             };
 
-            // Commands for private chat (admin + general questions)
+            // Commands for private chat (admin only)
             var privateCommands = new BotCommand[]
             {
                 new() { Command = "admin", Description = "Показать справку по админ-командам" },
-                new() { Command = "smart", Description = "Поиск в интернете (Perplexity)" },
             };
 
             // Set commands for all group chats

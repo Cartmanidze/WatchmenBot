@@ -31,7 +31,13 @@
       "Bash(scp:*)",
       "WebFetch(domain:habr.com)",
       "Bash(dotnet publish:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(git -C \"D:\\\\projects\\\\WatchmenBot\" add -A)",
+      "Bash(git -C \"D:\\\\projects\\\\WatchmenBot\" commit -m \"$\\(cat <<''EOF''\nFix LLM to prioritize memory facts over RAG context\n\n- Update Stage 2 prompt to use memory facts as primary source\n- Memory facts should be used FIRST if relevant to the question\n- Fixes issue where \"Gun Done\" nickname was in memory but ignored\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C \"D:\\\\projects\\\\WatchmenBot\" reset --soft HEAD~1)",
+      "Bash(git -C \"D:\\\\projects\\\\WatchmenBot\" checkout -- WatchmenBot/Features/Search/AskHandler.cs)",
+      "Bash(git -C \"D:\\\\projects\\\\WatchmenBot\" status --short)",
+      "Bash(git -C \"D:\\\\projects\\\\WatchmenBot\" checkout HEAD -- WatchmenBot/Features/Search/AskHandler.cs)"
     ],
     "deny": [],
     "ask": []

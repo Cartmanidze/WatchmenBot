@@ -129,14 +129,6 @@ public class ProcessTelegramUpdateHandler
                 return ProcessTelegramUpdateResponse.Success();
             }
 
-            if (IsCommand(message.Text, "/search"))
-            {
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /search", chatName, userName);
-                var searchHandler = scope.ServiceProvider.GetRequiredService<SearchHandler>();
-                await searchHandler.HandleAsync(message, cancellationToken);
-                return ProcessTelegramUpdateResponse.Success();
-            }
-
             if (IsCommand(message.Text, "/ask"))
             {
                 _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /ask", chatName, userName);

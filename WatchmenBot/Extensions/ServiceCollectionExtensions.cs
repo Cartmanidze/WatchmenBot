@@ -188,7 +188,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<GetWebhookInfoHandler>();
 
         // Search Handlers (embedding-based)
-        services.AddScoped<SearchHandler>();
         services.AddScoped<AskHandler>();
         services.AddScoped<RecallHandler>();
         services.AddScoped<FactCheckHandler>();
