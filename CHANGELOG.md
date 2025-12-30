@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Full Context Reindex Command** — команда полной реиндексации контекстных эмбеддингов:
+  - `/admin context_reindex all` — показать предупреждение о полной реиндексации
+  - `/admin context_reindex all confirm` — удалить ВСЕ контекстные эмбеддинги из всех чатов
+  - Новый метод `ContextEmbeddingService.DeleteAllContextEmbeddingsAsync()` — полная очистка таблицы
+  - BackgroundService автоматически начнёт переиндексацию с нуля для всех чатов
+  - Полезно при изменении логики создания окон или после багфиксов
+
 - **Hybrid Embedding Search** — гибридный поиск с использованием обоих типов эмбеддингов:
   - **Персональные запросы** ("я гондон?", "@username"):
     - Параллельный поиск в `message_embeddings` (точные сообщения пользователя) + `context_embeddings` (полные диалоги)

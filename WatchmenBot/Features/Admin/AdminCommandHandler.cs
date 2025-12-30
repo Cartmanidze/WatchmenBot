@@ -1233,6 +1233,29 @@ public class AdminCommandHandler
 
     private async Task<bool> HandleContextReindexAsync(long chatId, string chatIdStr, CancellationToken ct)
     {
+        // Handle "all" for all chats
+        if (chatIdStr.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"""
+                    ⚠️ <b>Переиндексация ВСЕХ контекстных эмбеддингов</b>
+
+                    Это удалит ВСЕ контекстные эмбеддинги из ВСЕХ чатов.
+                    BackgroundService пересоздаст их автоматически.
+
+                    Использование:
+                    • <code>/admin context_reindex -1234567</code> — конкретный чат
+                    • <code>/admin context_reindex all confirm</code> — ВСЕ чаты
+
+                    ⚠️ Полная переиндексация может занять много времени и стоить денег (API calls).
+                    """,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+
+            return true;
+        }
+
         if (!long.TryParse(chatIdStr, out var targetChatId))
         {
             await _bot.SendMessage(
@@ -1264,6 +1287,33 @@ public class AdminCommandHandler
 
     private async Task<bool> HandleContextReindexConfirmAsync(long chatId, string chatIdStr, CancellationToken ct)
     {
+        // Handle "all" for all chats
+        if (chatIdStr.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            var statusMsg = await _bot.SendMessage(
+                chatId: chatId,
+                text: "⏳ Удаляю ВСЕ контекстные эмбеддинги...",
+                cancellationToken: ct);
+
+            await _contextEmbeddingService.DeleteAllContextEmbeddingsAsync(ct);
+
+            await _bot.EditMessageText(
+                chatId: chatId,
+                messageId: statusMsg.MessageId,
+                text: $"""
+                    ✅ <b>Все контекстные эмбеддинги удалены</b>
+
+                    BackgroundService начнёт переиндексацию автоматически.
+
+                    💡 Следить за прогрессом можно в логах:
+                    <code>docker logs watchmenbot-app --tail 50 -f | grep ContextEmb</code>
+                    """,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+
+            return true;
+        }
+
         if (!long.TryParse(chatIdStr, out var targetChatId))
         {
             await _bot.SendMessage(
@@ -1273,7 +1323,7 @@ public class AdminCommandHandler
             return true;
         }
 
-        var statusMsg = await _bot.SendMessage(
+        var statusMsg2 = await _bot.SendMessage(
             chatId: chatId,
             text: $"⏳ Удаляю контекстные эмбеддинги чата {targetChatId}...",
             cancellationToken: ct);
@@ -1282,7 +1332,7 @@ public class AdminCommandHandler
 
         await _bot.EditMessageText(
             chatId: chatId,
-            messageId: statusMsg.MessageId,
+            messageId: statusMsg2.MessageId,
             text: $"""
                 ✅ <b>Контекстные эмбеддинги удалены</b>
 

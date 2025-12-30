@@ -448,6 +448,18 @@ public class ContextEmbeddingService
     }
 
     /// <summary>
+    /// Delete ALL context embeddings (for full reindexing)
+    /// </summary>
+    public async Task DeleteAllContextEmbeddingsAsync(CancellationToken ct = default)
+    {
+        using var connection = await _connectionFactory.CreateConnectionAsync();
+
+        var deleted = await connection.ExecuteAsync("DELETE FROM context_embeddings");
+
+        _logger.LogInformation("[ContextEmb] Deleted ALL {Count} context embeddings", deleted);
+    }
+
+    /// <summary>
     /// Get context windows that contain specific message IDs
     /// </summary>
     public async Task<List<ContextSearchResult>> GetContextWindowsByMessageIdsAsync(
