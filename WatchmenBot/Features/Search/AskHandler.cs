@@ -12,7 +12,6 @@ public class AskHandler
     private readonly ITelegramBotClient _bot;
     private readonly EmbeddingService _embeddingService;
     private readonly ContextEmbeddingService _contextEmbeddingService;
-    private readonly RagFusionService _ragFusionService;
     private readonly LlmMemoryService _memoryService;
     private readonly LlmRouter _llmRouter;
     private readonly MessageStore _messageStore;
@@ -24,7 +23,6 @@ public class AskHandler
         ITelegramBotClient bot,
         EmbeddingService embeddingService,
         ContextEmbeddingService contextEmbeddingService,
-        RagFusionService ragFusionService,
         LlmMemoryService memoryService,
         LlmRouter llmRouter,
         MessageStore messageStore,
@@ -35,7 +33,6 @@ public class AskHandler
         _bot = bot;
         _embeddingService = embeddingService;
         _contextEmbeddingService = contextEmbeddingService;
-        _ragFusionService = ragFusionService;
         _memoryService = memoryService;
         _llmRouter = llmRouter;
         _messageStore = messageStore;
@@ -116,10 +113,7 @@ public class AskHandler
             // Detect if this is a personal question (about self or @someone)
             var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
 
-            // Determine if we need RAG Fusion (general question, not smart/personal)
-            var needsRagFusion = command != "smart" && personalTarget == null;
-
-            // === PARALLEL EXECUTION: Memory + ParticipantNames + Search ===
+            // === PARALLEL EXECUTION: Memory + Search ===
             // Start memory loading task (only for /ask, not /smart)
             Task<string?>? memoryTask = null;
             if (command == "ask" && askerId != 0)
@@ -131,21 +125,8 @@ public class AskHandler
                 memoryTask = _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
             }
 
-            // Start participant names loading (only for RAG Fusion path, runs parallel with memory)
-            Task<List<string>>? participantNamesTask = null;
-            if (needsRagFusion)
-            {
-                participantNamesTask = _messageStore.GetUniqueDisplayNamesAsync(chatId)
-                    .ContinueWith(t => t.Result
-                        .Where(p => !string.IsNullOrWhiteSpace(p.DisplayName))
-                        .Select(p => p.DisplayName)
-                        .Take(50)
-                        .ToList(), ct);
-            }
-
             // Start search task (runs in parallel with memory loading)
             Task<SearchResponse> searchTask;
-            Task<RagFusionResponse>? fusionTask = null;
 
             if (command == "smart")
             {
@@ -172,18 +153,9 @@ public class AskHandler
             }
             else
             {
-                // RAG Fusion path - participant names already loading in parallel
-                var participantNames = await participantNamesTask!;
-
-                // Start both RAG Fusion and Context search in parallel
-                fusionTask = _ragFusionService.SearchWithFusionAsync(
-                    chatId, question, participantNames, variationCount: 3, resultsPerQuery: 15, ct);
-
-                // Also search context embeddings (sliding windows with conversation context)
-                var contextSearchTask = _contextEmbeddingService.SearchContextAsync(chatId, question, limit: 5, ct);
-
-                // Merge results: context search provides ready-to-use conversation windows
-                searchTask = MergeSearchResultsAsync(fusionTask, contextSearchTask, ct);
+                // Context-only search: use sliding window embeddings (10 messages each)
+                // No RAG Fusion - context windows already contain full conversation context
+                searchTask = SearchContextOnlyAsync(chatId, question, ct);
             }
 
             // Await both tasks in parallel
@@ -204,17 +176,6 @@ public class AskHandler
             else
             {
                 searchResponse = await searchTask;
-            }
-
-            // Store fusion-specific debug info if available
-            if (fusionTask != null)
-            {
-                var fusionResponse = fusionTask.Result;
-                debugReport.QueryVariations = fusionResponse.QueryVariations;
-                debugReport.RagFusionTimeMs = fusionResponse.TotalTimeMs;
-
-                _logger.LogInformation("[ASK] RAG Fusion returned {Count} results (rerank disabled)",
-                    searchResponse.Results.Count);
             }
 
             // Handle confidence gate and build context
@@ -487,10 +448,10 @@ public class AskHandler
         var settings = await _promptSettings.GetSettingsAsync(command);
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        // For /ask with context - use two-stage generation
+        // For /ask with context - use one-stage generation (faster than two-stage)
         if (command == "ask" && !string.IsNullOrWhiteSpace(context))
         {
-            return await GenerateTwoStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, debugReport, ct);
+            return await GenerateOneStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, debugReport, ct);
         }
 
         // Build memory section if available
@@ -548,267 +509,90 @@ public class AskHandler
     }
 
     /// <summary>
-    /// Two-stage generation for /ask: extract facts first, then add humor
+    /// One-stage generation for /ask: analyze context and generate response in single LLM call.
+    /// Faster than two-stage (saves ~1-2 sec) while maintaining quality.
     /// </summary>
-    private async Task<string> GenerateTwoStageAnswerWithDebugAsync(
+    private async Task<string> GenerateOneStageAnswerWithDebugAsync(
         string question, string context, string? memoryContext, string askerName, PromptSettings settings, DebugReport debugReport, CancellationToken ct)
     {
-        debugReport.IsMultiStage = true;
-        debugReport.StageCount = 2;
-        var totalSw = System.Diagnostics.Stopwatch.StartNew();
+        debugReport.IsMultiStage = false;
+        debugReport.StageCount = 1;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        // STAGE 1: Extract STRUCTURED facts with low temperature (prevents hallucinations)
-        var factsSystemPrompt = """
-            Ты — аналитик чата. Извлекай факты СТРОГО из контекста.
-
-            КРИТИЧЕСКИ ВАЖНО:
-            1. Отвечай ТОЛЬКО JSON, без markdown, без пояснений
-            2. Извлекай ТОЛЬКО факты, НАПРЯМУЮ связанные с вопросом
-            3. ИГНОРИРУЙ сообщения, которые не относятся к теме вопроса
-            4. Если в контексте несколько диалогов — используй только релевантные
-            5. Если факт не подтверждён контекстом — НЕ добавляй его
-            6. Имена пиши ТОЧНО как в контексте (Gleb Bezrukov, НЕ "Глеб Безухов"!)
-            7. НЕ транслитерируй и НЕ "исправляй" имена — копируй дословно
-
-            Формат ответа:
-            {
-              "facts": [
-                {"who": "Имя ТОЧНО как в контексте", "said": "прямая цитата или пересказ", "relevance": "как связано с вопросом"}
-              ],
-              "answer": "краткий ответ на вопрос ТОЛЬКО из релевантных фактов",
-              "roast_target": "кого подколоть (имя ТОЧНО как в контексте) или null",
-              "best_quote": "самая смешная/глупая цитата ПО ТЕМЕ или null",
-              "irrelevant_ignored": true/false
-            }
-            """;
-
-        var factsPrompt = $"""
-            ВОПРОС от {askerName}: {question}
-
-            Контекст из чата (может содержать нерелевантные сообщения — игнорируй их):
-            {context}
-
-            Извлеки ТОЛЬКО факты, которые НАПРЯМУЮ отвечают на вопрос "{question}".
-            Нерелевантные диалоги — пропускай.
-            """;
-
-        var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
-        var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
-            new LlmRequest
-            {
-                SystemPrompt = factsSystemPrompt,
-                UserPrompt = factsPrompt,
-                Temperature = 0.1 // Very low for accuracy
-            },
-            preferredTag: settings.LlmTag,
-            ct: ct);
-        stage1Sw.Stop();
-
-        debugReport.Stages.Add(new DebugStage
-        {
-            StageNumber = 1,
-            Name = "Facts (JSON)",
-            Temperature = 0.1,
-            SystemPrompt = factsSystemPrompt,
-            UserPrompt = factsPrompt,
-            Response = factsResponse.Content,
-            Tokens = factsResponse.TotalTokens,
-            TimeMs = stage1Sw.ElapsedMilliseconds
-        });
-
-        _logger.LogInformation("[ASK] Stage 1 (structured facts): {Length} chars", factsResponse.Content.Length);
-
-        // Check if facts extraction returned empty - fallback to direct generation
-        var factsEmpty = IsFactsEmpty(factsResponse.Content);
-        if (factsEmpty)
-        {
-            _logger.LogWarning("[ASK] Facts extraction returned empty, falling back to direct generation");
-
-            // Build memory section for fallback
-            var fallbackMemory = !string.IsNullOrWhiteSpace(memoryContext)
-                ? $"\n{memoryContext}\n"
-                : "";
-
-            // Fallback: direct single-stage generation with context
-            var directPrompt = $"""
-                Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
-                {fallbackMemory}
-                Контекст из чата:
-                {context}
-
-                Спрашивает: {askerName}
-                Вопрос: {question}
-                """;
-
-            var directResponse = await _llmRouter.CompleteWithFallbackAsync(
-                new LlmRequest
-                {
-                    SystemPrompt = settings.SystemPrompt,
-                    UserPrompt = directPrompt,
-                    Temperature = 0.6
-                },
-                preferredTag: settings.LlmTag,
-                ct: ct);
-
-            totalSw.Stop();
-
-            // Update debug info for fallback
-            debugReport.SystemPrompt = settings.SystemPrompt;
-            debugReport.UserPrompt = directPrompt;
-            debugReport.LlmProvider = directResponse.Provider;
-            debugReport.LlmModel = directResponse.Model;
-            debugReport.LlmTag = settings.LlmTag;
-            debugReport.Temperature = 0.6;
-            debugReport.LlmResponse = directResponse.Content;
-            debugReport.PromptTokens = factsResponse.PromptTokens + directResponse.PromptTokens;
-            debugReport.CompletionTokens = factsResponse.CompletionTokens + directResponse.CompletionTokens;
-            debugReport.TotalTokens = factsResponse.TotalTokens + directResponse.TotalTokens;
-            debugReport.LlmTimeMs = totalSw.ElapsedMilliseconds;
-
-            debugReport.Stages.Add(new DebugStage
-            {
-                StageNumber = 2,
-                Name = "Direct (fallback)",
-                Temperature = 0.6,
-                SystemPrompt = settings.SystemPrompt,
-                UserPrompt = directPrompt,
-                Response = directResponse.Content,
-                Tokens = directResponse.TotalTokens,
-                TimeMs = totalSw.ElapsedMilliseconds - stage1Sw.ElapsedMilliseconds
-            });
-
-            return directResponse.Content;
-        }
-
-        // Build memory section for personalization
+        // Build memory section if available
         var memorySection = !string.IsNullOrWhiteSpace(memoryContext)
-            ? $"\n{memoryContext}\n"
+            ? $"""
+
+              === ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ ===
+              {memoryContext}
+
+              """
             : "";
 
-        // STAGE 2: Add humor based on structured facts + memory
-        var humorPrompt = $"""
+        // One-stage prompt: analyze context internally, then respond with humor
+        var userPrompt = $"""
+            Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
             Спрашивает: {askerName}
             Вопрос: {question}
+            {memorySection}
+            === КОНТЕКСТ ИЗ ЧАТА ===
+            {context}
 
-            === ИСТОЧНИК 1: ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ ===
-            {(string.IsNullOrWhiteSpace(memoryContext) ? "(пусто)" : memoryContext)}
-
-            === ИСТОЧНИК 2: КОНТЕКСТ ИЗ ЧАТА ===
-            {factsResponse.Content}
-
-            ПРАВИЛА ОТВЕТА:
-            1. У тебя ДВА источника данных. Используй ОБА, выбирая что РЕЛЕВАНТНЕЕ вопросу
-            2. Если в памяти есть прямой ответ на вопрос — используй его
-            3. Если в контексте чата есть дополнительные детали — добавь их
-            4. НЕ придумывай новых фактов — только из данных выше
-            5. Если есть "roast_target" — подколи этого человека
-            6. Если есть "best_quote" — вставь цитату дословно в <i>кавычках</i>
-            7. Ответ должен быть дерзким и с матом
-            8. Если оба источника пустые — честно скажи что ничего не нашёл
-            9. ЗАПРЕЩЕНО раскрывать технические детали! НЕ пиши: "по памяти", "в контексте", "из данных", "источник", "JSON", "факты говорят". Просто ЗНАЙ и отвечай как будто сам помнишь
-            10. Имена пиши ТОЧНО как в данных (НЕ транслитерируй, НЕ "исправляй"!)
+            ИНСТРУКЦИИ:
+            1. Проанализируй контекст и найди ТОЛЬКО релевантные сообщения
+            2. ИГНОРИРУЙ нерелевантные диалоги — они добавлены для контекста
+            3. Если в памяти есть прямой ответ — используй его
+            4. Имена пиши ТОЧНО как в контексте (НЕ транслитерируй!)
+            5. Если нашёл смешную/глупую цитату по теме — вставь в <i>кавычках</i>
+            6. Ответ должен быть дерзким, с подъёбкой, можно с матом
+            7. НЕ придумывай факты — только из контекста выше
+            8. ЗАПРЕЩЕНО упоминать технические детали: "контекст", "память", "данные"
+            9. Отвечай как будто сам всё помнишь
 
             Формат: 2-4 предложения, HTML для <b> и <i>.
             """;
 
-        var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
-        var finalResponse = await _llmRouter.CompleteWithFallbackAsync(
+        var response = await _llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = settings.SystemPrompt,
-                UserPrompt = humorPrompt,
-                Temperature = 0.6 // Higher for creativity
+                UserPrompt = userPrompt,
+                Temperature = 0.5 // Balanced: accurate facts + some creativity
             },
             preferredTag: settings.LlmTag,
             ct: ct);
-        stage2Sw.Stop();
+
+        sw.Stop();
+
+        // Collect debug info
+        debugReport.SystemPrompt = settings.SystemPrompt;
+        debugReport.UserPrompt = userPrompt;
+        debugReport.LlmProvider = response.Provider;
+        debugReport.LlmModel = response.Model;
+        debugReport.LlmTag = settings.LlmTag;
+        debugReport.Temperature = 0.5;
+        debugReport.LlmResponse = response.Content;
+        debugReport.PromptTokens = response.PromptTokens;
+        debugReport.CompletionTokens = response.CompletionTokens;
+        debugReport.TotalTokens = response.TotalTokens;
+        debugReport.LlmTimeMs = sw.ElapsedMilliseconds;
 
         debugReport.Stages.Add(new DebugStage
         {
-            StageNumber = 2,
-            Name = "Humor",
-            Temperature = 0.6,
+            StageNumber = 1,
+            Name = "OneStage",
+            Temperature = 0.5,
             SystemPrompt = settings.SystemPrompt,
-            UserPrompt = humorPrompt,
-            Response = finalResponse.Content,
-            Tokens = finalResponse.TotalTokens,
-            TimeMs = stage2Sw.ElapsedMilliseconds
+            UserPrompt = userPrompt,
+            Response = response.Content,
+            Tokens = response.TotalTokens,
+            TimeMs = sw.ElapsedMilliseconds
         });
 
-        totalSw.Stop();
+        _logger.LogInformation("[ASK] OneStage: provider={Provider}, model={Model}, {Tokens} tokens in {Ms}ms",
+            response.Provider, response.Model, response.TotalTokens, sw.ElapsedMilliseconds);
 
-        // Set final debug info
-        debugReport.SystemPrompt = settings.SystemPrompt;
-        debugReport.UserPrompt = humorPrompt;
-        debugReport.LlmProvider = finalResponse.Provider;
-        debugReport.LlmModel = finalResponse.Model;
-        debugReport.LlmTag = settings.LlmTag;
-        debugReport.Temperature = 0.6;
-        debugReport.LlmResponse = finalResponse.Content;
-        debugReport.PromptTokens = factsResponse.PromptTokens + finalResponse.PromptTokens;
-        debugReport.CompletionTokens = factsResponse.CompletionTokens + finalResponse.CompletionTokens;
-        debugReport.TotalTokens = factsResponse.TotalTokens + finalResponse.TotalTokens;
-        debugReport.LlmTimeMs = totalSw.ElapsedMilliseconds;
-
-        _logger.LogInformation("[ASK] Stage 2 (humor): provider={Provider}, model={Model}",
-            finalResponse.Provider, finalResponse.Model);
-
-        return finalResponse.Content;
-    }
-
-    private static string EscapeHtml(string text)
-    {
-        return text
-            .Replace("&", "&amp;")
-            .Replace("<", "&lt;")
-            .Replace(">", "&gt;");
-    }
-
-    /// <summary>
-    /// Check if facts extraction returned empty or unusable result
-    /// </summary>
-    private static bool IsFactsEmpty(string factsJson)
-    {
-        if (string.IsNullOrWhiteSpace(factsJson))
-            return true;
-
-        try
-        {
-            // Remove markdown code blocks if present
-            var json = factsJson.Trim();
-            if (json.StartsWith("```"))
-            {
-                var lines = json.Split('\n');
-                json = string.Join("\n", lines.Skip(1).TakeWhile(l => !l.StartsWith("```")));
-            }
-
-            using var doc = System.Text.Json.JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            // Check if facts array exists and is not empty
-            if (root.TryGetProperty("facts", out var factsArray))
-            {
-                if (factsArray.ValueKind == System.Text.Json.JsonValueKind.Array && factsArray.GetArrayLength() > 0)
-                    return false; // Has facts
-            }
-
-            // Check if answer exists and is meaningful
-            if (root.TryGetProperty("answer", out var answer))
-            {
-                var answerText = answer.GetString() ?? "";
-                if (!string.IsNullOrWhiteSpace(answerText) &&
-                    !answerText.Contains("не найден") &&
-                    !answerText.Contains("нет данных") &&
-                    !answerText.Contains("не упоминается"))
-                    return false; // Has meaningful answer
-            }
-
-            return true; // Empty or unusable
-        }
-        catch
-        {
-            return true; // Parse error = treat as empty
-        }
+        return response.Content;
     }
 
     private static string GetDisplayName(User? user)
@@ -859,78 +643,67 @@ public class AskHandler
     }
 
     /// <summary>
-    /// Merge results from RAG Fusion and Context (sliding window) search.
-    /// Context search results already contain conversation windows (10 messages each).
+    /// Search using only context embeddings (sliding windows of 10 messages).
+    /// No RAG Fusion - context windows already contain full conversation context.
+    /// This is faster and more accurate for conversational search.
     /// </summary>
-    private async Task<SearchResponse> MergeSearchResultsAsync(
-        Task<RagFusionResponse> fusionTask,
-        Task<List<ContextSearchResult>> contextTask,
-        CancellationToken ct)
+    private async Task<SearchResponse> SearchContextOnlyAsync(
+        long chatId, string query, CancellationToken ct)
     {
-        await Task.WhenAll(fusionTask, contextTask);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        var fusionResponse = fusionTask.Result;
-        var contextResults = contextTask.Result;
+        var contextResults = await _contextEmbeddingService.SearchContextAsync(chatId, query, limit: 15, ct);
 
-        var response = fusionResponse.ToSearchResponse();
+        sw.Stop();
+        _logger.LogInformation("[ContextSearch] Found {Count} windows in {Ms}ms for query: {Query}",
+            contextResults.Count, sw.ElapsedMilliseconds, query.Length > 50 ? query[..50] + "..." : query);
 
-        // If we have context search results, they provide better conversational context
-        if (contextResults.Count > 0)
+        if (contextResults.Count == 0)
         {
-            _logger.LogInformation("[Hybrid] Context search found {Count} windows, best sim={Best:F3}",
-                contextResults.Count, contextResults[0].Similarity);
-
-            // Convert context results to SearchResult format and prepend them
-            // Context results get a boost because they preserve conversation flow
-            var contextAsSearchResults = contextResults.Select(cr => new SearchResult
+            return new SearchResponse
             {
-                ChatId = cr.ChatId,
-                MessageId = cr.CenterMessageId,
-                ChunkIndex = 0,
-                ChunkText = cr.ContextText, // Full 10-message window
-                MetadataJson = null,
-                Similarity = cr.Similarity + 0.1, // Boost for context preservation
-                Distance = cr.Distance,
-                IsNewsDump = false
-            }).ToList();
-
-            // Deduplicate: if a context result contains the same message ID as fusion, prefer context
-            var contextMessageIds = contextResults.SelectMany(cr => cr.MessageIds).ToHashSet();
-            var filteredFusionResults = response.Results
-                .Where(r => !contextMessageIds.Contains(r.MessageId))
-                .ToList();
-
-            // Merge: context first (with boost), then remaining fusion results
-            var merged = contextAsSearchResults
-                .Concat(filteredFusionResults)
-                .OrderByDescending(r => r.Similarity)
-                .Take(20)
-                .ToList();
-
-            response.Results = merged;
-
-            // Update confidence if context search improved it
-            if (contextResults[0].Similarity > 0.5)
-            {
-                response.Confidence = SearchConfidence.High;
-                response.ConfidenceReason = $"Context window match (sim={contextResults[0].Similarity:F3})";
-            }
-            else if (contextResults[0].Similarity > 0.35)
-            {
-                if (response.Confidence < SearchConfidence.Medium)
-                {
-                    response.Confidence = SearchConfidence.Medium;
-                    response.ConfidenceReason = $"Context window partial match (sim={contextResults[0].Similarity:F3})";
-                }
-            }
-
-            response.BestScore = Math.Max(response.BestScore, contextResults[0].Similarity + 0.1);
-        }
-        else
-        {
-            _logger.LogDebug("[Hybrid] No context embeddings found, using RAG Fusion only");
+                Confidence = SearchConfidence.None,
+                ConfidenceReason = "No context embeddings found"
+            };
         }
 
-        return response;
+        // Convert context results to SearchResult format
+        var results = contextResults.Select(cr => new SearchResult
+        {
+            ChatId = cr.ChatId,
+            MessageId = cr.CenterMessageId,
+            ChunkIndex = 0,
+            ChunkText = cr.ContextText, // Full 10-message window
+            MetadataJson = null,
+            Similarity = cr.Similarity,
+            Distance = cr.Distance,
+            IsNewsDump = false
+        }).ToList();
+
+        // Determine confidence based on best similarity
+        var bestSim = contextResults[0].Similarity;
+        var confidence = bestSim switch
+        {
+            > 0.5 => SearchConfidence.High,
+            > 0.35 => SearchConfidence.Medium,
+            > 0.25 => SearchConfidence.Low,
+            _ => SearchConfidence.None
+        };
+
+        var confidenceReason = confidence switch
+        {
+            SearchConfidence.High => $"Strong context match (sim={bestSim:F3})",
+            SearchConfidence.Medium => $"Moderate context match (sim={bestSim:F3})",
+            SearchConfidence.Low => $"Weak context match (sim={bestSim:F3})",
+            _ => $"Very weak match (sim={bestSim:F3})"
+        };
+
+        return new SearchResponse
+        {
+            Results = results,
+            Confidence = confidence,
+            ConfidenceReason = confidenceReason,
+            BestScore = bestSim
+        };
     }
 }

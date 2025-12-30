@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2025-12-30]
 
+### Changed
+- **Context-Only Search** — упрощён поиск, убран RAG Fusion:
+  - Используются только `context_embeddings` (окна по 10 сообщений)
+  - Убран `RagFusionService` из `AskHandler` — экономия 3-4 сек на LLM вариациях
+  - Новый метод `SearchContextOnlyAsync` — прямой поиск по контекстным окнам
+  - Удалён `MergeSearchResultsAsync` — не нужен без гибридного поиска
+- **One-Stage LLM Generation** — объединение двух LLM-вызовов в один:
+  - Был Two-Stage: Stage 1 (факты T=0.1) + Stage 2 (юмор T=0.6) = 2 вызова
+  - Теперь One-Stage: один вызов с T=0.5 — экономия ~1-2 сек
+  - Удалён метод `IsFactsEmpty` — больше не нужен
+- **Dynamic Dialog Windows** — динамические окна по границам диалогов:
+  - Определение границ по временным промежуткам (>30 мин = новый диалог)
+  - Маленькие диалоги (5-15 сообщений) → одно окно целиком
+  - Большие диалоги → скользящие окна внутри диалога
+  - Новый метод `SegmentIntoDialogs()` для сегментации
+  - Убраны фиксированные константы, окна адаптируются под диалоги
+
 ### Added
 - **Context-Aware Embeddings (Sliding Windows)** — контекстные эмбеддинги:
   - Новая таблица `context_embeddings` — хранит эмбеддинги для окон из 10 сообщений

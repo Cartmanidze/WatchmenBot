@@ -16,8 +16,10 @@ public class ContextEmbeddingService
     private readonly ILogger<ContextEmbeddingService> _logger;
 
     // Window configuration
-    private const int WindowSize = 10;  // Messages per window
-    private const int WindowStep = 3;   // Step between windows (overlap = WindowSize - WindowStep = 7)
+    private const int MinWindowSize = 5;   // Minimum messages per window
+    private const int MaxWindowSize = 15;  // Maximum messages per window
+    private const int WindowStep = 3;      // Step between windows within large dialogs
+    private const int DialogGapMinutes = 30; // Time gap to consider new dialog
 
     public ContextEmbeddingService(
         EmbeddingClient embeddingClient,
@@ -53,7 +55,7 @@ public class ContextEmbeddingService
             // Get messages that haven't been processed as centers yet
             var messages = await GetMessagesForWindowsAsync(connection, chatId, lastProcessedId, batchSize * WindowStep, ct);
 
-            if (messages.Count < WindowSize)
+            if (messages.Count < MinWindowSize)
             {
                 _logger.LogInformation("[ContextEmb] Not enough messages ({Count}) for a window in chat {ChatId}",
                     messages.Count, chatId);
@@ -231,29 +233,124 @@ public class ContextEmbeddingService
     }
 
     /// <summary>
-    /// Build sliding windows from messages.
-    /// Window size: 10 messages, step: 3 (overlap of 7 messages)
+    /// Build dialog-aware windows from messages.
+    /// Detects dialog boundaries by time gaps (>30 min = new dialog).
+    /// Small dialogs become single windows, large ones use sliding windows.
     /// </summary>
     private List<MessageWindow> BuildSlidingWindows(List<WindowMessage> messages)
     {
         var windows = new List<MessageWindow>();
 
-        for (var i = 0; i + WindowSize <= messages.Count; i += WindowStep)
-        {
-            var windowMessages = messages.Skip(i).Take(WindowSize).ToList();
-            var centerIndex = WindowSize / 2; // Center is at position 5 (0-indexed)
-            var centerMessage = windowMessages[centerIndex];
+        if (messages.Count < MinWindowSize)
+            return windows;
 
-            windows.Add(new MessageWindow
+        // Segment messages into dialogs by time gaps
+        var dialogs = SegmentIntoDialogs(messages);
+
+        _logger.LogDebug("[ContextEmb] Segmented {Messages} messages into {Dialogs} dialogs",
+            messages.Count, dialogs.Count);
+
+        foreach (var dialog in dialogs)
+        {
+            if (dialog.Count < MinWindowSize)
             {
-                CenterMessageId = centerMessage.MessageId,
-                WindowStartId = windowMessages.First().MessageId,
-                WindowEndId = windowMessages.Last().MessageId,
-                Messages = windowMessages
-            });
+                // Dialog too small, skip (will be included in adjacent windows)
+                continue;
+            }
+
+            if (dialog.Count <= MaxWindowSize)
+            {
+                // Small dialog: create single window with all messages
+                var centerIndex = dialog.Count / 2;
+                var centerMessage = dialog[centerIndex];
+
+                windows.Add(new MessageWindow
+                {
+                    CenterMessageId = centerMessage.MessageId,
+                    WindowStartId = dialog.First().MessageId,
+                    WindowEndId = dialog.Last().MessageId,
+                    Messages = dialog
+                });
+            }
+            else
+            {
+                // Large dialog: use sliding windows within it
+                for (var i = 0; i + MaxWindowSize <= dialog.Count; i += WindowStep)
+                {
+                    var windowMessages = dialog.Skip(i).Take(MaxWindowSize).ToList();
+                    var centerIndex = MaxWindowSize / 2;
+                    var centerMessage = windowMessages[centerIndex];
+
+                    windows.Add(new MessageWindow
+                    {
+                        CenterMessageId = centerMessage.MessageId,
+                        WindowStartId = windowMessages.First().MessageId,
+                        WindowEndId = windowMessages.Last().MessageId,
+                        Messages = windowMessages
+                    });
+                }
+
+                // Handle remaining messages at the end of large dialog
+                var remaining = dialog.Count % WindowStep;
+                if (remaining >= MinWindowSize)
+                {
+                    var windowMessages = dialog.TakeLast(MaxWindowSize).ToList();
+                    var centerIndex = windowMessages.Count / 2;
+                    var centerMessage = windowMessages[centerIndex];
+
+                    windows.Add(new MessageWindow
+                    {
+                        CenterMessageId = centerMessage.MessageId,
+                        WindowStartId = windowMessages.First().MessageId,
+                        WindowEndId = windowMessages.Last().MessageId,
+                        Messages = windowMessages
+                    });
+                }
+            }
         }
 
         return windows;
+    }
+
+    /// <summary>
+    /// Segment messages into dialogs by time gaps.
+    /// A gap of >30 minutes indicates a new dialog.
+    /// </summary>
+    private List<List<WindowMessage>> SegmentIntoDialogs(List<WindowMessage> messages)
+    {
+        var dialogs = new List<List<WindowMessage>>();
+        var currentDialog = new List<WindowMessage>();
+
+        foreach (var msg in messages)
+        {
+            if (currentDialog.Count == 0)
+            {
+                currentDialog.Add(msg);
+                continue;
+            }
+
+            var lastMsg = currentDialog.Last();
+            var gap = msg.DateUtc - lastMsg.DateUtc;
+
+            if (gap.TotalMinutes > DialogGapMinutes)
+            {
+                // Time gap detected, start new dialog
+                if (currentDialog.Count > 0)
+                    dialogs.Add(currentDialog);
+
+                currentDialog = new List<WindowMessage> { msg };
+            }
+            else
+            {
+                currentDialog.Add(msg);
+            }
+        }
+
+        // Don't forget the last dialog
+        if (currentDialog.Count > 0)
+            dialogs.Add(currentDialog);
+
+        return dialogs;
     }
 
     /// <summary>
@@ -310,7 +407,7 @@ public class ContextEmbeddingService
                 MessageIds = messageIds,
                 ContextText = contextText,
                 Embedding = embeddingString,
-                WindowSize
+                WindowSize = window.Messages.Count // Dynamic window size
             });
     }
 
