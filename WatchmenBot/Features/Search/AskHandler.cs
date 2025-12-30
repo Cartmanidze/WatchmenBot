@@ -12,7 +12,6 @@ public class AskHandler
     private readonly ITelegramBotClient _bot;
     private readonly EmbeddingService _embeddingService;
     private readonly RagFusionService _ragFusionService;
-    private readonly RerankService _rerankService;
     private readonly LlmMemoryService _memoryService;
     private readonly LlmRouter _llmRouter;
     private readonly MessageStore _messageStore;
@@ -24,7 +23,6 @@ public class AskHandler
         ITelegramBotClient bot,
         EmbeddingService embeddingService,
         RagFusionService ragFusionService,
-        RerankService rerankService,
         LlmMemoryService memoryService,
         LlmRouter llmRouter,
         MessageStore messageStore,
@@ -35,7 +33,6 @@ public class AskHandler
         _bot = bot;
         _embeddingService = embeddingService;
         _ragFusionService = ragFusionService;
-        _rerankService = rerankService;
         _memoryService = memoryService;
         _llmRouter = llmRouter;
         _messageStore = messageStore;
@@ -116,7 +113,10 @@ public class AskHandler
             // Detect if this is a personal question (about self or @someone)
             var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
 
-            // === PARALLEL EXECUTION: Memory + Search ===
+            // Determine if we need RAG Fusion (general question, not smart/personal)
+            var needsRagFusion = command != "smart" && personalTarget == null;
+
+            // === PARALLEL EXECUTION: Memory + ParticipantNames + Search ===
             // Start memory loading task (only for /ask, not /smart)
             Task<string?>? memoryTask = null;
             if (command == "ask" && askerId != 0)
@@ -126,6 +126,18 @@ public class AskHandler
             else if (command != "smart" && askerId != 0)
             {
                 memoryTask = _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
+            }
+
+            // Start participant names loading (only for RAG Fusion path, runs parallel with memory)
+            Task<List<string>>? participantNamesTask = null;
+            if (needsRagFusion)
+            {
+                participantNamesTask = _messageStore.GetUniqueDisplayNamesAsync(chatId)
+                    .ContinueWith(t => t.Result
+                        .Where(p => !string.IsNullOrWhiteSpace(p.DisplayName))
+                        .Select(p => p.DisplayName)
+                        .Take(50)
+                        .ToList(), ct);
             }
 
             // Start search task (runs in parallel with memory loading)
@@ -157,13 +169,8 @@ public class AskHandler
             }
             else
             {
-                // RAG Fusion path - need participant names first, then parallel search
-                var participantData = await _messageStore.GetUniqueDisplayNamesAsync(chatId);
-                var participantNames = participantData
-                    .Where(p => !string.IsNullOrWhiteSpace(p.DisplayName))
-                    .Select(p => p.DisplayName)
-                    .Take(50)
-                    .ToList();
+                // RAG Fusion path - participant names already loading in parallel
+                var participantNames = await participantNamesTask!;
 
                 fusionTask = _ragFusionService.SearchWithFusionAsync(
                     chatId, question, participantNames, variationCount: 3, resultsPerQuery: 15, ct);
