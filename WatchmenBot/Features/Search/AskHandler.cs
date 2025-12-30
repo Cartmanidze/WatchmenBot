@@ -387,9 +387,18 @@ public class AskHandler
                 tracker[r.MessageId] = (false, "not_in_top10");
         }
 
-        // Get context windows for top messages
-        var messageIds = sortedResults.Select(r => r.MessageId).ToList();
-        var windows = await _embeddingService.GetMergedContextWindowsAsync(chatId, messageIds, ContextWindowSize, ct);
+        // Separate results: context windows (already formatted) vs messages (need expansion)
+        var contextWindowResults = sortedResults.Where(r => r.IsContextWindow).ToList();
+        var messageResults = sortedResults.Where(r => !r.IsContextWindow).ToList();
+
+        _logger.LogDebug("[BuildContext] Split results: {ContextCount} context windows + {MessageCount} messages to expand",
+            contextWindowResults.Count, messageResults.Count);
+
+        // Get context windows only for message results that need expansion
+        var expandedWindows = messageResults.Count > 0
+            ? await _embeddingService.GetMergedContextWindowsAsync(
+                chatId, messageResults.Select(r => r.MessageId).ToList(), ContextWindowSize, ct)
+            : new List<ContextWindow>();
 
         // Build context string with budget control
         var sb = new StringBuilder();
@@ -400,10 +409,26 @@ public class AskHandler
         var includedWindows = 0;
         var seenMessageIds = new HashSet<long>();
 
-        foreach (var window in windows)
+        // Process all results by similarity (mix of context windows and expanded messages)
+        var allWindowData = new List<(double similarity, long messageId, string text, bool isPreformatted)>();
+
+        // Add pre-formatted context windows
+        foreach (var cwr in contextWindowResults)
         {
-            // Estimate window size
-            var windowText = window.ToFormattedText();
+            allWindowData.Add((cwr.Similarity, cwr.MessageId, cwr.ChunkText, true));
+        }
+
+        // Add expanded message windows
+        foreach (var window in expandedWindows)
+        {
+            var matchingResult = messageResults.FirstOrDefault(r => r.MessageId == window.CenterMessageId);
+            var similarity = matchingResult?.Similarity ?? 0.0;
+            allWindowData.Add((similarity, window.CenterMessageId, window.ToFormattedText(), false));
+        }
+
+        // Sort by similarity and process
+        foreach (var (similarity, messageId, windowText, isPreformatted) in allWindowData.OrderByDescending(w => w.similarity))
+        {
             var windowChars = windowText.Length + 50; // +50 for separators
 
             if (usedChars + windowChars > ContextCharBudget)
@@ -412,8 +437,8 @@ public class AskHandler
                 break;
             }
 
-            // Mark center message as included
-            tracker[window.CenterMessageId] = (true, "ok");
+            // Mark message as included
+            tracker[messageId] = (true, "ok");
 
             // Add window header
             sb.AppendLine($"--- Диалог #{includedWindows + 1} ---");
@@ -422,10 +447,7 @@ public class AskHandler
 
             usedChars += windowChars;
             includedWindows++;
-
-            // Track all messages in window
-            foreach (var msg in window.Messages)
-                seenMessageIds.Add(msg.MessageId);
+            seenMessageIds.Add(messageId);
         }
 
         // Mark remaining messages
@@ -436,8 +458,8 @@ public class AskHandler
         }
 
         _logger.LogInformation(
-            "[BuildContext] Built context: {Windows} windows, {Messages} total messages, {Chars}/{Budget} chars",
-            includedWindows, seenMessageIds.Count, usedChars, ContextCharBudget);
+            "[BuildContext] Built context: {Windows} windows ({Direct} direct + {Expanded} expanded), {Chars}/{Budget} chars",
+            includedWindows, contextWindowResults.Count, expandedWindows.Count, usedChars, ContextCharBudget);
 
         return (sb.ToString(), tracker);
     }
@@ -701,7 +723,8 @@ public class AskHandler
                 MetadataJson = null,
                 Similarity = 0.75, // Lower than direct hits but higher than generic context
                 Distance = 0.25,
-                IsNewsDump = false
+                IsNewsDump = false,
+                IsContextWindow = true // Already has full context from context_embeddings
             });
 
             allResults.AddRange(expandedResults);
@@ -718,7 +741,8 @@ public class AskHandler
             MetadataJson = null,
             Similarity = cw.Similarity * 0.9, // Slightly lower priority than personal
             Distance = cw.Distance,
-            IsNewsDump = false
+            IsNewsDump = false,
+            IsContextWindow = true // Already has full context from context_embeddings
         });
 
         allResults.AddRange(contextResults);
@@ -802,7 +826,8 @@ public class AskHandler
             MetadataJson = null,
             Similarity = cr.Similarity, // Keep original similarity (priority)
             Distance = cr.Distance,
-            IsNewsDump = false
+            IsNewsDump = false,
+            IsContextWindow = true // Already has full context, no need to expand
         }).ToList();
 
         // Convert message results (priority: 0.85x similarity - slightly lower than context)

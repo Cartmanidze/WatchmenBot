@@ -38,6 +38,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Обычные вопросы комбинируют широкий контекст (окна) с точными совпадениями (сообщения)
   - Summary теперь показывает не только ключевые сообщения, но и полные обсуждения по темам
 
+- **Optimized Context Building** — оптимизация построения контекста в `/ask`:
+  - `BuildContextWithWindowsAsync` теперь переиспользует `context_text` напрямую из `context_embeddings`
+  - Убрано дублирование: больше не вызывает `GetMergedContextWindowsAsync` для результатов, уже содержащих полные окна
+  - Новый флаг `SearchResult.IsContextWindow` — отмечает результаты, уже содержащие форматированный контекст
+  - Экономия 2-3 SQL запросов в messages таблицу на каждый `/ask` запрос
+  - Результаты из обоих источников (`context_embeddings` + `message_embeddings`) теперь обрабатываются эффективно
+
 ### Technical
 - Все поисковые запросы выполняются параллельно через `Task.WhenAll` — минимальная задержка
 - Нет дополнительного использования памяти — используются существующие таблицы `message_embeddings` и `context_embeddings`

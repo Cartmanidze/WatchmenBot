@@ -1609,6 +1609,11 @@ public class SearchResult
     /// Флаг: сообщение похоже на новостную простыню (много ссылок, эмодзи, длинное)
     /// </summary>
     public bool IsNewsDump { get; set; }
+
+    /// <summary>
+    /// Флаг: ChunkText уже содержит полное контекстное окно (из context_embeddings)
+    /// </summary>
+    public bool IsContextWindow { get; set; }
 }
 
 /// <summary>
