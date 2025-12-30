@@ -17,6 +17,7 @@ public class AdminCommandHandler
     private readonly ChatImportService _importService;
     private readonly MessageStore _messageStore;
     private readonly EmbeddingService _embeddingService;
+    private readonly ContextEmbeddingService _contextEmbeddingService;
     private readonly TelegramExportParser _exportParser;
     private readonly PromptSettingsStore _promptSettings;
     private readonly LlmRouter _llmRouter;
@@ -30,6 +31,7 @@ public class AdminCommandHandler
         ChatImportService importService,
         MessageStore messageStore,
         EmbeddingService embeddingService,
+        ContextEmbeddingService contextEmbeddingService,
         TelegramExportParser exportParser,
         PromptSettingsStore promptSettings,
         LlmRouter llmRouter,
@@ -42,6 +44,7 @@ public class AdminCommandHandler
         _importService = importService;
         _messageStore = messageStore;
         _embeddingService = embeddingService;
+        _contextEmbeddingService = contextEmbeddingService;
         _exportParser = exportParser;
         _promptSettings = promptSettings;
         _llmRouter = llmRouter;
@@ -112,6 +115,10 @@ public class AdminCommandHandler
                 "reindex" when parts.Length >= 4 && parts[3] == "confirm" => await HandleReindexConfirmAsync(message.Chat.Id, parts[2], ct),
                 "reindex" when parts.Length >= 3 => await HandleReindexAsync(message.Chat.Id, parts[2], ct),
                 "reindex" => await HandleReindexAllAsync(message.Chat.Id, ct),
+                "context" when parts.Length >= 3 => await HandleContextStatsAsync(message.Chat.Id, parts[2], ct),
+                "context" => await HandleContextStatsAllAsync(message.Chat.Id, ct),
+                "context_reindex" when parts.Length >= 4 && parts[3] == "confirm" => await HandleContextReindexConfirmAsync(message.Chat.Id, parts[2], ct),
+                "context_reindex" when parts.Length >= 3 => await HandleContextReindexAsync(message.Chat.Id, parts[2], ct),
                 "help" => await SendHelpAsync(message.Chat.Id, ct),
                 _ => await SendHelpAsync(message.Chat.Id, ct)
             };
@@ -1151,6 +1158,145 @@ public class AdminCommandHandler
         return true;
     }
 
+    private async Task<bool> HandleContextStatsAllAsync(long chatId, CancellationToken ct)
+    {
+        var chats = await _messageStore.GetKnownChatsAsync();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("<b>📊 Контекстные эмбеддинги (Sliding Windows)</b>\n");
+
+        var totalWindows = 0;
+        foreach (var chat in chats.Take(10))
+        {
+            var stats = await _contextEmbeddingService.GetStatsAsync(chat.ChatId, ct);
+            totalWindows += stats.TotalWindows;
+
+            var title = !string.IsNullOrWhiteSpace(chat.Title) ? chat.Title : $"Chat {chat.ChatId}";
+            sb.AppendLine($"<b>{EscapeHtml(title)}</b>: {stats.TotalWindows} окон");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine($"<b>Всего:</b> {totalWindows} окон");
+        sb.AppendLine();
+        sb.AppendLine("💡 <code>/admin context &lt;chat_id&gt;</code> — детали чата");
+        sb.AppendLine("💡 <code>/admin context_reindex &lt;chat_id&gt;</code> — пересоздать");
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: sb.ToString(),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleContextStatsAsync(long chatId, string chatIdStr, CancellationToken ct)
+    {
+        if (!long.TryParse(chatIdStr, out var targetChatId))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Неверный формат Chat ID",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var stats = await _contextEmbeddingService.GetStatsAsync(targetChatId, ct);
+        var embStats = await _embeddingService.GetStatsAsync(targetChatId, ct);
+
+        var coverage = embStats.TotalEmbeddings > 0
+            ? $"{(double)stats.TotalWindows * 10 / embStats.TotalEmbeddings * 100:F1}%"
+            : "N/A";
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"""
+                <b>📊 Контекстные эмбеддинги</b>
+
+                Чат: <code>{targetChatId}</code>
+
+                📦 <b>Окна:</b> {stats.TotalWindows}
+                📏 <b>Размер окна:</b> 10 сообщений
+                ↔️ <b>Шаг:</b> 3 (перекрытие 7)
+                📈 <b>Покрытие:</b> ~{coverage}
+
+                📅 <b>Первое:</b> {stats.OldestWindow?.ToString("dd.MM.yyyy HH:mm") ?? "—"}
+                📅 <b>Последнее:</b> {stats.NewestWindow?.ToString("dd.MM.yyyy HH:mm") ?? "—"}
+
+                💡 Для пересоздания: <code>/admin context_reindex {targetChatId}</code>
+                """,
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleContextReindexAsync(long chatId, string chatIdStr, CancellationToken ct)
+    {
+        if (!long.TryParse(chatIdStr, out var targetChatId))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Неверный формат Chat ID",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var stats = await _contextEmbeddingService.GetStatsAsync(targetChatId, ct);
+
+        await _bot.SendMessage(
+            chatId: chatId,
+            text: $"""
+                ⚠️ <b>Переиндексация контекстных эмбеддингов</b>
+
+                Чат: <code>{targetChatId}</code>
+                Текущих окон: {stats.TotalWindows}
+
+                Это удалит все контекстные эмбеддинги чата и BackgroundService пересоздаст их.
+
+                Для подтверждения: <code>/admin context_reindex {targetChatId} confirm</code>
+                """,
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
+    private async Task<bool> HandleContextReindexConfirmAsync(long chatId, string chatIdStr, CancellationToken ct)
+    {
+        if (!long.TryParse(chatIdStr, out var targetChatId))
+        {
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: "❌ Неверный формат Chat ID",
+                cancellationToken: ct);
+            return true;
+        }
+
+        var statusMsg = await _bot.SendMessage(
+            chatId: chatId,
+            text: $"⏳ Удаляю контекстные эмбеддинги чата {targetChatId}...",
+            cancellationToken: ct);
+
+        await _contextEmbeddingService.DeleteChatContextEmbeddingsAsync(targetChatId, ct);
+
+        await _bot.EditMessageText(
+            chatId: chatId,
+            messageId: statusMsg.MessageId,
+            text: $"""
+                ✅ <b>Контекстные эмбеддинги удалены</b>
+
+                Чат: <code>{targetChatId}</code>
+
+                BackgroundService начнёт переиндексацию автоматически.
+                💡 Следить за прогрессом: <code>/admin context {targetChatId}</code>
+                """,
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+        return true;
+    }
+
     private static string EscapeHtml(string text)
     {
         return text
@@ -1198,6 +1344,11 @@ public class AdminCommandHandler
             <b>🔄 Переиндексация эмбеддингов:</b>
             /admin reindex &lt;chat_id&gt; — инфо + подтверждение
             /admin reindex all confirm — пересоздать ВСЕ
+
+            <b>📊 Контекстные эмбеддинги (окна 10 сообщений):</b>
+            /admin context — статистика по всем чатам
+            /admin context &lt;chat_id&gt; — детали чата
+            /admin context_reindex &lt;chat_id&gt; — пересоздать
 
             <b>Настройки:</b>
             /admin set_summary_time HH:mm — время саммари

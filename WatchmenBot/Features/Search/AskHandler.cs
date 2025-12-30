@@ -11,6 +11,7 @@ public class AskHandler
 {
     private readonly ITelegramBotClient _bot;
     private readonly EmbeddingService _embeddingService;
+    private readonly ContextEmbeddingService _contextEmbeddingService;
     private readonly RagFusionService _ragFusionService;
     private readonly LlmMemoryService _memoryService;
     private readonly LlmRouter _llmRouter;
@@ -22,6 +23,7 @@ public class AskHandler
     public AskHandler(
         ITelegramBotClient bot,
         EmbeddingService embeddingService,
+        ContextEmbeddingService contextEmbeddingService,
         RagFusionService ragFusionService,
         LlmMemoryService memoryService,
         LlmRouter llmRouter,
@@ -32,6 +34,7 @@ public class AskHandler
     {
         _bot = bot;
         _embeddingService = embeddingService;
+        _contextEmbeddingService = contextEmbeddingService;
         _ragFusionService = ragFusionService;
         _memoryService = memoryService;
         _llmRouter = llmRouter;
@@ -172,9 +175,15 @@ public class AskHandler
                 // RAG Fusion path - participant names already loading in parallel
                 var participantNames = await participantNamesTask!;
 
+                // Start both RAG Fusion and Context search in parallel
                 fusionTask = _ragFusionService.SearchWithFusionAsync(
                     chatId, question, participantNames, variationCount: 3, resultsPerQuery: 15, ct);
-                searchTask = fusionTask.ContinueWith(t => t.Result.ToSearchResponse(), ct);
+
+                // Also search context embeddings (sliding windows with conversation context)
+                var contextSearchTask = _contextEmbeddingService.SearchContextAsync(chatId, question, limit: 5, ct);
+
+                // Merge results: context search provides ready-to-use conversation windows
+                searchTask = MergeSearchResultsAsync(fusionTask, contextSearchTask, ct);
             }
 
             // Await both tasks in parallel
@@ -849,4 +858,79 @@ public class AskHandler
         return null;
     }
 
+    /// <summary>
+    /// Merge results from RAG Fusion and Context (sliding window) search.
+    /// Context search results already contain conversation windows (10 messages each).
+    /// </summary>
+    private async Task<SearchResponse> MergeSearchResultsAsync(
+        Task<RagFusionResponse> fusionTask,
+        Task<List<ContextSearchResult>> contextTask,
+        CancellationToken ct)
+    {
+        await Task.WhenAll(fusionTask, contextTask);
+
+        var fusionResponse = fusionTask.Result;
+        var contextResults = contextTask.Result;
+
+        var response = fusionResponse.ToSearchResponse();
+
+        // If we have context search results, they provide better conversational context
+        if (contextResults.Count > 0)
+        {
+            _logger.LogInformation("[Hybrid] Context search found {Count} windows, best sim={Best:F3}",
+                contextResults.Count, contextResults[0].Similarity);
+
+            // Convert context results to SearchResult format and prepend them
+            // Context results get a boost because they preserve conversation flow
+            var contextAsSearchResults = contextResults.Select(cr => new SearchResult
+            {
+                ChatId = cr.ChatId,
+                MessageId = cr.CenterMessageId,
+                ChunkIndex = 0,
+                ChunkText = cr.ContextText, // Full 10-message window
+                MetadataJson = null,
+                Similarity = cr.Similarity + 0.1, // Boost for context preservation
+                Distance = cr.Distance,
+                IsNewsDump = false
+            }).ToList();
+
+            // Deduplicate: if a context result contains the same message ID as fusion, prefer context
+            var contextMessageIds = contextResults.SelectMany(cr => cr.MessageIds).ToHashSet();
+            var filteredFusionResults = response.Results
+                .Where(r => !contextMessageIds.Contains(r.MessageId))
+                .ToList();
+
+            // Merge: context first (with boost), then remaining fusion results
+            var merged = contextAsSearchResults
+                .Concat(filteredFusionResults)
+                .OrderByDescending(r => r.Similarity)
+                .Take(20)
+                .ToList();
+
+            response.Results = merged;
+
+            // Update confidence if context search improved it
+            if (contextResults[0].Similarity > 0.5)
+            {
+                response.Confidence = SearchConfidence.High;
+                response.ConfidenceReason = $"Context window match (sim={contextResults[0].Similarity:F3})";
+            }
+            else if (contextResults[0].Similarity > 0.35)
+            {
+                if (response.Confidence < SearchConfidence.Medium)
+                {
+                    response.Confidence = SearchConfidence.Medium;
+                    response.ConfidenceReason = $"Context window partial match (sim={contextResults[0].Similarity:F3})";
+                }
+            }
+
+            response.BestScore = Math.Max(response.BestScore, contextResults[0].Similarity + 0.1);
+        }
+        else
+        {
+            _logger.LogDebug("[Hybrid] No context embeddings found, using RAG Fusion only");
+        }
+
+        return response;
+    }
 }

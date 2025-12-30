@@ -158,8 +158,57 @@ public class BackgroundEmbeddingService : BackgroundService
                 totalProcessed, batchesProcessed, sw.Elapsed.TotalSeconds, rate);
         }
 
+        // Build context embeddings (sliding windows) after regular embeddings
+        await BuildContextEmbeddingsAsync(scope, ct);
+
         // Return true if there's more work (we hit max batches or batch was full)
         var hasMore = batchesProcessed >= maxBatches || (pending - totalProcessed) > 0;
         return hasMore;
+    }
+
+    /// <summary>
+    /// Build context embeddings (sliding windows) for all chats
+    /// </summary>
+    private async Task BuildContextEmbeddingsAsync(IServiceScope scope, CancellationToken ct)
+    {
+        try
+        {
+            var contextEmbeddingEnabled = _configuration.GetValue<bool>("Embeddings:ContextEmbeddings:Enabled", true);
+            if (!contextEmbeddingEnabled)
+            {
+                return;
+            }
+
+            var messageStore = scope.ServiceProvider.GetRequiredService<MessageStore>();
+            var contextService = scope.ServiceProvider.GetRequiredService<ContextEmbeddingService>();
+
+            // Get all chats with messages
+            var chats = await messageStore.GetDistinctChatIdsAsync();
+
+            // Configurable batch size for context embeddings (larger for initial indexing)
+            var batchSize = _configuration.GetValue<int>("Embeddings:ContextEmbeddings:BatchSize", 100);
+
+            foreach (var chatId in chats)
+            {
+                if (ct.IsCancellationRequested)
+                    break;
+
+                try
+                {
+                    await contextService.BuildContextEmbeddingsAsync(chatId, batchSize, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[ContextEmb] Failed to build context embeddings for chat {ChatId}", chatId);
+                }
+
+                // Small delay between chats to avoid overwhelming the embedding API
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ContextEmb] Error building context embeddings");
+        }
     }
 }

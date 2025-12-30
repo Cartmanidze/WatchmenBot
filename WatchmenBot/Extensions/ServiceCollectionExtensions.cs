@@ -141,6 +141,9 @@ public static class ServiceCollectionExtensions
         // Embedding Service for RAG
         services.AddScoped<EmbeddingService>();
 
+        // Context Embedding Service (sliding window embeddings for conversation context)
+        services.AddScoped<ContextEmbeddingService>();
+
         // RAG Fusion Service (multi-query search with RRF)
         services.AddScoped<RagFusionService>();
 

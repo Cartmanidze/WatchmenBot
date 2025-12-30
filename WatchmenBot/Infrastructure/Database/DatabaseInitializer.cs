@@ -37,6 +37,7 @@ public class DatabaseInitializer : IHostedService
             await CreateConversationMemoryTableAsync(connection);
             await CreateMessageQueueTableAsync(connection);
             await CreateUserFactsTableAsync(connection);
+            await CreateContextEmbeddingsTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -296,6 +297,58 @@ public class DatabaseInitializer : IHostedService
         await connection.ExecuteAsync(createTableSql);
     }
 
+    private async Task CreateContextEmbeddingsTableAsync(System.Data.IDbConnection connection)
+    {
+        var dimensions = _configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+
+        try
+        {
+            // Check if table exists and has correct dimensions
+            var checkDimensionsSql = """
+                SELECT atttypmod
+                FROM pg_attribute a
+                JOIN pg_class c ON a.attrelid = c.oid
+                WHERE c.relname = 'context_embeddings'
+                  AND a.attname = 'embedding'
+                  AND a.atttypid = (SELECT oid FROM pg_type WHERE typname = 'vector');
+                """;
+
+            var currentDimensions = await connection.QueryFirstOrDefaultAsync<int?>(checkDimensionsSql);
+
+            if (currentDimensions.HasValue && currentDimensions.Value != dimensions)
+            {
+                _logger.LogWarning(
+                    "Context embedding dimensions changed from {OldDim} to {NewDim}. Recreating table.",
+                    currentDimensions.Value, dimensions);
+
+                await connection.ExecuteAsync("DROP TABLE IF EXISTS context_embeddings CASCADE;");
+            }
+
+            var createTableSql = $"""
+                CREATE TABLE IF NOT EXISTS context_embeddings (
+                    id BIGSERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    center_message_id BIGINT NOT NULL,
+                    window_start_id BIGINT NOT NULL,
+                    window_end_id BIGINT NOT NULL,
+                    message_ids BIGINT[] NOT NULL,
+                    context_text TEXT NOT NULL,
+                    embedding vector({dimensions}),
+                    window_size INT NOT NULL DEFAULT 10,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    UNIQUE(chat_id, center_message_id)
+                );
+                """;
+
+            await connection.ExecuteAsync(createTableSql);
+            _logger.LogInformation("Context embeddings table ready with {Dimensions} dimensions", dimensions);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not create context_embeddings table");
+        }
+    }
+
     private async Task CreateIndexesAsync(System.Data.IDbConnection connection)
     {
         // Messages indexes
@@ -343,6 +396,34 @@ public class DatabaseInitializer : IHostedService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not create embeddings indexes. pgvector may not be installed");
+        }
+
+        // Context embeddings indexes
+        try
+        {
+            var contextEmbeddingsIndexes = new[]
+            {
+                "CREATE INDEX IF NOT EXISTS idx_context_embeddings_chat_id ON context_embeddings (chat_id);",
+                "CREATE INDEX IF NOT EXISTS idx_context_embeddings_center ON context_embeddings (chat_id, center_message_id);",
+                "CREATE INDEX IF NOT EXISTS idx_context_embeddings_range ON context_embeddings (chat_id, window_start_id, window_end_id);",
+                """
+                CREATE INDEX IF NOT EXISTS idx_context_embeddings_vector
+                ON context_embeddings
+                USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 100);
+                """
+            };
+
+            foreach (var indexSql in contextEmbeddingsIndexes)
+            {
+                await connection.ExecuteAsync(indexSql);
+            }
+
+            _logger.LogInformation("Context embeddings indexes created");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not create context embeddings indexes");
         }
     }
 }

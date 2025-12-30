@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2025-12-30]
 
 ### Added
+- **Context-Aware Embeddings (Sliding Windows)** — контекстные эмбеддинги:
+  - Новая таблица `context_embeddings` — хранит эмбеддинги для окон из 10 сообщений
+  - `ContextEmbeddingService` — создание и поиск по контекстным окнам
+  - Скользящие окна: размер 10 сообщений, шаг 3 (перекрытие 7 сообщений)
+  - Сохраняет контекст диалога: "Да, согласен" теперь имеет смысл вместе с предыдущими сообщениями
+  - Гибридный поиск в `/ask`: RAG Fusion + Context Embeddings параллельно
+  - Результаты контекстного поиска получают буст +0.1 к similarity
+
 - **Background Summary Processing** — фоновая генерация выжимок:
   - `SummaryQueueService` — in-memory очередь запросов на summary (Channel-based)
   - `BackgroundSummaryWorker` — фоновый воркер для обработки очереди
