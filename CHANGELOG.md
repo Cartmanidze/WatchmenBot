@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Hybrid Embedding Search** — гибридный поиск с использованием обоих типов эмбеддингов:
+  - **Персональные запросы** ("я гондон?", "@username"):
+    - Параллельный поиск в `message_embeddings` (точные сообщения пользователя) + `context_embeddings` (полные диалоги)
+    - Fallback на `context_embeddings` если не найдены точные сообщения пользователя
+    - Расширение точных совпадений контекстными окнами для полноты диалога
+  - **Обычные запросы** ("о чём спорили?"):
+    - Параллельный поиск в `context_embeddings` (приоритет) + `message_embeddings` (точные совпадения)
+    - Дедупликация по message_id с сохранением лучшего similarity
+    - Context windows получают 1.0x similarity, отдельные сообщения 0.85x
+  - **Summary (/summary)**:
+    - Для каждой темы параллельный поиск: `message_embeddings` (разнообразие) + `context_embeddings` (полные диалоги)
+    - Объединение ~15 отдельных сообщений + ~5 контекстных окон per тема
+    - Более связные и детальные саммари с полным контекстом диалогов
+  - Новый метод `ContextEmbeddingService.GetContextWindowsByMessageIdsAsync()` — поиск окон по списку message_id
+  - Новый метод `AskHandler.SearchPersonalWithHybridAsync()` — гибридный поиск для персональных запросов
+  - Модифицирован `AskHandler.SearchContextOnlyAsync()` — теперь использует оба типа эмбеддингов
+  - Модифицирован `SmartSummaryService` — инъекция `ContextEmbeddingService` и гибридный поиск по темам
+
+### Changed
+- **Improved Context Quality** — улучшение качества контекста:
+  - Персональные вопросы получают как точные цитаты, так и полный контекст диалогов
+  - Обычные вопросы комбинируют широкий контекст (окна) с точными совпадениями (сообщения)
+  - Summary теперь показывает не только ключевые сообщения, но и полные обсуждения по темам
+
+### Technical
+- Все поисковые запросы выполняются параллельно через `Task.WhenAll` — минимальная задержка
+- Нет дополнительного использования памяти — используются существующие таблицы `message_embeddings` и `context_embeddings`
+- Оба типа эмбеддингов теперь необходимы для оптимальной работы поиска
+
 ## [2025-12-30]
 
 ### Changed

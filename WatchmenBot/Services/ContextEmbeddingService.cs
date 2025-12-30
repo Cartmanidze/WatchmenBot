@@ -447,6 +447,58 @@ public class ContextEmbeddingService
         _logger.LogInformation("[ContextEmb] Deleted {Count} context embeddings for chat {ChatId}", deleted, chatId);
     }
 
+    /// <summary>
+    /// Get context windows that contain specific message IDs
+    /// </summary>
+    public async Task<List<ContextSearchResult>> GetContextWindowsByMessageIdsAsync(
+        long chatId,
+        List<long> messageIds,
+        int limit = 10,
+        CancellationToken ct = default)
+    {
+        if (messageIds.Count == 0)
+            return new List<ContextSearchResult>();
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            // Find windows that contain any of the target message IDs
+            var results = await connection.QueryAsync<ContextSearchResult>(
+                """
+                SELECT
+                    id as Id,
+                    chat_id as ChatId,
+                    center_message_id as CenterMessageId,
+                    window_start_id as WindowStartId,
+                    window_end_id as WindowEndId,
+                    message_ids as MessageIds,
+                    context_text as ContextText,
+                    1.0 as Similarity,
+                    0.0 as Distance
+                FROM context_embeddings
+                WHERE chat_id = @ChatId
+                  AND message_ids && @MessageIds
+                ORDER BY center_message_id DESC
+                LIMIT @Limit
+                """,
+                new { ChatId = chatId, MessageIds = messageIds.ToArray(), Limit = limit });
+
+            var resultsList = results.ToList();
+
+            _logger.LogInformation(
+                "[ContextEmb] Found {Count} context windows containing {MessageCount} target messages in chat {ChatId}",
+                resultsList.Count, messageIds.Count, chatId);
+
+            return resultsList;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ContextEmb] Failed to get context windows for message IDs in chat {ChatId}", chatId);
+            return new List<ContextSearchResult>();
+        }
+    }
+
     private static string TruncateForLog(string text, int maxLength)
     {
         if (string.IsNullOrEmpty(text) || text.Length <= maxLength)

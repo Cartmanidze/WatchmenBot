@@ -15,6 +15,7 @@ public class SmartSummaryService
     private const int MaxTotalTopicMessages = 50; // Hard limit across all topics
 
     private readonly EmbeddingService _embeddingService;
+    private readonly ContextEmbeddingService _contextEmbeddingService;
     private readonly LlmRouter _llmRouter;
     private readonly PromptSettingsStore _promptSettings;
     private readonly DebugService _debugService;
@@ -22,12 +23,14 @@ public class SmartSummaryService
 
     public SmartSummaryService(
         EmbeddingService embeddingService,
+        ContextEmbeddingService contextEmbeddingService,
         LlmRouter llmRouter,
         PromptSettingsStore promptSettings,
         DebugService debugService,
         ILogger<SmartSummaryService> logger)
     {
         _embeddingService = embeddingService;
+        _contextEmbeddingService = contextEmbeddingService;
         _llmRouter = llmRouter;
         _promptSettings = promptSettings;
         _debugService = debugService;
@@ -150,17 +153,43 @@ public class SmartSummaryService
         _logger.LogInformation("[SmartSummary] Extracted {Count} topics: {Topics}",
             topics.Count, string.Join(", ", topics));
 
-        // Step 2: For each topic, find relevant messages with budget awareness
+        // Step 2: For each topic, find relevant messages using hybrid approach
         var topicMessages = new Dictionary<string, List<MessageWithTime>>();
         var seenTexts = new HashSet<string>(); // Global deduplication across topics
 
         foreach (var topic in topics)
         {
-            var relevantMessages = await _embeddingService.SearchSimilarInRangeAsync(
-                chatId, topic, startUtc, endUtc, limit: 20, ct);
+            // Hybrid search: parallel search in both message and context embeddings
+            var messageTask = _embeddingService.SearchSimilarInRangeAsync(
+                chatId, topic, startUtc, endUtc, limit: 15, ct);
+            var contextTask = _contextEmbeddingService.SearchContextAsync(
+                chatId, topic, limit: 5, ct);
+
+            await Task.WhenAll(messageTask, contextTask);
+
+            var messageResults = await messageTask;
+            var contextResults = await contextTask;
+
+            // Convert context results to SearchResult format
+            var contextAsSearchResults = contextResults.Select(cr => new SearchResult
+            {
+                ChatId = cr.ChatId,
+                MessageId = cr.CenterMessageId,
+                ChunkIndex = 0,
+                ChunkText = cr.ContextText, // Full window with context
+                MetadataJson = null,
+                Similarity = cr.Similarity,
+                Distance = cr.Distance,
+                IsNewsDump = false
+            }).ToList();
+
+            // Merge results (prioritize context windows for better coherence)
+            var allResults = contextAsSearchResults
+                .Concat(messageResults)
+                .ToList();
 
             // Filter, deduplicate, and sort by similarity (most relevant first)
-            var filtered = relevantMessages
+            var filtered = allResults
                 .Where(m => m.Similarity > 0.3) // Higher threshold for better quality
                 .Where(m => !string.IsNullOrWhiteSpace(m.ChunkText))
                 .Where(m =>
@@ -175,6 +204,9 @@ public class SmartSummaryService
                 .Select(ParseMessageWithTime)
                 .OrderBy(m => m.Time) // Then sort chronologically for context
                 .ToList();
+
+            _logger.LogDebug("[SmartSummary] Topic '{Topic}': {Count} messages ({Context} context + {Message} individual)",
+                topic, filtered.Count, contextResults.Count, messageResults.Count);
 
             topicMessages[topic] = filtered;
         }
