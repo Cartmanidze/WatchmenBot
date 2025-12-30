@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2025-12-30]
 
 ### Added
 - **Background Summary Processing** — фоновая генерация выжимок:
@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `BackgroundSummaryWorker` — фоновый воркер для обработки очереди
   - Команда `/summary` теперь сразу отвечает "Генерирую выжимку..." и запускает генерацию в фоне
   - Решает проблему nginx timeout 60 сек — summary может занимать 30-120 сек
+
+## [2025-12-29]
 
 - **Hybrid Profile System** — новая система профилей пользователей:
   - `ProfileQueueService` — очередь сообщений для фонового анализа
@@ -48,7 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [2024-12-28]
+## [2025-12-28]
 
 ### Changed
 - **HuggingFace Embeddings** — переход с OpenAI на HuggingFace:
@@ -61,7 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [2024-12-27]
+## [2025-12-27]
 
 ### Changed
 - **LlmMemoryService refactoring** — рефакторинг для лучшей совместимости с Dapper:
@@ -75,7 +77,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [2024-12-26]
+## [2025-12-26]
 
 ### Changed
 - **AskHandler prompt refinement** — уточнены правила использования фактов:
