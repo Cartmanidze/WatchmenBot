@@ -113,85 +113,90 @@ public class AskHandler
             var askerUsername = message.From?.Username;
             var askerId = message.From?.Id ?? 0;
 
-            // Fetch user memory context (profile + recent interactions)
-            // Use enhanced context for /ask to include new facts system
-            string? memoryContext = null;
-            if (askerId != 0)
+            // Detect if this is a personal question (about self or @someone)
+            var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
+
+            // === PARALLEL EXECUTION: Memory + Search ===
+            // Start memory loading task (only for /ask, not /smart)
+            Task<string?>? memoryTask = null;
+            if (command == "ask" && askerId != 0)
             {
-                memoryContext = command == "ask"
-                    ? await _memoryService.BuildEnhancedContextAsync(chatId, askerId, askerName, question, ct)
-                    : await _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
+                memoryTask = _memoryService.BuildEnhancedContextAsync(chatId, askerId, askerName, question, ct);
+            }
+            else if (command != "smart" && askerId != 0)
+            {
+                memoryTask = _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
+            }
+
+            // Start search task (runs in parallel with memory loading)
+            Task<SearchResponse> searchTask;
+            Task<RagFusionResponse>? fusionTask = null;
+
+            if (command == "smart")
+            {
+                // /smart — no RAG search needed
+                _logger.LogInformation("[SMART] Direct query to Perplexity (no RAG)");
+                searchTask = Task.FromResult(new SearchResponse
+                {
+                    Confidence = SearchConfidence.None,
+                    ConfidenceReason = "Прямой запрос к Perplexity (без RAG)"
+                });
+            }
+            else if (personalTarget == "self")
+            {
+                _logger.LogInformation("[ASK] Personal question detected: self ({Name}/{Username})", askerName, askerUsername);
+                searchTask = _embeddingService.GetPersonalContextAsync(
+                    chatId, askerUsername ?? askerName, askerName, question, days: 7, ct);
+            }
+            else if (personalTarget != null && personalTarget.StartsWith("@"))
+            {
+                var targetUsername = personalTarget.TrimStart('@');
+                _logger.LogInformation("[ASK] Personal question detected: @{Target}", targetUsername);
+                searchTask = _embeddingService.GetPersonalContextAsync(
+                    chatId, targetUsername, null, question, days: 7, ct);
+            }
+            else
+            {
+                // RAG Fusion path - need participant names first, then parallel search
+                var participantData = await _messageStore.GetUniqueDisplayNamesAsync(chatId);
+                var participantNames = participantData
+                    .Where(p => !string.IsNullOrWhiteSpace(p.DisplayName))
+                    .Select(p => p.DisplayName)
+                    .Take(50)
+                    .ToList();
+
+                fusionTask = _ragFusionService.SearchWithFusionAsync(
+                    chatId, question, participantNames, variationCount: 3, resultsPerQuery: 15, ct);
+                searchTask = fusionTask.ContinueWith(t => t.Result.ToSearchResponse(), ct);
+            }
+
+            // Await both tasks in parallel
+            string? memoryContext = null;
+            SearchResponse searchResponse;
+
+            if (memoryTask != null)
+            {
+                await Task.WhenAll(memoryTask, searchTask);
+                memoryContext = memoryTask.Result;
+                searchResponse = searchTask.Result;
 
                 if (memoryContext != null)
                 {
                     _logger.LogDebug("[{Command}] Loaded memory for user {User}", command.ToUpper(), askerName);
                 }
             }
-
-            // Detect if this is a personal question (about self or @someone)
-            var personalTarget = DetectPersonalQuestion(question, askerName, askerUsername);
-
-            // Choose search strategy based on command type
-            SearchResponse searchResponse;
-
-            if (command == "smart")
-            {
-                // /smart — чистый запрос к Perplexity, без поиска по чату
-                _logger.LogInformation("[SMART] Direct query to Perplexity (no RAG)");
-                searchResponse = new SearchResponse
-                {
-                    Confidence = SearchConfidence.None,
-                    ConfidenceReason = "Прямой запрос к Perplexity (без RAG)"
-                };
-            }
-            else if (personalTarget == "self")
-            {
-                // Personal question about self — use personal retrieval with vector search by question
-                _logger.LogInformation("[ASK] Personal question detected: self ({Name}/{Username})", askerName, askerUsername);
-                searchResponse = await _embeddingService.GetPersonalContextAsync(
-                    chatId,
-                    askerUsername ?? askerName,
-                    askerName,
-                    question,  // Original query first
-                    days: 7,
-                    ct);
-            }
-            else if (personalTarget != null && personalTarget.StartsWith("@"))
-            {
-                // Question about @someone — use personal retrieval with vector search
-                var targetUsername = personalTarget.TrimStart('@');
-                _logger.LogInformation("[ASK] Personal question detected: @{Target}", targetUsername);
-                searchResponse = await _embeddingService.GetPersonalContextAsync(
-                    chatId,
-                    targetUsername,
-                    null, // don't know display name
-                    question,  // Original query first
-                    days: 7,
-                    ct);
-            }
             else
             {
-                // Get participant names for context-aware query variations
-                var participantData = await _messageStore.GetUniqueDisplayNamesAsync(chatId);
-                var participantNames = participantData
-                    .Where(p => !string.IsNullOrWhiteSpace(p.DisplayName))
-                    .Select(p => p.DisplayName)
-                    .Take(50) // Limit to top 50 active participants
-                    .ToList();
+                searchResponse = await searchTask;
+            }
 
-                // RAG Fusion: generate query variations, search each, merge with RRF
-                var fusionResponse = await _ragFusionService.SearchWithFusionAsync(
-                    chatId, question, participantNames, variationCount: 3, resultsPerQuery: 15, ct);
-
-                // Store fusion-specific debug info
+            // Store fusion-specific debug info if available
+            if (fusionTask != null)
+            {
+                var fusionResponse = fusionTask.Result;
                 debugReport.QueryVariations = fusionResponse.QueryVariations;
                 debugReport.RagFusionTimeMs = fusionResponse.TotalTimeMs;
 
-                searchResponse = fusionResponse.ToSearchResponse();
-
-                // Rerank removed - RAG Fusion + RRF already provides good ordering
-                // LLM at Stage 1/2 can select relevant info from context itself
-                // This saves 5-7 seconds and ~1300 tokens per request
                 _logger.LogInformation("[ASK] RAG Fusion returned {Count} results (rerank disabled)",
                     searchResponse.Results.Count);
             }
