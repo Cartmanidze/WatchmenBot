@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Команда `/summary` теперь сразу отвечает "Генерирую выжимку..." и запускает генерацию в фоне
   - Решает проблему nginx timeout 60 сек — summary может занимать 30-120 сек
 
+### Changed
+- **Disabled Rerank in /ask** — отключён LLM-переранжирование результатов:
+  - Экономия 5-7 секунд и ~1300 токенов на запрос
+  - RAG Fusion + RRF достаточно для хорошей сортировки
+  - LLM на Stage 1/2 сам выбирает релевантное из контекста
+- **Nginx timeout increased** — увеличен `proxy_read_timeout` с 60s до 180s
+
 ## [2025-12-29]
 
 - **Hybrid Profile System** — новая система профилей пользователей:

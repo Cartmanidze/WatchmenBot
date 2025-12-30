@@ -189,30 +189,11 @@ public class AskHandler
 
                 searchResponse = fusionResponse.ToSearchResponse();
 
-                // Rerank results using LLM for better relevance (only if we have results)
-                if (searchResponse.Results.Count > 0 && searchResponse.Confidence != SearchConfidence.None)
-                {
-                    var rerankResponse = await _rerankService.RerankAsync(question, searchResponse.Results, ct);
-
-                    // Store rerank debug info
-                    debugReport.RerankTimeMs = rerankResponse.TimeMs;
-                    debugReport.RerankTokensUsed = rerankResponse.TokensUsed;
-                    debugReport.RerankScores = rerankResponse.Scores;
-                    debugReport.RerankOrderChanged = rerankResponse.HasSignificantChange();
-
-                    if (rerankResponse.Error == null)
-                    {
-                        // Don't filter by reranker scores - only reorder
-                        // Reranker may not understand chat-specific patterns (ХАХАХА = laughter)
-                        // Trust RAG Fusion + ILIKE for finding, reranker only for ordering
-                        var rerankedResults = rerankResponse.GetFilteredResults(minScore: 0);
-                        searchResponse.Results = rerankedResults;
-                        debugReport.RerankFilteredOut = 0;
-
-                        _logger.LogInformation("[ASK] Reranked {Count} results (order changed: {Changed})",
-                            rerankedResults.Count, rerankResponse.HasSignificantChange());
-                    }
-                }
+                // Rerank removed - RAG Fusion + RRF already provides good ordering
+                // LLM at Stage 1/2 can select relevant info from context itself
+                // This saves 5-7 seconds and ~1300 tokens per request
+                _logger.LogInformation("[ASK] RAG Fusion returned {Count} results (rerank disabled)",
+                    searchResponse.Results.Count);
             }
 
             // Handle confidence gate and build context
