@@ -171,6 +171,10 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<ProfileWorkerService>();
         services.AddHostedService<ProfileGeneratorService>();
 
+        // Summary Queue (background processing to avoid nginx timeout)
+        services.AddSingleton<SummaryQueueService>();
+        services.AddHostedService<BackgroundSummaryWorker>();
+
         // Background Services
         services.AddHostedService<DailySummaryService>();
         services.AddHostedService<BackgroundEmbeddingService>();

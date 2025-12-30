@@ -6,10 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Removed
-- **`/search` command** — удалена как дублирующая `/ask` (был сырой векторный поиск без RAG)
-
 ### Added
+- **Background Summary Processing** — фоновая генерация выжимок:
+  - `SummaryQueueService` — in-memory очередь запросов на summary (Channel-based)
+  - `BackgroundSummaryWorker` — фоновый воркер для обработки очереди
+  - Команда `/summary` теперь сразу отвечает "Генерирую выжимку..." и запускает генерацию в фоне
+  - Решает проблему nginx timeout 60 сек — summary может занимать 30-120 сек
+
 - **Hybrid Profile System** — новая система профилей пользователей:
   - `ProfileQueueService` — очередь сообщений для фонового анализа
   - `ProfileWorkerService` — воркер для извлечения фактов каждые 15 минут

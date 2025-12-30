@@ -1,6 +1,8 @@
 using System.Net;
+using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Extensions;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
@@ -33,17 +35,23 @@ public class ProcessTelegramUpdateHandler
 {
     private readonly IConfiguration _configuration;
     private readonly IServiceProvider _serviceProvider;
+    private readonly ITelegramBotClient _bot;
+    private readonly SummaryQueueService _summaryQueue;
     private readonly LogCollector _logCollector;
     private readonly ILogger<ProcessTelegramUpdateHandler> _logger;
 
     public ProcessTelegramUpdateHandler(
         IConfiguration configuration,
         IServiceProvider serviceProvider,
+        ITelegramBotClient bot,
+        SummaryQueueService summaryQueue,
         LogCollector logCollector,
         ILogger<ProcessTelegramUpdateHandler> logger)
     {
         _configuration = configuration;
         _serviceProvider = serviceProvider;
+        _bot = bot;
+        _summaryQueue = summaryQueue;
         _logCollector = logCollector;
         _logger = logger;
     }
@@ -119,12 +127,16 @@ public class ProcessTelegramUpdateHandler
                 var hours = GenerateSummaryHandler.ParseHoursFromCommand(message.Text);
                 _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /summary for {Hours}h", chatName, userName, hours);
 
-                var summaryHandler = scope.ServiceProvider.GetRequiredService<GenerateSummaryHandler>();
-                var summaryRequest = new GenerateSummaryRequest { Message = message, Hours = hours };
-                var response = await summaryHandler.HandleAsync(summaryRequest, cancellationToken);
+                // Сразу отвечаем пользователю и запускаем генерацию в фоне
+                // Это позволяет избежать nginx timeout (60 сек)
+                await _bot.SendMessage(
+                    chatId: message.Chat.Id,
+                    text: "Генерирую выжимку, подождите...",
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                    cancellationToken: cancellationToken);
 
-                if (response.IsSuccess)
-                    _logCollector.IncrementSummaries();
+                // Добавляем в очередь для фоновой обработки
+                _summaryQueue.EnqueueFromMessage(message, hours);
 
                 return ProcessTelegramUpdateResponse.Success();
             }
