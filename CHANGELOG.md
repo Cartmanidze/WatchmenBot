@@ -23,10 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Фиксированный score 0.95 ломал ранжирование
   - Порог 3 символа пропускал нужный сленг ("лол", "хах")
   - RAG Fusion вариации уже включают текстовые паттерны
-- **Parallel Memory + Search** — параллельное выполнение в `/ask`:
-  - Memory context и RAG Fusion теперь запускаются одновременно
-  - Экономия ~0.3-0.5 секунды на запрос
+- **Parallel Memory + Search + ParticipantNames** — максимальная параллелизация в `/ask`:
+  - Memory context, participant names и RAG Fusion запускаются одновременно
+  - Экономия ~0.5 секунды на запрос
   - `/smart` больше не загружает memory (не использовался)
+  - Удалён неиспользуемый `RerankService` из DI
 - **Nginx timeout increased** — увеличен `proxy_read_timeout` с 60s до 180s
 
 ## [2025-12-29]
