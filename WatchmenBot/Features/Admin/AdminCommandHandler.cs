@@ -1398,7 +1398,8 @@ public class AdminCommandHandler
             <b>📊 Контекстные эмбеддинги (окна 10 сообщений):</b>
             /admin context — статистика по всем чатам
             /admin context &lt;chat_id&gt; — детали чата
-            /admin context_reindex &lt;chat_id&gt; — пересоздать
+            /admin context_reindex &lt;chat_id&gt; — инфо + подтверждение
+            /admin context_reindex all confirm — пересоздать ВСЕ
 
             <b>Настройки:</b>
             /admin set_summary_time HH:mm — время саммари
