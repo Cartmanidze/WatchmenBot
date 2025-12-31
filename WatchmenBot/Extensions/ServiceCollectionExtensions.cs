@@ -298,6 +298,14 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DeleteWebhookHandler>();
         services.AddScoped<GetWebhookInfoHandler>();
 
+        // Search Services (extracted from AskHandler refactoring)
+        services.AddScoped<SearchStrategyService>();
+        services.AddScoped<ContextBuilderService>();
+        services.AddScoped<AnswerGeneratorService>();
+        services.AddScoped<PersonalQuestionDetector>();
+        services.AddScoped<DebugReportCollector>();
+        services.AddScoped<ConfidenceGateService>();
+
         // Search Handlers (embedding-based)
         services.AddScoped<AskHandler>();
         services.AddScoped<RecallHandler>();

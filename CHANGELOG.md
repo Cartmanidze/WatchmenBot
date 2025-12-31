@@ -103,6 +103,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Кастомная factory для `LlmToggleCommand` (разные bool параметры для llm_on/llm_off)
   - Убраны неиспользуемые зависимости из конструктора `AdminCommandHandler`
 
+- **AskHandler Service Extraction Refactoring** — двухэтапный рефакторинг обработчика `/ask` и `/smart` команд:
+  - **Этап 1**: `AskHandler` сокращён с 893 до 440 строк (**-51%**, -453 строки)
+    - Извлечена бизнес-логика в специализированные сервисы:
+      - **`SearchStrategyService`** (~230 строк) — стратегии поиска (personal hybrid + context-only)
+      - **`ContextBuilderService`** (~120 строк) — построение контекста с token budget (4000 tokens)
+      - **`AnswerGeneratorService`** (~160 строк) — LLM генерация с debug support
+  - **Этап 2**: `AskHandler` сокращён с 440 до 272 строк (**-38%**, -168 строк)
+    - Дальнейшее извлечение вспомогательной логики:
+      - **`AskHandlerHelpers`** (static) — утилиты: ParseQuestion, GetDisplayName, ParseTimestamp, EstimateTokens
+      - **`PersonalQuestionDetector`** — определение персональных вопросов ("я", "@username")
+      - **`DebugReportCollector`** — сбор debug информации для отчётов
+      - **`ConfidenceGateService`** — проверка confidence + early returns для None/Low
+  - **Итого**: `AskHandler` сокращён с **893 до 272 строк** (**сокращение на 70%**, -621 строка!)
+  - `AskHandler` теперь — минималистичный оркестратор (272 строки):
+    - Валидация входных данных
+    - Параллельное выполнение memory loading + search
+    - Делегирование всей логики в специализированные сервисы
+    - Финальная отправка ответа пользователю
+  - Улучшена тестируемость: каждый компонент полностью изолирован
+  - Упрощена поддержка: изменения в любой части логики не затрагивают другие компоненты
+  - Сохранена вся функциональность: параллелизм, debug reporting, personal detection, HTML sanitization
+
 - **Profile System Pipeline Refactoring** — рефакторинг системы профилей с использованием Pipeline/Orchestrator паттерна:
   - `ProfileWorkerService` сокращён с 241 до 71 строк — теперь только главный цикл и делегирование
   - `ProfileGeneratorService` сокращён с 326 до 78 строк — теперь только scheduling и делегирование

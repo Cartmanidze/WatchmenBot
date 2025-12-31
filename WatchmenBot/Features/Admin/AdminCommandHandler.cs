@@ -1,11 +1,7 @@
-using System.IO.Compression;
-using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Admin.Commands;
 using WatchmenBot.Services;
-using WatchmenBot.Services.Llm;
 
 namespace WatchmenBot.Features.Admin;
 
