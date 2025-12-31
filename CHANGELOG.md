@@ -40,6 +40,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Модифицирован `SmartSummaryService` — инъекция `ContextEmbeddingService` и гибридный поиск по темам
 
 ### Changed
+- **Profile System Pipeline Refactoring** — рефакторинг системы профилей с использованием Pipeline/Orchestrator паттерна:
+  - `ProfileWorkerService` сокращён с 241 до 71 строк — теперь только главный цикл и делегирование
+  - `ProfileGeneratorService` сокращён с 326 до 78 строк — теперь только scheduling и делегирование
+  - Новая архитектура с разделением ответственности:
+    - `IProfileHandler` — общий интерфейс для обработчиков профилей
+    - `ProfileOrchestrator` — координация обоих pipeline stages
+    - `FactExtractionHandler` — извлечение фактов из очереди сообщений
+    - `ProfileGenerationHandler` — ночная генерация глубоких профилей
+  - `ProfileMetrics` на базе `System.Diagnostics.Metrics` — thread-safe метрики
+  - `ProfileOptions` — централизованная конфигурация
+  - Улучшенная тестируемость: все компоненты изолированы
+  - Упрощённое добавление новых этапов обработки профилей
+  - Метрики по handler'ам и типам ошибок для диагностики
+  - Адаптивная обработка очереди: продолжает если есть больше работы
+
 - **Embedding Indexing Pipeline Refactoring** — рефакторинг фоновой системы индексации с использованием Pipeline/Orchestrator паттерна:
   - `BackgroundEmbeddingService` сокращён с 215 до 84 строк — теперь только главный цикл и делегирование
   - Новая архитектура с разделением ответственности:

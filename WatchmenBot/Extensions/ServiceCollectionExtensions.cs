@@ -178,6 +178,14 @@ public static class ServiceCollectionExtensions
         // Usage tracking
         services.AddHttpClient<OpenRouterUsageService>();
 
+        // Profile System Infrastructure (refactored pipeline)
+        services.AddSingleton<WatchmenBot.Services.Profile.ProfileMetrics>();
+        services.AddScoped<WatchmenBot.Services.Profile.ProfileOptions>(sp =>
+            WatchmenBot.Services.Profile.ProfileOptions.FromConfiguration(configuration));
+        services.AddScoped<WatchmenBot.Services.Profile.FactExtractionHandler>();
+        services.AddScoped<WatchmenBot.Services.Profile.ProfileGenerationHandler>();
+        services.AddScoped<WatchmenBot.Services.Profile.ProfileOrchestrator>();
+
         // Profile System Services
         services.AddSingleton<ProfileQueueService>();
         services.AddHostedService<ProfileWorkerService>();
