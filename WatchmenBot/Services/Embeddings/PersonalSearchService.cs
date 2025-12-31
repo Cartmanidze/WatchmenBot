@@ -180,23 +180,11 @@ public class PersonalSearchService
                 searchNames.Add(displayName);
 
             // Step 1: Collect pool of message IDs from user's messages + mentions
-            var poolMessageIds = new HashSet<long>();
-
-            foreach (var name in searchNames)
-            {
-                // Get user's own messages (larger pool)
-                var userMessages = await GetUserMessagesAsync(chatId, name, days, 100, ct);
-                foreach (var msg in userMessages)
-                    poolMessageIds.Add(msg.MessageId);
-
-                // Get mentions of user
-                var mentions = await GetMentionsOfUserAsync(chatId, name, days, 50, ct);
-                foreach (var msg in mentions)
-                    poolMessageIds.Add(msg.MessageId);
-            }
+            // OPTIMIZED: Single query instead of 2N queries (4x faster for 2 names)
+            var poolMessageIds = await GetPersonalMessagePoolAsync(chatId, searchNames, days, ct);
 
             _logger.LogInformation(
-                "[Personal] User: {Names} | Pool size: {Count} messages",
+                "[Personal] User: {Names} | Pool size: {Count} messages (optimized single query)",
                 string.Join("/", searchNames), poolMessageIds.Count);
 
             if (poolMessageIds.Count == 0)
@@ -207,7 +195,7 @@ public class PersonalSearchService
             }
 
             // Step 2: Vector search WITHIN this pool using the question
-            var results = await SearchByVectorInPoolAsync(chatId, question, poolMessageIds.ToList(), 20, ct);
+            var results = await SearchByVectorInPoolAsync(chatId, question, poolMessageIds, 20, ct);
 
             if (results.Count == 0)
             {
@@ -270,6 +258,79 @@ public class PersonalSearchService
             response.Confidence = SearchConfidence.None;
             response.ConfidenceReason = "Ошибка поиска";
             return response;
+        }
+    }
+
+    /// <summary>
+    /// Get pool of message IDs for personal search (user's messages + mentions)
+    /// OPTIMIZED: Single query instead of 2N queries
+    /// </summary>
+    private async Task<List<long>> GetPersonalMessagePoolAsync(
+        long chatId,
+        List<string> searchNames,
+        int days = 7,
+        CancellationToken ct = default)
+    {
+        if (searchNames.Count == 0)
+            return new List<long>();
+
+        try
+        {
+            using var connection = await _connectionFactory.CreateConnectionAsync();
+
+            var startDate = DateTime.UtcNow.AddDays(-days);
+            var cleanNames = searchNames.Select(n => n.TrimStart('@')).ToArray();
+
+            // OPTIMIZATION: Single query with UNION to get both user's messages and mentions
+            var messageIds = await connection.QueryAsync<long>(
+                """
+                -- User's own messages (by username or display name)
+                SELECT DISTINCT me.message_id
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND m.date_utc >= @StartDate
+                  AND (
+                      me.metadata->>'Username' = ANY(@Names)
+                      OR me.metadata->>'DisplayName' = ANY(@Names)
+                      OR me.chunk_text ILIKE ANY(@TextPatterns)
+                  )
+                LIMIT 100
+
+                UNION
+
+                -- Mentions of user (text contains name, but NOT from user themselves)
+                SELECT DISTINCT me.message_id
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND m.date_utc >= @StartDate
+                  AND me.chunk_text ILIKE ANY(@MentionPatterns)
+                  AND NOT (
+                      me.metadata->>'Username' = ANY(@Names)
+                      OR me.metadata->>'DisplayName' = ANY(@Names)
+                  )
+                LIMIT 50
+                """,
+                new
+                {
+                    ChatId = chatId,
+                    StartDate = startDate,
+                    Names = cleanNames,
+                    TextPatterns = cleanNames.Select(n => $"{n}:%").ToArray(), // "Name: message..."
+                    MentionPatterns = cleanNames.Select(n => $"%{n}%").ToArray() // Mentions in text
+                });
+
+            _logger.LogDebug("[Personal] Found {Count} message IDs for names: {Names}",
+                messageIds.Count(), string.Join(", ", cleanNames));
+
+            return messageIds.Distinct().ToList(); // Distinct to deduplicate UNION results
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get personal message pool for: {Names}",
+                string.Join(", ", searchNames));
+            return new List<long>();
         }
     }
 

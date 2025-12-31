@@ -357,7 +357,9 @@ public class DatabaseInitializer : IHostedService
             "CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id);",
             "CREATE INDEX IF NOT EXISTS idx_messages_date_utc ON messages (date_utc);",
             "CREATE INDEX IF NOT EXISTS idx_messages_from_user_id ON messages (from_user_id);",
-            "CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages (chat_id, date_utc);"
+            "CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages (chat_id, date_utc DESC);",
+            // Composite index for user-specific queries (PersonalSearchService)
+            "CREATE INDEX IF NOT EXISTS idx_messages_user_date ON messages (chat_id, from_user_id, date_utc DESC);"
         };
 
         foreach (var indexSql in messagesIndexes)
@@ -375,6 +377,12 @@ public class DatabaseInitializer : IHostedService
 
                 // Index for looking up by message
                 "CREATE INDEX IF NOT EXISTS idx_embeddings_chat_message ON message_embeddings (chat_id, message_id);",
+
+                // GIN index for metadata JSONB queries (speeds up PersonalSearchService)
+                "CREATE INDEX IF NOT EXISTS idx_message_embeddings_metadata_gin ON message_embeddings USING GIN (metadata jsonb_path_ops);",
+
+                // Full-text search index for Russian text
+                "CREATE INDEX IF NOT EXISTS idx_message_embeddings_text_search ON message_embeddings USING GIN (to_tsvector('russian', chunk_text));",
 
                 // Vector similarity search index (IVFFlat for approximate nearest neighbors)
                 // lists = sqrt(n) where n is expected number of rows, 100 is good for up to 10K rows

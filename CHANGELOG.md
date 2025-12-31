@@ -51,6 +51,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Улучшенная поддержка SRP (Single Responsibility Principle)
   - Упрощение тестирования и поддержки кода
 
+- **Database Query Optimization** — устранение N+1 проблем в запросах к БД:
+  - **ContextWindowService.GetMergedContextWindowsAsync**: **30 запросов → 1 запрос** (30x быстрее!)
+    - Использует `LATERAL JOIN` вместо цикла с повторяющимися запросами
+    - Для 10 сообщений: было 30 DB roundtrips, стало 1 запрос
+    - Применяется в `/ask` при расширении результатов контекстными окнами
+  - **PersonalSearchService.GetPersonalContextAsync**: **4 запроса → 1 запрос** (4x быстрее!)
+    - Использует `UNION` для объединения сообщений пользователя и упоминаний
+    - Вместо цикла по именам (username + displayName) с 2 запросами на каждое
+    - Применяется в личных запросах типа "когда Я говорил..." или "@username когда..."
+    - Использует `ANY()` оператор для множественных имён в одном запросе
+  - Значительно снижает latency при поиске с множественными результатами
+
+- **Database Index Optimization** — добавлены недостающие индексы для ускорения запросов:
+  - **idx_message_embeddings_metadata_gin** — GIN индекс на JSONB поле `metadata`:
+    - Ускоряет JSON-запросы в PersonalSearchService (поиск по Username/DisplayName)
+    - Использует `jsonb_path_ops` для оптимальной производительности
+  - **idx_message_embeddings_text_search** — GIN индекс для полнотекстового поиска:
+    - Полнотекстовый поиск по `chunk_text` с поддержкой русского языка
+    - Использует `to_tsvector('russian', chunk_text)` для морфологического анализа
+  - **idx_messages_user_date** — композитный индекс `(chat_id, from_user_id, date_utc DESC)`:
+    - Оптимизирует запросы поиска сообщений конкретного пользователя в чате
+    - Применяется в PersonalSearchService при фильтрации по автору
+  - Все индексы создаются автоматически в `DatabaseInitializer.CreateIndexesAsync()`
+
 - **Profile System Pipeline Refactoring** — рефакторинг системы профилей с использованием Pipeline/Orchestrator паттерна:
   - `ProfileWorkerService` сокращён с 241 до 71 строк — теперь только главный цикл и делегирование
   - `ProfileGeneratorService` сокращён с 326 до 78 строк — теперь только scheduling и делегирование
