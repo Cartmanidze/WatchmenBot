@@ -138,8 +138,11 @@ public static class ServiceCollectionExtensions
                 return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, provider, logger);
             });
 
-        // Embedding Service for RAG
-        services.AddScoped<EmbeddingService>();
+        // Embedding Services (refactored architecture)
+        services.AddScoped<WatchmenBot.Services.Embeddings.EmbeddingStorageService>();
+        services.AddScoped<WatchmenBot.Services.Embeddings.PersonalSearchService>();
+        services.AddScoped<WatchmenBot.Services.Embeddings.ContextWindowService>();
+        services.AddScoped<EmbeddingService>(); // Core search service (delegates to specialized services)
 
         // Context Embedding Service (sliding window embeddings for conversation context)
         services.AddScoped<ContextEmbeddingService>();

@@ -40,6 +40,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Модифицирован `SmartSummaryService` — инъекция `ContextEmbeddingService` и гибридный поиск по темам
 
 ### Changed
+- **EmbeddingService Refactoring** — разделение God Object на специализированные сервисы:
+  - `EmbeddingService` сокращён с 1715 до 943 строк — на 45% меньше кода
+  - Теперь делегирует вызовы специализированным сервисам (backward compatible)
+  - Новые специализированные сервисы:
+    - `EmbeddingStorageService` — хранение и управление эмбеддингами в БД
+    - `PersonalSearchService` — персональные запросы пользователей (GetUserMessagesAsync, GetMentionsOfUserAsync, GetPersonalContextAsync)
+    - `ContextWindowService` — работа с контекстными окнами (GetContextWindowAsync, GetMergedContextWindowsAsync)
+  - Публичный API `EmbeddingService` остался без изменений — все методы делегируются
+  - Улучшенная поддержка SRP (Single Responsibility Principle)
+  - Упрощение тестирования и поддержки кода
+
 - **Profile System Pipeline Refactoring** — рефакторинг системы профилей с использованием Pipeline/Orchestrator паттерна:
   - `ProfileWorkerService` сокращён с 241 до 71 строк — теперь только главный цикл и делегирование
   - `ProfileGeneratorService` сокращён с 326 до 78 строк — теперь только scheduling и делегирование
