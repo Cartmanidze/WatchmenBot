@@ -209,11 +209,58 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<WatchmenBot.Features.Admin.Commands.AdminCommandRegistry>(sp =>
         {
             var registry = new WatchmenBot.Features.Admin.Commands.AdminCommandRegistry();
+
+            // Monitoring commands
             registry.Register<WatchmenBot.Features.Admin.Commands.StatusCommand>("status");
             registry.Register<WatchmenBot.Features.Admin.Commands.ReportCommand>("report");
             registry.Register<WatchmenBot.Features.Admin.Commands.ChatsCommand>("chats");
             registry.Register<WatchmenBot.Features.Admin.Commands.IndexingCommand>("indexing");
             registry.Register<WatchmenBot.Features.Admin.Commands.HelpCommand>("help");
+
+            // Debug commands
+            registry.Register<WatchmenBot.Features.Admin.Commands.DebugCommand>("debug");
+
+            // Settings commands
+            registry.Register<WatchmenBot.Features.Admin.Commands.SetSummaryTimeCommand>("set_summary_time");
+            registry.Register<WatchmenBot.Features.Admin.Commands.SetReportTimeCommand>("set_report_time");
+            registry.Register<WatchmenBot.Features.Admin.Commands.SetTimezoneCommand>("set_timezone");
+
+            // LLM commands
+            registry.Register<WatchmenBot.Features.Admin.Commands.LlmListCommand>("llm");
+            registry.Register<WatchmenBot.Features.Admin.Commands.LlmTestCommand>("llm_test");
+            registry.Register<WatchmenBot.Features.Admin.Commands.LlmSetCommand>("llm_set");
+
+            // LLM toggle commands (llm_on/llm_off) - using custom factory for bool parameter
+            registry.Register("llm_on", sp => new WatchmenBot.Features.Admin.Commands.LlmToggleCommand(
+                sp.GetRequiredService<ITelegramBotClient>(),
+                sp.GetRequiredService<WatchmenBot.Services.Llm.LlmRouter>(),
+                true,
+                sp.GetRequiredService<ILogger<WatchmenBot.Features.Admin.Commands.LlmToggleCommand>>()));
+
+            registry.Register("llm_off", sp => new WatchmenBot.Features.Admin.Commands.LlmToggleCommand(
+                sp.GetRequiredService<ITelegramBotClient>(),
+                sp.GetRequiredService<WatchmenBot.Services.Llm.LlmRouter>(),
+                false,
+                sp.GetRequiredService<ILogger<WatchmenBot.Features.Admin.Commands.LlmToggleCommand>>()));
+
+            // Import/Export commands
+            registry.Register<WatchmenBot.Features.Admin.Commands.ImportCommand>("import");
+
+            // Prompt management commands
+            registry.Register<WatchmenBot.Features.Admin.Commands.PromptsCommand>("prompts");
+            registry.Register<WatchmenBot.Features.Admin.Commands.PromptCommand>("prompt");
+            registry.Register<WatchmenBot.Features.Admin.Commands.PromptResetCommand>("prompt_reset");
+            registry.Register<WatchmenBot.Features.Admin.Commands.PromptTagCommand>("prompt_tag");
+
+            // User management commands
+            registry.Register<WatchmenBot.Features.Admin.Commands.NamesCommand>("names");
+            registry.Register<WatchmenBot.Features.Admin.Commands.RenameCommand>("rename");
+
+            // Embedding management commands
+            registry.Register<WatchmenBot.Features.Admin.Commands.ReindexCommand>("reindex");
+            registry.Register<WatchmenBot.Features.Admin.Commands.ContextCommand>("context");
+            registry.Register<WatchmenBot.Features.Admin.Commands.ContextReindexCommand>("context_reindex");
+
             return registry;
         });
 
@@ -223,6 +270,24 @@ public static class ServiceCollectionExtensions
         services.AddScoped<WatchmenBot.Features.Admin.Commands.ChatsCommand>();
         services.AddScoped<WatchmenBot.Features.Admin.Commands.IndexingCommand>();
         services.AddScoped<WatchmenBot.Features.Admin.Commands.HelpCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.DebugCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.SetSummaryTimeCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.SetReportTimeCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.SetTimezoneCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmListCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmTestCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmSetCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmToggleCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.ImportCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptsCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptResetCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptTagCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.NamesCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.RenameCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.ReindexCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.ContextCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.ContextReindexCommand>();
 
         // Feature Handlers
         services.AddScoped<ProcessTelegramUpdateHandler>();

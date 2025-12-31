@@ -76,23 +76,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Все индексы создаются автоматически в `DatabaseInitializer.CreateIndexesAsync()`
 
 - **AdminCommandHandler Command Pattern Refactoring** — рефакторинг админских команд с использованием Command Pattern:
-  - `AdminCommandHandler` сокращён с 1504 до 1328 строк (сокращение на 12%)
+  - `AdminCommandHandler` сокращён с 1504 до 119 строк (**сокращение на 92%**, -1385 строк!)
   - Создана инфраструктура Command Pattern:
     - `IAdminCommand` — интерфейс для команд
     - `AdminCommandBase` — базовый класс с общими зависимостями и утилитами
     - `AdminCommandRegistry` — реестр команд для маршрутизации
     - `AdminCommandContext` — контекст выполнения команды
-  - Извлечены команды в отдельные классы:
-    - `StatusCommand` — показ текущих настроек (`/admin status`)
-    - `ReportCommand` — отправка отчёта по логам (`/admin report`)
-    - `ChatsCommand` — список известных чатов (`/admin chats`)
-    - `IndexingCommand` — статус индексации эмбеддингов (`/admin indexing`)
-    - `HelpCommand` — справка по админ-командам (`/admin help`)
-  - Остальные команды (25 методов) пока остаются inline — будут извлечены позже
-  - `AdminCommandHandler` теперь использует реестр команд для делегирования
-  - Улучшена тестируемость: каждая команда тестируется независимо
+  - **ВСЕ команды** извлечены в отдельные классы (24 команды):
+    - **Monitoring** (5): `StatusCommand`, `ReportCommand`, `ChatsCommand`, `IndexingCommand`, `HelpCommand`
+    - **Debug** (1): `DebugCommand` — режим отладки (`/admin debug on/off`, `/admin debug`)
+    - **Settings** (3): `SetSummaryTimeCommand`, `SetReportTimeCommand`, `SetTimezoneCommand`
+    - **LLM Management** (4): `LlmListCommand` (список), `LlmTestCommand` (тест), `LlmSetCommand` (установка default), `LlmToggleCommand` (вкл/выкл)
+    - **Import** (1): `ImportCommand` — импорт истории чата из Telegram export (с поддержкой file upload)
+    - **Prompt Management** (4): `PromptsCommand` (список), `PromptCommand` (просмотр/обновление), `PromptResetCommand`, `PromptTagCommand`
+    - **User Management** (2): `NamesCommand` (список имён), `RenameCommand` (переименование)
+    - **Embedding Management** (4): `ReindexCommand` (переиндексация message embeddings), `ContextCommand` (статистика context embeddings), `ContextReindexCommand` (переиндексация context embeddings)
+  - `AdminCommandHandler` теперь — чистый роутер (119 строк):
+    - Проверка доступа администратора
+    - Делегирование через `AdminCommandRegistry`
+    - Обработка ошибок
+    - Всё остальное — в отдельных командах
+  - Улучшена тестируемость: каждая команда изолирована и тестируется независимо
   - Упрощено добавление новых админ-команд: просто создать класс и зарегистрировать
-  - DI регистрация в `ServiceCollectionExtensions.cs` с автоматической конфигурацией реестра
+  - DI регистрация в `ServiceCollectionExtensions.cs`:
+    - Стандартная регистрация через `registry.Register<T>(name)`
+    - Кастомная factory для `LlmToggleCommand` (разные bool параметры для llm_on/llm_off)
+  - Убраны неиспользуемые зависимости из конструктора `AdminCommandHandler`
 
 - **Profile System Pipeline Refactoring** — рефакторинг системы профилей с использованием Pipeline/Orchestrator паттерна:
   - `ProfileWorkerService` сокращён с 241 до 71 строк — теперь только главный цикл и делегирование
