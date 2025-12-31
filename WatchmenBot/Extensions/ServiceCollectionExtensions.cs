@@ -144,6 +144,15 @@ public static class ServiceCollectionExtensions
         // Context Embedding Service (sliding window embeddings for conversation context)
         services.AddScoped<ContextEmbeddingService>();
 
+        // Embedding Indexing Infrastructure (refactored pipeline)
+        services.AddSingleton<WatchmenBot.Services.Indexing.IndexingMetrics>();
+        services.AddScoped<WatchmenBot.Services.Indexing.IndexingOptions>(sp =>
+            WatchmenBot.Services.Indexing.IndexingOptions.FromConfiguration(configuration));
+        services.AddScoped<WatchmenBot.Services.Indexing.BatchProcessor>();
+        services.AddScoped<WatchmenBot.Services.Indexing.IEmbeddingHandler, WatchmenBot.Services.Indexing.MessageEmbeddingHandler>();
+        services.AddScoped<WatchmenBot.Services.Indexing.IEmbeddingHandler, WatchmenBot.Services.Indexing.ContextEmbeddingHandler>();
+        services.AddScoped<WatchmenBot.Services.Indexing.EmbeddingOrchestrator>();
+
         // RAG Fusion Service (multi-query search with RRF)
         services.AddScoped<RagFusionService>();
 

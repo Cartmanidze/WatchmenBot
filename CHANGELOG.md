@@ -33,6 +33,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Модифицирован `SmartSummaryService` — инъекция `ContextEmbeddingService` и гибридный поиск по темам
 
 ### Changed
+- **Embedding Indexing Pipeline Refactoring** — рефакторинг фоновой системы индексации с использованием Pipeline/Orchestrator паттерна:
+  - `BackgroundEmbeddingService` сокращён с 215 до 84 строк — теперь только главный цикл и делегирование
+  - Новая архитектура с разделением ответственности:
+    - `IEmbeddingHandler` — общий интерфейс для обработчиков (message/context embeddings)
+    - `EmbeddingOrchestrator` — координация pipeline из нескольких handlers
+    - `BatchProcessor` — управление батчами + rate limiting + error tracking
+    - `MessageEmbeddingHandler` — индексация отдельных сообщений
+    - `ContextEmbeddingHandler` — индексация контекстных окон (sliding windows)
+  - `IndexingMetrics` на базе `System.Diagnostics.Metrics` — thread-safe метрики с Counter/Histogram
+  - `IndexingOptions` — централизованная конфигурация для всех компонентов
+  - Улучшенная тестируемость: все компоненты изолированы и легко мокаются
+  - Упрощённое добавление новых типов эмбеддингов: достаточно реализовать `IEmbeddingHandler`
+  - Автоматическая обработка HTTP 429 (TooManyRequests) с retry delay
+  - Метрики по handler'ам и типам ошибок для диагностики
+
 - **Improved Context Quality** — улучшение качества контекста:
   - Персональные вопросы получают как точные цитаты, так и полный контекст диалогов
   - Обычные вопросы комбинируют широкий контекст (окна) с точными совпадениями (сообщения)
