@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **/admin indexing Command** — новая команда для мониторинга статуса индексации:
+  - Показывает прогресс индексации для каждого типа эмбеддингов (message/context)
+  - Визуальные progress bar для каждого handler'а
+  - Общая статистика: Total, Indexed, Pending items
+  - Интеграция с новой Pipeline/Orchestrator архитектурой
+  - Полезно для проверки состояния фоновой индексации без SSH доступа
+
 - **Full Context Reindex Command** — команда полной реиндексации контекстных эмбеддингов:
   - `/admin context_reindex all` — показать предупреждение о полной реиндексации
   - `/admin context_reindex all confirm` — удалить ВСЕ контекстные эмбеддинги из всех чатов

@@ -5,6 +5,7 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Services;
 using WatchmenBot.Services.Llm;
+using WatchmenBot.Services.Indexing;
 
 namespace WatchmenBot.Features.Admin;
 
@@ -21,6 +22,7 @@ public class AdminCommandHandler
     private readonly TelegramExportParser _exportParser;
     private readonly PromptSettingsStore _promptSettings;
     private readonly LlmRouter _llmRouter;
+    private readonly EmbeddingOrchestrator _embeddingOrchestrator;
     private readonly ILogger<AdminCommandHandler> _logger;
 
     public AdminCommandHandler(
@@ -35,6 +37,7 @@ public class AdminCommandHandler
         TelegramExportParser exportParser,
         PromptSettingsStore promptSettings,
         LlmRouter llmRouter,
+        EmbeddingOrchestrator embeddingOrchestrator,
         ILogger<AdminCommandHandler> logger)
     {
         _bot = bot;
@@ -48,6 +51,7 @@ public class AdminCommandHandler
         _exportParser = exportParser;
         _promptSettings = promptSettings;
         _llmRouter = llmRouter;
+        _embeddingOrchestrator = embeddingOrchestrator;
         _logger = logger;
     }
 
@@ -93,6 +97,7 @@ public class AdminCommandHandler
                 "status" => await HandleStatusAsync(message.Chat.Id, ct),
                 "report" => await HandleReportAsync(message.Chat.Id, ct),
                 "chats" => await HandleChatsAsync(message.Chat.Id, ct),
+                "indexing" => await HandleIndexingStatsAsync(message.Chat.Id, ct),
                 "debug" when parts.Length >= 3 => await HandleDebugAsync(message.Chat.Id, parts[2], ct),
                 "debug" => await HandleDebugStatusAsync(message.Chat.Id, ct),
                 "import" when parts.Length >= 3 => await HandleImportCommandAsync(message.Chat.Id, parts[2], ct),
@@ -1347,6 +1352,86 @@ public class AdminCommandHandler
         return true;
     }
 
+    private async Task<bool> HandleIndexingStatsAsync(long chatId, CancellationToken ct)
+    {
+        try
+        {
+            // Get stats from all handlers
+            var allStats = await _embeddingOrchestrator.GetAllStatsAsync(ct);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("<b>📊 Indexing Pipeline Status</b>\n");
+
+            foreach (var (handlerName, stats) in allStats.OrderBy(x => x.Key))
+            {
+                var icon = handlerName switch
+                {
+                    "message" => "💬",
+                    "context" => "🪟",
+                    _ => "📦"
+                };
+
+                var progress = stats.Total > 0
+                    ? (double)stats.Indexed / stats.Total * 100
+                    : 0;
+
+                var progressBar = GenerateProgressBar(progress, 10);
+
+                sb.AppendLine($"{icon} <b>{handlerName.ToUpperInvariant()} EMBEDDINGS</b>");
+                sb.AppendLine($"   Total: {stats.Total:N0}");
+                sb.AppendLine($"   Indexed: {stats.Indexed:N0}");
+                sb.AppendLine($"   Pending: {stats.Pending:N0}");
+                sb.AppendLine($"   Progress: {progressBar} {progress:F1}%");
+                sb.AppendLine();
+            }
+
+            // Summary
+            var totalMessages = allStats.Values.Sum(s => s.Total);
+            var totalIndexed = allStats.Values.Sum(s => s.Indexed);
+            var totalPending = allStats.Values.Sum(s => s.Pending);
+
+            sb.AppendLine("<b>📈 TOTAL</b>");
+            sb.AppendLine($"   Items: {totalMessages:N0}");
+            sb.AppendLine($"   Indexed: {totalIndexed:N0}");
+            sb.AppendLine($"   Pending: {totalPending:N0}");
+
+            if (totalPending > 0)
+            {
+                sb.AppendLine("\n⏳ Background indexing is running...");
+            }
+            else
+            {
+                sb.AppendLine("\n✅ All embeddings are up to date!");
+            }
+
+            sb.AppendLine("\n💡 Use <code>/admin reindex &lt;chat_id&gt;</code> to rebuild embeddings");
+
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: sb.ToString(),
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Admin] Error getting indexing stats");
+            await _bot.SendMessage(
+                chatId: chatId,
+                text: $"❌ Error: {ex.Message}",
+                cancellationToken: ct);
+            return true;
+        }
+    }
+
+    private static string GenerateProgressBar(double percentage, int length)
+    {
+        var filled = (int)Math.Round(percentage / 100 * length);
+        var empty = length - filled;
+        return new string('█', filled) + new string('░', empty);
+    }
+
     private static string EscapeHtml(string text)
     {
         return text
@@ -1364,6 +1449,7 @@ public class AdminCommandHandler
             /admin status — текущие настройки
             /admin report — отчёт по логам прямо сейчас
             /admin chats — список известных чатов
+            /admin indexing — статус индексации эмбеддингов
 
             <b>🔍 Debug:</b>
             /admin debug — статус debug mode
