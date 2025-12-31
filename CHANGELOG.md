@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2025-12-31]
 
 ### Added
 - **/admin indexing Command** — новая команда для мониторинга статуса индексации:
@@ -74,6 +74,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Оптимизирует запросы поиска сообщений конкретного пользователя в чате
     - Применяется в PersonalSearchService при фильтрации по автору
   - Все индексы создаются автоматически в `DatabaseInitializer.CreateIndexesAsync()`
+
+- **AdminCommandHandler Command Pattern Refactoring** — рефакторинг админских команд с использованием Command Pattern:
+  - `AdminCommandHandler` сокращён с 1504 до 1328 строк (сокращение на 12%)
+  - Создана инфраструктура Command Pattern:
+    - `IAdminCommand` — интерфейс для команд
+    - `AdminCommandBase` — базовый класс с общими зависимостями и утилитами
+    - `AdminCommandRegistry` — реестр команд для маршрутизации
+    - `AdminCommandContext` — контекст выполнения команды
+  - Извлечены команды в отдельные классы:
+    - `StatusCommand` — показ текущих настроек (`/admin status`)
+    - `ReportCommand` — отправка отчёта по логам (`/admin report`)
+    - `ChatsCommand` — список известных чатов (`/admin chats`)
+    - `IndexingCommand` — статус индексации эмбеддингов (`/admin indexing`)
+    - `HelpCommand` — справка по админ-командам (`/admin help`)
+  - Остальные команды (25 методов) пока остаются inline — будут извлечены позже
+  - `AdminCommandHandler` теперь использует реестр команд для делегирования
+  - Улучшена тестируемость: каждая команда тестируется независимо
+  - Упрощено добавление новых админ-команд: просто создать класс и зарегистрировать
+  - DI регистрация в `ServiceCollectionExtensions.cs` с автоматической конфигурацией реестра
 
 - **Profile System Pipeline Refactoring** — рефакторинг системы профилей с использованием Pipeline/Orchestrator паттерна:
   - `ProfileWorkerService` сокращён с 241 до 71 строк — теперь только главный цикл и делегирование

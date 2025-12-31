@@ -3,18 +3,21 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Features.Admin.Commands;
 using WatchmenBot.Services;
 using WatchmenBot.Services.Llm;
-using WatchmenBot.Services.Indexing;
 
 namespace WatchmenBot.Features.Admin;
 
+/// <summary>
+/// Main handler for admin commands using Command Pattern
+/// Delegates to IAdminCommand implementations where extracted
+/// </summary>
 public class AdminCommandHandler
 {
     private readonly ITelegramBotClient _bot;
     private readonly AdminSettingsStore _settings;
     private readonly LogCollector _logCollector;
-    private readonly DailyLogReportService _reportService;
     private readonly ChatImportService _importService;
     private readonly MessageStore _messageStore;
     private readonly EmbeddingService _embeddingService;
@@ -22,14 +25,14 @@ public class AdminCommandHandler
     private readonly TelegramExportParser _exportParser;
     private readonly PromptSettingsStore _promptSettings;
     private readonly LlmRouter _llmRouter;
-    private readonly EmbeddingOrchestrator _embeddingOrchestrator;
     private readonly ILogger<AdminCommandHandler> _logger;
+    private readonly AdminCommandRegistry _commandRegistry;
+    private readonly IServiceProvider _serviceProvider;
 
     public AdminCommandHandler(
         ITelegramBotClient bot,
         AdminSettingsStore settings,
         LogCollector logCollector,
-        DailyLogReportService reportService,
         ChatImportService importService,
         MessageStore messageStore,
         EmbeddingService embeddingService,
@@ -37,13 +40,13 @@ public class AdminCommandHandler
         TelegramExportParser exportParser,
         PromptSettingsStore promptSettings,
         LlmRouter llmRouter,
-        EmbeddingOrchestrator embeddingOrchestrator,
+        AdminCommandRegistry commandRegistry,
+        IServiceProvider serviceProvider,
         ILogger<AdminCommandHandler> logger)
     {
         _bot = bot;
         _settings = settings;
         _logCollector = logCollector;
-        _reportService = reportService;
         _importService = importService;
         _messageStore = messageStore;
         _embeddingService = embeddingService;
@@ -51,7 +54,8 @@ public class AdminCommandHandler
         _exportParser = exportParser;
         _promptSettings = promptSettings;
         _llmRouter = llmRouter;
-        _embeddingOrchestrator = embeddingOrchestrator;
+        _commandRegistry = commandRegistry;
+        _serviceProvider = serviceProvider;
         _logger = logger;
     }
 
@@ -84,7 +88,19 @@ public class AdminCommandHandler
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2)
         {
-            await SendHelpAsync(message.Chat.Id, ct);
+            // Show help via command registry
+            var helpCommand = _commandRegistry.GetCommand("help", _serviceProvider);
+            if (helpCommand != null)
+            {
+                var ctx = new AdminCommandContext
+                {
+                    ChatId = message.Chat.Id,
+                    Message = message,
+                    Args = Array.Empty<string>(),
+                    FullText = text
+                };
+                await helpCommand.ExecuteAsync(ctx, ct);
+            }
             return true;
         }
 
@@ -92,12 +108,23 @@ public class AdminCommandHandler
 
         try
         {
+            // Try to get command from registry first (Command Pattern)
+            var command = _commandRegistry.GetCommand(subCommand, _serviceProvider);
+            if (command != null)
+            {
+                var context = new AdminCommandContext
+                {
+                    ChatId = message.Chat.Id,
+                    Message = message,
+                    Args = parts.Skip(2).ToArray(),
+                    FullText = text
+                };
+                return await command.ExecuteAsync(context, ct);
+            }
+
+            // Fallback to inline handlers (not yet extracted)
             return subCommand switch
             {
-                "status" => await HandleStatusAsync(message.Chat.Id, ct),
-                "report" => await HandleReportAsync(message.Chat.Id, ct),
-                "chats" => await HandleChatsAsync(message.Chat.Id, ct),
-                "indexing" => await HandleIndexingStatsAsync(message.Chat.Id, ct),
                 "debug" when parts.Length >= 3 => await HandleDebugAsync(message.Chat.Id, parts[2], ct),
                 "debug" => await HandleDebugStatusAsync(message.Chat.Id, ct),
                 "import" when parts.Length >= 3 => await HandleImportCommandAsync(message.Chat.Id, parts[2], ct),
@@ -124,8 +151,7 @@ public class AdminCommandHandler
                 "context" => await HandleContextStatsAllAsync(message.Chat.Id, ct),
                 "context_reindex" when parts.Length >= 4 && parts[3] == "confirm" => await HandleContextReindexConfirmAsync(message.Chat.Id, parts[2], ct),
                 "context_reindex" when parts.Length >= 3 => await HandleContextReindexAsync(message.Chat.Id, parts[2], ct),
-                "help" => await SendHelpAsync(message.Chat.Id, ct),
-                _ => await SendHelpAsync(message.Chat.Id, ct)
+                _ => false // Command not found, will show help via registry
             };
         }
         catch (Exception ex)
@@ -139,43 +165,6 @@ public class AdminCommandHandler
                 cancellationToken: ct);
             return true;
         }
-    }
-
-    private async Task<bool> HandleChatsAsync(long chatId, CancellationToken ct)
-    {
-        var chats = await _messageStore.GetKnownChatsAsync();
-
-        if (chats.Count == 0)
-        {
-            await _bot.SendMessage(
-                chatId: chatId,
-                text: "📭 Нет сохранённых чатов",
-                cancellationToken: ct);
-            return true;
-        }
-
-        var sb = new StringBuilder();
-        sb.AppendLine("<b>📋 Известные чаты</b>\n");
-
-        foreach (var chat in chats)
-        {
-            var title = !string.IsNullOrWhiteSpace(chat.Title) ? chat.Title : "(без названия)";
-            sb.AppendLine($"<b>{title}</b>");
-            sb.AppendLine($"   🆔 <code>{chat.ChatId}</code>");
-            sb.AppendLine($"   📨 {chat.MessageCount} сообщений");
-            sb.AppendLine($"   📅 {chat.FirstMessage:dd.MM.yyyy} — {chat.LastMessage:dd.MM.yyyy}");
-            sb.AppendLine();
-        }
-
-        sb.AppendLine("💡 Для импорта используй Chat ID из списка выше.");
-
-        await _bot.SendMessage(
-            chatId: chatId,
-            text: sb.ToString(),
-            parseMode: ParseMode.Html,
-            cancellationToken: ct);
-
-        return true;
     }
 
     private async Task<bool> HandleImportCommandAsync(long chatId, string chatIdStr, CancellationToken ct)
@@ -361,31 +350,6 @@ public class AdminCommandHandler
         return null;
     }
 
-    private async Task<bool> HandleStatusAsync(long chatId, CancellationToken ct)
-    {
-        var settings = await _settings.GetAllSettingsAsync();
-        var tz = await _settings.GetTimezoneOffsetAsync();
-        var debugMode = await _settings.IsDebugModeEnabledAsync();
-
-        var sb = new StringBuilder();
-        sb.AppendLine("<b>⚙️ Текущие настройки</b>");
-        sb.AppendLine();
-        sb.AppendLine($"🕐 <b>Время саммари:</b> {settings["summary_time"]}");
-        sb.AppendLine($"📋 <b>Время отчёта:</b> {settings["report_time"]}");
-        sb.AppendLine($"🌍 <b>Часовой пояс:</b> UTC+{tz:hh\\:mm}");
-        sb.AppendLine($"🔍 <b>Debug mode:</b> {(debugMode ? "✅ ON" : "❌ OFF")}");
-        sb.AppendLine();
-        sb.AppendLine($"👤 <b>Admin ID:</b> {_settings.GetAdminUserId()}");
-
-        await _bot.SendMessage(
-            chatId: chatId,
-            text: sb.ToString(),
-            parseMode: ParseMode.Html,
-            cancellationToken: ct);
-
-        return true;
-    }
-
     private async Task<bool> HandleDebugAsync(long chatId, string mode, CancellationToken ct)
     {
         var enable = mode.ToLowerInvariant() switch
@@ -446,12 +410,6 @@ public class AdminCommandHandler
             parseMode: ParseMode.Html,
             cancellationToken: ct);
 
-        return true;
-    }
-
-    private async Task<bool> HandleReportAsync(long chatId, CancellationToken ct)
-    {
-        await _reportService.SendImmediateReportAsync(chatId, ct);
         return true;
     }
 
@@ -1352,153 +1310,12 @@ public class AdminCommandHandler
         return true;
     }
 
-    private async Task<bool> HandleIndexingStatsAsync(long chatId, CancellationToken ct)
-    {
-        try
-        {
-            // Get stats from all handlers
-            var allStats = await _embeddingOrchestrator.GetAllStatsAsync(ct);
-
-            var sb = new StringBuilder();
-            sb.AppendLine("<b>📊 Indexing Pipeline Status</b>\n");
-
-            foreach (var (handlerName, stats) in allStats.OrderBy(x => x.Key))
-            {
-                var icon = handlerName switch
-                {
-                    "message" => "💬",
-                    "context" => "🪟",
-                    _ => "📦"
-                };
-
-                var progress = stats.Total > 0
-                    ? (double)stats.Indexed / stats.Total * 100
-                    : 0;
-
-                var progressBar = GenerateProgressBar(progress, 10);
-
-                sb.AppendLine($"{icon} <b>{handlerName.ToUpperInvariant()} EMBEDDINGS</b>");
-                sb.AppendLine($"   Total: {stats.Total:N0}");
-                sb.AppendLine($"   Indexed: {stats.Indexed:N0}");
-                sb.AppendLine($"   Pending: {stats.Pending:N0}");
-                sb.AppendLine($"   Progress: {progressBar} {progress:F1}%");
-                sb.AppendLine();
-            }
-
-            // Summary
-            var totalMessages = allStats.Values.Sum(s => s.Total);
-            var totalIndexed = allStats.Values.Sum(s => s.Indexed);
-            var totalPending = allStats.Values.Sum(s => s.Pending);
-
-            sb.AppendLine("<b>📈 TOTAL</b>");
-            sb.AppendLine($"   Items: {totalMessages:N0}");
-            sb.AppendLine($"   Indexed: {totalIndexed:N0}");
-            sb.AppendLine($"   Pending: {totalPending:N0}");
-
-            if (totalPending > 0)
-            {
-                sb.AppendLine("\n⏳ Background indexing is running...");
-            }
-            else
-            {
-                sb.AppendLine("\n✅ All embeddings are up to date!");
-            }
-
-            sb.AppendLine("\n💡 Use <code>/admin reindex &lt;chat_id&gt;</code> to rebuild embeddings");
-
-            await _bot.SendMessage(
-                chatId: chatId,
-                text: sb.ToString(),
-                parseMode: ParseMode.Html,
-                cancellationToken: ct);
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[Admin] Error getting indexing stats");
-            await _bot.SendMessage(
-                chatId: chatId,
-                text: $"❌ Error: {ex.Message}",
-                cancellationToken: ct);
-            return true;
-        }
-    }
-
-    private static string GenerateProgressBar(double percentage, int length)
-    {
-        var filled = (int)Math.Round(percentage / 100 * length);
-        var empty = length - filled;
-        return new string('█', filled) + new string('░', empty);
-    }
-
+    // Helper method still used by inline handlers
     private static string EscapeHtml(string text)
     {
         return text
             .Replace("&", "&amp;")
             .Replace("<", "&lt;")
             .Replace(">", "&gt;");
-    }
-
-    private async Task<bool> SendHelpAsync(long chatId, CancellationToken ct)
-    {
-        var help = """
-            <b>🔧 Админ-команды</b>
-
-            <b>Просмотр:</b>
-            /admin status — текущие настройки
-            /admin report — отчёт по логам прямо сейчас
-            /admin chats — список известных чатов
-            /admin indexing — статус индексации эмбеддингов
-
-            <b>🔍 Debug:</b>
-            /admin debug — статус debug mode
-            /admin debug on — включить (отчёты в личку)
-            /admin debug off — выключить
-
-            <b>Импорт истории:</b>
-            /admin import &lt;chat_id&gt; — инструкция по импорту
-
-            <b>🤖 LLM:</b>
-            /admin llm — список провайдеров
-            /admin llm_set &lt;name&gt; — сменить дефолтный
-            /admin llm_on &lt;name&gt; — включить провайдера
-            /admin llm_off &lt;name&gt; — выключить провайдера
-            /admin llm_test — тест дефолтного
-            /admin llm_test &lt;name&gt; — тест конкретного
-
-            <b>🎭 Промпты:</b>
-            /admin prompts — список всех промптов
-            /admin prompt &lt;cmd&gt; — показать промпт
-            /admin prompt_tag &lt;cmd&gt; &lt;tag&gt; — установить LLM тег
-            /admin prompt_reset &lt;cmd&gt; — сбросить на дефолт
-
-            <b>👥 Имена (для исправления импорта):</b>
-            /admin names &lt;chat_id&gt; — список имён в чате
-            /admin rename &lt;chat_id&gt; "Старое" "Новое" — переименовать
-
-            <b>🔄 Переиндексация эмбеддингов:</b>
-            /admin reindex &lt;chat_id&gt; — инфо + подтверждение
-            /admin reindex all confirm — пересоздать ВСЕ
-
-            <b>📊 Контекстные эмбеддинги (окна 10 сообщений):</b>
-            /admin context — статистика по всем чатам
-            /admin context &lt;chat_id&gt; — детали чата
-            /admin context_reindex &lt;chat_id&gt; — инфо + подтверждение
-            /admin context_reindex all confirm — пересоздать ВСЕ
-
-            <b>Настройки:</b>
-            /admin set_summary_time HH:mm — время саммари
-            /admin set_report_time HH:mm — время отчёта
-            /admin set_timezone +N — часовой пояс
-            """;
-
-        await _bot.SendMessage(
-            chatId: chatId,
-            text: help,
-            parseMode: ParseMode.Html,
-            cancellationToken: ct);
-
-        return true;
     }
 }

@@ -205,6 +205,25 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<DailyLogReportService>();
         services.AddHostedService(sp => sp.GetRequiredService<DailyLogReportService>());
 
+        // Admin Command Pattern Infrastructure
+        services.AddSingleton<WatchmenBot.Features.Admin.Commands.AdminCommandRegistry>(sp =>
+        {
+            var registry = new WatchmenBot.Features.Admin.Commands.AdminCommandRegistry();
+            registry.Register<WatchmenBot.Features.Admin.Commands.StatusCommand>("status");
+            registry.Register<WatchmenBot.Features.Admin.Commands.ReportCommand>("report");
+            registry.Register<WatchmenBot.Features.Admin.Commands.ChatsCommand>("chats");
+            registry.Register<WatchmenBot.Features.Admin.Commands.IndexingCommand>("indexing");
+            registry.Register<WatchmenBot.Features.Admin.Commands.HelpCommand>("help");
+            return registry;
+        });
+
+        // Admin Commands (using Command Pattern)
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.StatusCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.ReportCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.ChatsCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.IndexingCommand>();
+        services.AddScoped<WatchmenBot.Features.Admin.Commands.HelpCommand>();
+
         // Feature Handlers
         services.AddScoped<ProcessTelegramUpdateHandler>();
         services.AddScoped<SaveMessageHandler>();
