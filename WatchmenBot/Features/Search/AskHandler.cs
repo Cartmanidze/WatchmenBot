@@ -3,6 +3,7 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Memory.Services;
 using WatchmenBot.Features.Search.Models;
+using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Webhook.Services;
 
@@ -18,7 +19,7 @@ public class AskHandler(
     DebugService debugService,
     SearchStrategyService searchStrategy,
     AnswerGeneratorService answerGenerator,
-    PersonalQuestionDetector personalDetector,
+    IntentClassifier intentClassifier,
     DebugReportCollector debugCollector,
     ConfidenceGateService confidenceGate,
     ILogger<AskHandler> logger)
@@ -65,12 +66,24 @@ public class AskHandler(
             var askerUsername = message.From?.Username;
             var askerId = message.From?.Id ?? 0;
 
-            // Detect if this is a personal question (about self or @someone)
-            var personalTarget = personalDetector.DetectPersonalTarget(question, askerName, askerUsername);
+            // Classify intent using LLM (replaces simple pattern matching)
+            var classified = await intentClassifier.ClassifyAsync(question, askerName, askerUsername, ct);
+
+            // Collect intent classification debug info
+            debugReport.IntentClassification = new IntentClassificationDebug
+            {
+                Intent = classified.Intent.ToString(),
+                Confidence = classified.Confidence,
+                Entities = classified.Entities.Select(e => $"{e.Type}: {e.Text}").ToList(),
+                MentionedPeople = classified.MentionedPeople,
+                TemporalText = classified.TemporalRef?.Text,
+                TemporalDays = classified.TemporalRef?.RelativeDays,
+                Reasoning = classified.Reasoning
+            };
 
             // === PARALLEL EXECUTION: Memory + Search ===
             var (memoryContext, searchResponse) = await ExecuteSearchAsync(
-                command, chatId, askerId, askerName, askerUsername, question, personalTarget, ct);
+                command, chatId, askerId, askerName, askerUsername, question, classified, ct);
 
             // Handle confidence gate and build context
             var (context, confidenceWarning, contextTracker, shouldContinue) = await confidenceGate.ProcessSearchResultsAsync(
@@ -83,6 +96,9 @@ public class AskHandler(
             }
 
             // Collect debug info for search results WITH context tracking
+            var personalTarget = classified.IsPersonal
+                ? (classified.Intent == QueryIntent.PersonalSelf ? "self" : classified.MentionedPeople.FirstOrDefault())
+                : null;
             debugCollector.CollectSearchDebugInfo(debugReport, searchResponse.Results, contextTracker, personalTarget);
 
             // Collect debug info for context
@@ -160,7 +176,7 @@ public class AskHandler(
 
     private async Task<(string? memoryContext, SearchResponse searchResponse)> ExecuteSearchAsync(
         string command, long chatId, long askerId, string askerName, string? askerUsername,
-        string question, string? personalTarget, CancellationToken ct)
+        string question, ClassifiedQuery classified, CancellationToken ct)
     {
         // Start memory loading task (only for /ask, not /smart)
         Task<string?>? memoryTask = null;
@@ -186,23 +202,13 @@ public class AskHandler(
                 ConfidenceReason = "Прямой запрос к Perplexity (без RAG)"
             });
         }
-        else if (personalTarget == "self")
-        {
-            logger.LogInformation("[ASK] Personal question detected: self ({Name}/{Username})", askerName, askerUsername);
-            searchTask = searchStrategy.SearchPersonalWithHybridAsync(
-                chatId, askerUsername ?? askerName, askerName, question, days: 7, ct);
-        }
-        else if (personalTarget != null && personalTarget.StartsWith("@"))
-        {
-            var targetUsername = personalTarget.TrimStart('@');
-            logger.LogInformation("[ASK] Personal question detected: @{Target}", targetUsername);
-            searchTask = searchStrategy.SearchPersonalWithHybridAsync(
-                chatId, targetUsername, null, question, days: 7, ct);
-        }
         else
         {
-            // Context-only search: use sliding window embeddings (10 messages each)
-            searchTask = searchStrategy.SearchContextOnlyAsync(chatId, question, ct);
+            // Use intent-based search strategy
+            logger.LogInformation("[ASK] Intent: {Intent}, Confidence: {Conf:F2}",
+                classified.Intent, classified.Confidence);
+            searchTask = searchStrategy.SearchWithIntentAsync(
+                chatId, classified, askerUsername ?? askerName, askerName, ct);
         }
 
         // Await both tasks in parallel

@@ -203,8 +203,27 @@ public class DebugService(
             }
         }
 
-        // Personal retrieval indicator
-        if (!string.IsNullOrEmpty(report.PersonalTarget))
+        // Intent classification (LLM-based)
+        if (report.IntentClassification != null)
+        {
+            var ic = report.IntentClassification;
+            var confEmoji = ic.Confidence >= 0.8 ? "🟢" : ic.Confidence >= 0.5 ? "🟡" : "🟠";
+            sb.AppendLine($"🎯 <b>Intent:</b> {ic.Intent} {confEmoji} ({ic.Confidence:F2})");
+
+            if (ic.MentionedPeople.Count > 0)
+                sb.AppendLine($"   👥 People: {string.Join(", ", ic.MentionedPeople)}");
+
+            if (ic.Entities.Count > 0)
+                sb.AppendLine($"   📌 Entities: {string.Join(", ", ic.Entities.Take(5))}");
+
+            if (!string.IsNullOrEmpty(ic.TemporalText))
+                sb.AppendLine($"   🕐 Temporal: {ic.TemporalText} ({ic.TemporalDays} days)");
+
+            if (!string.IsNullOrEmpty(ic.Reasoning))
+                sb.AppendLine($"   💭 <i>{EscapeHtml(TruncateText(ic.Reasoning, 100))}</i>");
+        }
+        // Legacy: Personal retrieval indicator
+        else if (!string.IsNullOrEmpty(report.PersonalTarget))
         {
             var targetLabel = report.PersonalTarget == "self" ? "👤 О себе" : $"👤 О {report.PersonalTarget}";
             sb.AppendLine($"🎯 <b>Тип:</b> {targetLabel} (персональный ретривал)");
@@ -374,6 +393,9 @@ public class DebugReport
     // Personal retrieval info
     public string? PersonalTarget { get; set; } // "self", "@username", or null
 
+    // Intent classification (LLM-based)
+    public IntentClassificationDebug? IntentClassification { get; set; }
+
     // Context sent to LLM
     public string? ContextSent { get; set; }
     public int ContextTokensEstimate { get; set; }
@@ -424,4 +446,18 @@ public class DebugStage
     public string? Response { get; set; }
     public int Tokens { get; set; }
     public long TimeMs { get; set; }
+}
+
+/// <summary>
+/// Debug info for LLM-based intent classification
+/// </summary>
+public class IntentClassificationDebug
+{
+    public string Intent { get; set; } = "";
+    public double Confidence { get; set; }
+    public List<string> Entities { get; set; } = [];
+    public List<string> MentionedPeople { get; set; } = [];
+    public string? TemporalText { get; set; }
+    public int? TemporalDays { get; set; }
+    public string? Reasoning { get; set; }
 }

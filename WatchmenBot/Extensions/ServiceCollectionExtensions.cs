@@ -314,7 +314,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SearchStrategyService>();
         services.AddScoped<ContextBuilderService>();
         services.AddScoped<AnswerGeneratorService>();
-        services.AddScoped<PersonalQuestionDetector>();
+        services.AddScoped<IntentClassifier>(); // LLM-based intent classification (replaces PersonalQuestionDetector)
         services.AddScoped<DebugReportCollector>();
         services.AddScoped<ConfidenceGateService>();
 

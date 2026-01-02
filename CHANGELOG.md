@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Intent Classification for /ask** — LLM-based intent classification replacing simple pattern matching:
+
+  **Intent Types:**
+  - `PersonalSelf` — questions about self ("какой я?", "обо мне")
+  - `PersonalOther` — questions about specific person ("что за тип Глеб?", "@vasia")
+  - `Factual` — general questions ("что такое REST?")
+  - `Event` — event questions ("что произошло?")
+  - `Temporal` — time-bound questions ("о чём говорили вчера?")
+  - `Comparison` — comparison questions ("кто круче, X или Y?")
+  - `MultiEntity` — multi-entity questions ("что общего между X и Y?")
+
+  **Features:**
+  - Entity extraction (people, topics, objects)
+  - Temporal reference detection ("вчера" → -1 day, "на прошлой неделе" → -7 days)
+  - Confidence scoring for classification
+  - Fallback to pattern matching on LLM failure
+  - Intent-based search strategy routing
+
+  **New Search Methods:**
+  - `SearchWithIntentAsync` — routes to appropriate search based on intent
+  - `SearchWithTimeRangeAsync` — time-filtered embedding search
+  - `SearchComparisonAsync` — parallel search for multiple entities
+  - `SearchMultiEntityAsync` — combined search for multiple people
+
+  **New Files:**
+  - `Features/Search/Models/IntentModels.cs` — intent classification data models
+  - `Features/Search/Services/IntentClassifier.cs` — LLM-based intent classifier
+
+  **Debug Report Enhanced:**
+  - Added intent classification info to debug report
+  - Shows intent, confidence, entities, temporal references, reasoning
+
 - **Enhanced Summary Algorithm** — улучшенный алгоритм `/summary` с тремя новыми возможностями:
 
   **Thread Detection + Temporal Clustering:**

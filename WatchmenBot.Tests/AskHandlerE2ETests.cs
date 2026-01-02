@@ -290,7 +290,9 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             NullLogger<AnswerGeneratorService>.Instance);
 
         // AskHandler helper services
-        var personalDetector = new PersonalQuestionDetector();
+        var intentClassifier = new IntentClassifier(
+            llmRouter,
+            NullLogger<IntentClassifier>.Instance);
         var debugCollector = new DebugReportCollector();
 
         var adminSettings = new AdminSettingsStore(
@@ -316,7 +318,7 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             debugService,
             searchStrategy,
             answerGenerator,
-            personalDetector,
+            intentClassifier,
             debugCollector,
             confidenceGate,
             NullLogger<AskHandler>.Instance);

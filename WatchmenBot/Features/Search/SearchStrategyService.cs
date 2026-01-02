@@ -13,6 +13,266 @@ public class SearchStrategyService(
     ILogger<SearchStrategyService> logger)
 {
     /// <summary>
+    /// Route search based on classified intent
+    /// </summary>
+    public async Task<SearchResponse> SearchWithIntentAsync(
+        long chatId,
+        ClassifiedQuery classified,
+        string askerUsername,
+        string askerName,
+        CancellationToken ct)
+    {
+        logger.LogInformation("[SearchStrategy] Intent: {Intent}, Temporal: {Temporal}, People: {People}",
+            classified.Intent, classified.HasTemporal, classified.MentionedPeople.Count);
+
+        return classified.Intent switch
+        {
+            // Personal question about self
+            QueryIntent.PersonalSelf => await SearchPersonalWithHybridAsync(
+                chatId,
+                askerUsername ?? askerName,
+                askerName,
+                classified.OriginalQuestion,
+                GetDaysFromTemporal(classified),
+                ct),
+
+            // Personal question about someone else
+            QueryIntent.PersonalOther when classified.MentionedPeople.Count > 0 => await SearchPersonalWithHybridAsync(
+                chatId,
+                classified.MentionedPeople[0],
+                null,
+                classified.OriginalQuestion,
+                GetDaysFromTemporal(classified),
+                ct),
+
+            // Time-bound question
+            QueryIntent.Temporal when classified.HasTemporal => await SearchWithTimeRangeAsync(
+                chatId,
+                classified.OriginalQuestion,
+                classified.TemporalRef!,
+                ct),
+
+            // Comparison between entities
+            QueryIntent.Comparison when classified.Entities.Count >= 2 => await SearchComparisonAsync(
+                chatId,
+                classified.Entities,
+                classified.OriginalQuestion,
+                ct),
+
+            // Multi-entity question
+            QueryIntent.MultiEntity when classified.MentionedPeople.Count >= 2 => await SearchMultiEntityAsync(
+                chatId,
+                classified.MentionedPeople,
+                classified.OriginalQuestion,
+                ct),
+
+            // Default: context-only search
+            _ => await SearchContextOnlyAsync(chatId, classified.OriginalQuestion, ct)
+        };
+    }
+
+    /// <summary>
+    /// Search with time range filter based on temporal reference
+    /// </summary>
+    public async Task<SearchResponse> SearchWithTimeRangeAsync(
+        long chatId,
+        string query,
+        TemporalReference temporal,
+        CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var now = DateTimeOffset.UtcNow;
+
+        // Calculate time range
+        var (startUtc, endUtc) = CalculateTimeRange(now, temporal);
+
+        logger.LogInformation("[TemporalSearch] Query: '{Query}', Range: {Start:yyyy-MM-dd HH:mm} to {End:yyyy-MM-dd HH:mm}",
+            query.Length > 30 ? query[..30] + "..." : query, startUtc, endUtc);
+
+        // Search in message embeddings within time range
+        var results = await embeddingService.SearchSimilarInRangeAsync(
+            chatId, query, startUtc, endUtc, limit: 15, ct);
+
+        sw.Stop();
+
+        if (results.Count == 0)
+        {
+            return new SearchResponse
+            {
+                Confidence = SearchConfidence.None,
+                ConfidenceReason = $"Ничего не найдено за период '{temporal.Text ?? "указанный"}'",
+                BestScore = 0
+            };
+        }
+
+        var bestSim = results.Max(r => r.Similarity);
+        var confidence = bestSim switch
+        {
+            > 0.5 => SearchConfidence.High,
+            > 0.35 => SearchConfidence.Medium,
+            > 0.25 => SearchConfidence.Low,
+            _ => SearchConfidence.None
+        };
+
+        logger.LogInformation("[TemporalSearch] Found {Count} results in {Ms}ms, best={Best:F3}",
+            results.Count, sw.ElapsedMilliseconds, bestSim);
+
+        return new SearchResponse
+        {
+            Results = results,
+            Confidence = confidence,
+            ConfidenceReason = $"[Temporal: {temporal.Text}] Найдено {results.Count} результатов (sim={bestSim:F3})",
+            BestScore = bestSim
+        };
+    }
+
+    /// <summary>
+    /// Search for comparison between multiple entities
+    /// </summary>
+    public async Task<SearchResponse> SearchComparisonAsync(
+        long chatId,
+        List<ExtractedEntity> entities,
+        string query,
+        CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Search for each entity in parallel
+        var personEntities = entities
+            .Where(e => e.Type == EntityType.Person)
+            .Take(3)
+            .ToList();
+
+        var searchTasks = personEntities.Select(e =>
+            embeddingService.SearchSimilarAsync(chatId, $"{query} {e.Text}", limit: 5, ct));
+
+        var searchResults = await Task.WhenAll(searchTasks);
+        var allResults = searchResults.SelectMany(r => r).ToList();
+
+        // Deduplicate and sort
+        var mergedResults = allResults
+            .GroupBy(r => r.MessageId)
+            .Select(g => g.OrderByDescending(r => r.Similarity).First())
+            .OrderByDescending(r => r.Similarity)
+            .ToList();
+
+        sw.Stop();
+
+        if (mergedResults.Count == 0)
+        {
+            return new SearchResponse
+            {
+                Confidence = SearchConfidence.None,
+                ConfidenceReason = $"Не найдено сообщений про: {string.Join(", ", personEntities.Select(e => e.Text))}",
+                BestScore = 0
+            };
+        }
+
+        var bestSim = mergedResults.Max(r => r.Similarity);
+        var confidence = bestSim switch
+        {
+            > 0.5 => SearchConfidence.High,
+            > 0.35 => SearchConfidence.Medium,
+            > 0.25 => SearchConfidence.Low,
+            _ => SearchConfidence.None
+        };
+
+        logger.LogInformation("[ComparisonSearch] Entities: [{Entities}], Found {Count} results in {Ms}ms",
+            string.Join(", ", personEntities.Select(e => e.Text)), mergedResults.Count, sw.ElapsedMilliseconds);
+
+        return new SearchResponse
+        {
+            Results = mergedResults,
+            Confidence = confidence,
+            ConfidenceReason = $"[Comparison: {string.Join(" vs ", personEntities.Select(e => e.Text))}] " +
+                             $"Найдено {mergedResults.Count} результатов (sim={bestSim:F3})",
+            BestScore = bestSim
+        };
+    }
+
+    /// <summary>
+    /// Search for mentions of multiple people together
+    /// </summary>
+    public async Task<SearchResponse> SearchMultiEntityAsync(
+        long chatId,
+        List<string> people,
+        string query,
+        CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Create combined query with all people
+        var combinedQuery = $"{query} {string.Join(" ", people.Take(3))}";
+
+        var results = await embeddingService.SearchSimilarAsync(chatId, combinedQuery, limit: 15, ct);
+
+        sw.Stop();
+
+        if (results.Count == 0)
+        {
+            return new SearchResponse
+            {
+                Confidence = SearchConfidence.None,
+                ConfidenceReason = $"Не найдено сообщений про: {string.Join(", ", people.Take(3))}",
+                BestScore = 0
+            };
+        }
+
+        var bestSim = results.Max(r => r.Similarity);
+        var confidence = bestSim switch
+        {
+            > 0.5 => SearchConfidence.High,
+            > 0.35 => SearchConfidence.Medium,
+            > 0.25 => SearchConfidence.Low,
+            _ => SearchConfidence.None
+        };
+
+        logger.LogInformation("[MultiEntitySearch] People: [{People}], Found {Count} results in {Ms}ms",
+            string.Join(", ", people.Take(3)), results.Count, sw.ElapsedMilliseconds);
+
+        return new SearchResponse
+        {
+            Results = results,
+            Confidence = confidence,
+            ConfidenceReason = $"[MultiEntity: {string.Join(", ", people.Take(3))}] " +
+                             $"Найдено {results.Count} результатов (sim={bestSim:F3})",
+            BestScore = bestSim
+        };
+    }
+
+    private static int GetDaysFromTemporal(ClassifiedQuery classified)
+    {
+        if (classified.TemporalRef?.RelativeDays.HasValue ?? false)
+            return Math.Abs(classified.TemporalRef.RelativeDays.Value) + 1;
+        return 7; // Default: 7 days
+    }
+
+    private static (DateTimeOffset startUtc, DateTimeOffset endUtc) CalculateTimeRange(
+        DateTimeOffset now, TemporalReference temporal)
+    {
+        // Handle absolute date
+        if (temporal.AbsoluteDate.HasValue)
+        {
+            var date = temporal.AbsoluteDate.Value;
+            return (date.Date, date.Date.AddDays(1));
+        }
+
+        // Handle relative days
+        var days = temporal.RelativeDays ?? -1;
+
+        return days switch
+        {
+            0 => (now.Date, now), // today: from midnight to now
+            -1 => (now.AddDays(-1).Date, now.Date), // yesterday: full day
+            -2 => (now.AddDays(-2).Date, now.AddDays(-1).Date), // day before yesterday
+            <= -7 and > -14 => (now.AddDays(-7).Date, now.Date), // this week to last week
+            <= -14 and > -30 => (now.AddDays(-14).Date, now.AddDays(-7).Date), // last two weeks
+            <= -30 => (now.AddDays(-30).Date, now.AddDays(-14).Date), // last month
+            _ => (now.AddDays(days).Date, now) // generic relative
+        };
+    }
+
+    /// <summary>
     /// Hybrid search for personal questions:
     /// 1. Try finding user's messages via message_embeddings (precise targeting)
     /// 2. Expand with context windows via context_embeddings (full dialog context)
