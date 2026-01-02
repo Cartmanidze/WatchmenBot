@@ -4,18 +4,20 @@ using WatchmenBot.Policies;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Admin.Commands;
 using WatchmenBot.Features.Messages;
+using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
-using WatchmenBot.Services;
-using WatchmenBot.Services.Embeddings;
-using WatchmenBot.Services.Indexing;
-using WatchmenBot.Services.Llm;
-using WatchmenBot.Services.Memory;
-using WatchmenBot.Services.Profile;
+using WatchmenBot.Infrastructure.Settings;
+using WatchmenBot.Features.Admin.Services;
+using WatchmenBot.Features.Webhook.Services;
+using WatchmenBot.Features.Indexing.Services;
+using WatchmenBot.Features.Llm.Services;
+using WatchmenBot.Features.Memory.Services;
+using WatchmenBot.Features.Profile.Services;
 
 namespace WatchmenBot.Extensions;
 
@@ -92,14 +94,6 @@ public static class ServiceCollectionExtensions
             }
 
             return router;
-        });
-
-        // Keep OpenRouterClient for backward compatibility (wraps LlmRouter)
-        services.AddSingleton<OpenRouterClient>(sp =>
-        {
-            var router = sp.GetRequiredService<LlmRouter>();
-            var logger = sp.GetRequiredService<ILogger<OpenRouterClient>>();
-            return new OpenRouterClient(router, logger);
         });
 
         // Embedding Client (OpenAI or HuggingFace)

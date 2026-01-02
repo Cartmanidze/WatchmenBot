@@ -97,7 +97,7 @@ public class DatabaseInitializer(
 
     private async Task CreateEmbeddingsTableAsync(System.Data.IDbConnection connection)
     {
-        var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+        var dimensions = configuration.GetValue("Embeddings:Dimensions", 1536);
 
         try
         {
@@ -289,7 +289,7 @@ public class DatabaseInitializer(
 
     private async Task CreateContextEmbeddingsTableAsync(System.Data.IDbConnection connection)
     {
-        var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+        var dimensions = configuration.GetValue("Embeddings:Dimensions", 1536);
 
         try
         {

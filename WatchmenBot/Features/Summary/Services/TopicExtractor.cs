@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using WatchmenBot.Features.Search.Models;
-using WatchmenBot.Services.Llm;
+using WatchmenBot.Features.Llm.Services;
 
 namespace WatchmenBot.Features.Summary.Services;
 

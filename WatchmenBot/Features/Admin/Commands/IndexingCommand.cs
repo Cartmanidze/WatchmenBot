@@ -1,6 +1,6 @@
 using System.Text;
 using Telegram.Bot;
-using WatchmenBot.Services.Indexing;
+using WatchmenBot.Features.Indexing.Services;
 
 namespace WatchmenBot.Features.Admin.Commands;
 

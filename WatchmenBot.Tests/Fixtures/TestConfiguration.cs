@@ -2,8 +2,8 @@ using System.Net;
 using System.Security.Authentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
-using WatchmenBot.Services;
-using WatchmenBot.Services.Llm;
+using WatchmenBot.Features.Llm.Services;
+using WatchmenBot.Features.Search.Services;
 using Xunit;
 
 namespace WatchmenBot.Tests.Fixtures;
@@ -44,15 +44,6 @@ public class TestConfiguration : IDisposable
 
     public bool HasOpenRouterKey => !string.IsNullOrWhiteSpace(OpenRouterApiKey);
     public bool HasOpenAiKey => !string.IsNullOrWhiteSpace(OpenAiApiKey);
-
-    public OpenRouterClient CreateOpenRouterClient()
-    {
-        if (!HasOpenRouterKey)
-            throw new InvalidOperationException("OpenRouter API key not configured");
-
-        var router = CreateLlmRouter();
-        return new OpenRouterClient(router, NullLogger<OpenRouterClient>.Instance);
-    }
 
     public LlmRouter CreateLlmRouter()
     {

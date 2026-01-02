@@ -1,7 +1,7 @@
 using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
-using WatchmenBot.Services.Llm;
+using WatchmenBot.Features.Llm.Services;
 
 namespace WatchmenBot.Features.Admin.Commands;
 

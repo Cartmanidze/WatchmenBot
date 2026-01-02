@@ -8,37 +8,127 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **Vertical Slices Architecture Refactoring** — реорганизация крупных сервисов в вертикальные слайсы:
+- **Vertical Slices Architecture Refactoring** — полная реорганизация в вертикальные слайсы:
 
   **Search Domain (`Features/Search/`):**
-  - Модели вынесены в `Features/Search/Models/`:
+  - **Модели** вынесены в `Features/Search/Models/`:
     - `SearchResult`, `SearchResponse`, `SearchConfidence` — результаты поиска
     - `EmbeddingStats` — статистика эмбеддингов
     - `ContextMessage`, `ContextWindow`, `WindowMessage` — контекстные окна
     - `MessageWindow`, `ContextSearchResult`, `ContextEmbeddingStats` — модели для context embeddings
-  - Хелперы вынесены в `Features/Search/Services/`:
-    - `SearchConfidenceEvaluator` — оценка confidence (High/Medium/Low/None) с расчётом gap
-    - `TextSearchHelpers` (static) — ExtractSearchTerms, GetRussianStem, ExpandWithStems, ExtractIlikeWords
-    - `NewsDumpDetector` (static) — определение "новостных дампов" (длинные сообщения с URL и эмодзи)
-    - `MetadataParser` (static) — парсинг timestamp/username/displayName из JSON metadata
-  - `EmbeddingService` теперь использует `SearchConfidenceEvaluator` через DI
+  - **Все сервисы поиска** перемещены в `Features/Search/Services/`:
+    - `EmbeddingService` — ядро поиска по эмбеддингам
+    - `ContextEmbeddingService` — контекстные эмбеддинги (sliding windows)
+    - `EmbeddingStorageService` — хранение эмбеддингов в БД
+    - `PersonalSearchService` — персональный поиск (сообщения пользователя)
+    - `ContextWindowService` — построение контекстных окон
+    - `RagFusionService` — RAG Fusion с RRF
+    - `RerankService` — LLM-переранжирование
+    - `SearchConfidenceEvaluator` — оценка confidence
+    - `TextSearchHelpers` (static) — работа с текстом (stemming, terms)
+    - `NewsDumpDetector` (static) — определение "новостных дампов"
+    - `MetadataParser` (static) — парсинг JSON metadata
+    - `EmbeddingClient` — клиент для получения эмбеддингов (HuggingFace/OpenAI)
+  - Удалена папка `Services/Embeddings/` — все сервисы в feature folder
 
   **Summary Domain (`Features/Summary/`):**
-  - Модели вынесены в `Features/Summary/Models/`:
-    - `ChatStats` — статистика чата (сообщения, участники, активность)
-    - `MessageWithTime` — сообщение с временной меткой и similarity
-    - `ExtractedFacts` — структурированные факты из Stage 1 LLM
-  - Сервисы вынесены в `Features/Summary/Services/`:
-    - `TopicExtractor` — извлечение тем из сообщений через LLM (с sampling)
-    - `SummaryContextBuilder` — построение контекста: BuildStats, GetTopActiveUsers, BuildTopicContext
-    - `SummaryStageExecutor` — двухэтапная LLM генерация: факты (T=0.1) → юмор (T=0.6)
-  - `SmartSummaryService` сокращён: теперь оркестрирует TopicExtractor, SummaryContextBuilder, SummaryStageExecutor
+  - **Модели** вынесены в `Features/Summary/Models/`:
+    - `ChatStats` — статистика чата
+    - `MessageWithTime` — сообщение с временной меткой
+    - `ExtractedFacts` — структурированные факты из LLM
+  - **Все сервисы саммари** перемещены в `Features/Summary/Services/`:
+    - `SmartSummaryService` — оркестрация генерации саммари
+    - `DailySummaryService` — ежедневные автоматические саммари
+    - `BackgroundSummaryWorker` — фоновая обработка запросов
+    - `SummaryQueueService` — очередь запросов на саммари
+    - `TopicExtractor` — извлечение тем через LLM
+    - `SummaryContextBuilder` — построение контекста
+    - `SummaryStageExecutor` — двухэтапная LLM генерация
+
+  **Profile Domain (`Features/Profile/`):**
+  - **Все сервисы профилей** перемещены в `Features/Profile/Services/`:
+    - `ProfileOrchestrator` — оркестрация пайплайна профилирования
+    - `ProfileGeneratorService` — ночная генерация профилей
+    - `ProfileWorkerService` — фоновый воркер извлечения фактов
+    - `ProfileQueueService` — очередь сообщений на анализ
+    - `FactExtractionHandler` — извлечение фактов через LLM
+    - `ProfileGenerationHandler` — генерация профилей через LLM
+    - `ProfileOptions` — конфигурация пайплайна
+    - `ProfileMetrics` — метрики обработки
+    - `IProfileHandler` — интерфейс обработчиков
+  - Удалена папка `Services/Profile/`
+
+  **Memory Domain (`Features/Memory/`):**
+  - **Модели** вынесены в `Features/Memory/Models/`:
+    - `UserProfile`, `EnhancedProfile` — профили пользователей
+    - `ConversationMemory`, `MemorySummary` — память диалогов
+    - `UserFact`, `ProfileExtraction` — факты и извлечения
+    - Internal Dapper records
+  - **Все сервисы памяти** перемещены в `Features/Memory/Services/`:
+    - `LlmMemoryService` — фасад для работы с памятью
+    - `ProfileManagementService` — управление профилями в БД
+    - `ConversationMemoryService` — хранение истории диалогов
+    - `LlmExtractionService` — извлечение данных через LLM
+    - `MemoryContextBuilder` — построение контекста для промптов
+    - `MemoryHelpers` — статические хелперы
+  - Удалена папка `Services/Memory/`
+
+  **Indexing Domain (`Features/Indexing/`):**
+  - **Все сервисы индексации** перемещены в `Features/Indexing/Services/`:
+    - `BackgroundEmbeddingService` — фоновый сервис индексации
+    - `EmbeddingOrchestrator` — оркестрация пайплайна
+    - `BatchProcessor` — обработка батчей с rate limiting
+    - `MessageEmbeddingHandler` — индексация сообщений
+    - `ContextEmbeddingHandler` — индексация контекстных окон
+    - `IEmbeddingHandler` — интерфейс обработчиков
+    - `IndexingOptions` — конфигурация
+    - `IndexingMetrics` — метрики обработки
+  - Удалена папка `Services/Indexing/`
+
+  **Messages Domain (`Features/Messages/`):**
+  - **Сервисы импорта** перемещены в `Features/Messages/Services/`:
+    - `ChatImportService` — импорт истории чата из экспорта Telegram Desktop
+    - `TelegramExportParser` — парсинг HTML экспорта Telegram
+
+  **LLM Domain (`Features/Llm/`):**
+  - **Все LLM сервисы** перемещены в `Features/Llm/Services/`:
+    - `ILlmProvider` — интерфейс LLM провайдера + `LlmRequest`, `LlmResponse` DTOs
+    - `LlmRouter` — роутинг запросов между провайдерами с fallback
+    - `LlmProviderFactory` — фабрика создания провайдеров + `LlmProviderOptions`
+    - `OpenAiCompatibleProvider` — OpenAI-совместимый провайдер + `OpenAiProviderConfig`
+    - `OpenRouterUsageService` — отслеживание использования OpenRouter API
+  - Удалена папка `Services/Llm/`
+
+  **Webhook Domain (`Features/Webhook/`):**
+  - **Telegram-сервисы** перемещены в `Features/Webhook/Services/`:
+    - `TelegramPollingService` — polling-режим для локальной разработки
+    - `TelegramHtmlSanitizer` — санитизация HTML для Telegram
+
+  **Admin Domain (`Features/Admin/`):**
+  - **Сервисы логирования и отладки** перемещены в `Features/Admin/Services/`:
+    - `LogCollector` — сбор логов приложения
+    - `DailyLogReportService` — ежедневные отчёты логов
+    - `DebugService` — отладочная информация + `DebugReport`, `DebugSearchResult`, `DebugStage`
+
+  **Infrastructure Layer (`Infrastructure/`):**
+  - **Stores** перемещены в `Infrastructure/Settings/`:
+    - `AdminSettingsStore` — настройки администратора
+    - `PromptSettingsStore` — настройки промптов
+
+### Removed
+
+- **`OpenRouterClient`** — удалён legacy wrapper над `LlmRouter`:
+  - Все компоненты теперь используют `LlmRouter` напрямую
+  - Удалены тесты `OpenRouterClientIntegrationTests`
+  - Удалена DI-регистрация из `ServiceCollectionExtensions.cs`
+- **Папка `Services/`** — полностью удалена, все сервисы распределены по feature folders
 
 ### Technical
 
-- Улучшена модульность: каждый домен имеет свои Models и Services
-- Улучшена тестируемость: сервисы изолированы и легко мокаются
-- DI регистрация всех новых сервисов в `ServiceCollectionExtensions.cs`
+- **Полные vertical slices**: каждый домен полностью самодостаточен
+- **Папка `Services/` полностью удалена** — все 52 файла распределены по feature folders
+- Улучшена модульность и тестируемость
+- DI регистрация обновлена в `ServiceCollectionExtensions.cs`
 - Сохранена обратная совместимость: публичные API не изменены
 
 ## [2025-12-31]

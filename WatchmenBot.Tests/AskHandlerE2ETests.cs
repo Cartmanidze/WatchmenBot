@@ -5,9 +5,12 @@ using Telegram.Bot;
 using Telegram.Bot.Requests;
 using Telegram.Bot.Types;
 using WatchmenBot.Features.Search;
-using WatchmenBot.Services;
-using WatchmenBot.Services.Llm;
-using WatchmenBot.Services.Memory;
+using WatchmenBot.Features.Search.Services;
+using WatchmenBot.Features.Llm.Services;
+using WatchmenBot.Features.Messages.Services;
+using WatchmenBot.Features.Admin.Services;
+using WatchmenBot.Infrastructure.Settings;
+using WatchmenBot.Features.Memory.Services;
 using WatchmenBot.Tests.Fixtures;
 using Xunit;
 
@@ -238,21 +241,21 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             NullLogger<LlmMemoryService>.Instance);
 
         // Embedding services
-        var embeddingStorage = new WatchmenBot.Services.Embeddings.EmbeddingStorageService(
+        var embeddingStorage = new EmbeddingStorageService(
             embeddingClient,
             connectionFactory,
-            NullLogger<WatchmenBot.Services.Embeddings.EmbeddingStorageService>.Instance);
+            NullLogger<EmbeddingStorageService>.Instance);
 
-        var personalSearch = new WatchmenBot.Services.Embeddings.PersonalSearchService(
+        var personalSearch = new PersonalSearchService(
             connectionFactory,
             embeddingClient,
-            NullLogger<WatchmenBot.Services.Embeddings.PersonalSearchService>.Instance);
+            NullLogger<PersonalSearchService>.Instance);
 
-        var contextWindowService = new WatchmenBot.Services.Embeddings.ContextWindowService(
+        var contextWindowService = new ContextWindowService(
             connectionFactory,
-            NullLogger<WatchmenBot.Services.Embeddings.ContextWindowService>.Instance);
+            NullLogger<ContextWindowService>.Instance);
 
-        var confidenceEvaluator = new WatchmenBot.Features.Search.Services.SearchConfidenceEvaluator();
+        var confidenceEvaluator = new SearchConfidenceEvaluator();
 
         var embeddingService = new EmbeddingService(
             embeddingClient,

@@ -1,6 +1,6 @@
 using System.Text;
 using WatchmenBot.Features.Search.Models;
-using WatchmenBot.Services;
+using WatchmenBot.Features.Search.Services;
 
 namespace WatchmenBot.Features.Search;
 
