@@ -170,4 +170,137 @@ public class SummaryContextBuilder(ILogger<SummaryContextBuilder> logger)
 
         return result;
     }
+
+    /// <summary>
+    /// Build enhanced context with timeline, topics, and participant activity
+    /// </summary>
+    public (string context, int messagesIncluded, int tokensEstimate) BuildEnhancedContext(
+        List<TimelineEntry> timeline,
+        Dictionary<string, List<MessageWithTime>> topicMessages,
+        ChatStats stats,
+        List<ParticipantActivity> participants)
+    {
+        var contextBuilder = new StringBuilder();
+
+        // Stats section
+        contextBuilder.AppendLine("=== СТАТИСТИКА ===");
+        contextBuilder.AppendLine($"Сообщений: {stats.TotalMessages}");
+        contextBuilder.AppendLine($"Участников: {stats.UniqueUsers}");
+        if (stats.MessagesWithLinks > 0)
+            contextBuilder.AppendLine($"Со ссылками: {stats.MessagesWithLinks}");
+        if (stats.MessagesWithMedia > 0)
+            contextBuilder.AppendLine($"С медиа: {stats.MessagesWithMedia}");
+        contextBuilder.AppendLine();
+
+        // Timeline section
+        if (timeline.Count > 0)
+        {
+            contextBuilder.AppendLine("=== ХРОНОЛОГИЯ ===");
+            foreach (var entry in timeline.Take(10))
+            {
+                var prefix = entry.IsThread ? "[Тред] " : "";
+                contextBuilder.AppendLine($"• {entry.TimeRange} — {prefix}{entry.Title} ({entry.MessageCount} сообщений)");
+                if (entry.Participants.Count > 0)
+                    contextBuilder.AppendLine($"  Участники: {string.Join(", ", entry.Participants)}");
+            }
+            contextBuilder.AppendLine();
+        }
+
+        // Top participants section
+        if (participants.Count > 0)
+        {
+            contextBuilder.AppendLine("=== АКТИВНЫЕ УЧАСТНИКИ ===");
+            foreach (var p in participants.Take(5))
+            {
+                contextBuilder.AppendLine($"• {p.Name}: {p.MessageCount} сообщений");
+                if (p.ActivePeriods.Count > 0)
+                    contextBuilder.AppendLine($"  Активен: {string.Join(", ", p.ActivePeriods)}");
+            }
+            contextBuilder.AppendLine();
+        }
+
+        // Topics with messages
+        contextBuilder.AppendLine("=== ОБСУЖДЕНИЯ ===");
+        var usedChars = contextBuilder.Length;
+        var totalMessagesIncluded = 0;
+
+        foreach (var (topic, messages) in topicMessages)
+        {
+            if (messages.Count == 0) continue;
+            if (totalMessagesIncluded >= MaxTotalTopicMessages) break;
+
+            var topicHeader = $"\n### {topic}\n";
+            if (usedChars + topicHeader.Length > ContextCharBudget) break;
+
+            contextBuilder.Append(topicHeader);
+            usedChars += topicHeader.Length;
+
+            foreach (var msg in messages.Take(MaxMessagesPerTopic))
+            {
+                if (totalMessagesIncluded >= MaxTotalTopicMessages) break;
+
+                var timeStr = msg.Time != DateTimeOffset.MinValue
+                    ? $"[{msg.Time.ToLocalTime():HH:mm}] "
+                    : "";
+                var line = $"{timeStr}{msg.Text}\n";
+
+                if (usedChars + line.Length > ContextCharBudget) break;
+
+                contextBuilder.Append(line);
+                usedChars += line.Length;
+                totalMessagesIncluded++;
+            }
+        }
+
+        logger.LogInformation(
+            "[SummaryContext] Enhanced: {Included} messages, {Chars}/{Budget} chars, timeline entries: {Timeline}",
+            totalMessagesIncluded, usedChars, ContextCharBudget, timeline.Count);
+
+        return (contextBuilder.ToString(), totalMessagesIncluded, usedChars / CharsPerToken);
+    }
+
+    /// <summary>
+    /// Build participant activity from messages
+    /// </summary>
+    public List<ParticipantActivity> BuildParticipantActivity(
+        List<MessageRecord> messages,
+        List<TimeSegment> segments,
+        int topCount = 5)
+    {
+        var userMessages = messages
+            .GroupBy(m => GetDisplayName(m))
+            .OrderByDescending(g => g.Count())
+            .Take(topCount)
+            .ToList();
+
+        var result = new List<ParticipantActivity>();
+
+        foreach (var group in userMessages)
+        {
+            var userMsgs = group.ToList();
+            var activePeriods = segments
+                .Where(s => s.Messages.Any(m => GetDisplayName(m) == group.Key))
+                .Select(s => s.Period)
+                .Distinct()
+                .ToList();
+
+            result.Add(new ParticipantActivity
+            {
+                Name = group.Key,
+                MessageCount = userMsgs.Count,
+                ActivePeriods = activePeriods
+            });
+        }
+
+        return result;
+    }
+
+    private static string GetDisplayName(MessageRecord m)
+    {
+        return !string.IsNullOrWhiteSpace(m.DisplayName)
+            ? m.DisplayName
+            : !string.IsNullOrWhiteSpace(m.Username)
+                ? m.Username
+                : m.FromUserId.ToString();
+    }
 }

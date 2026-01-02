@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-01-02]
 
+### Added
+
+- **Enhanced Summary Algorithm** — улучшенный алгоритм `/summary` с тремя новыми возможностями:
+
+  **Thread Detection + Temporal Clustering:**
+  - `ThreadDetector` — динамическое разбиение по активности (30-минутные паузы)
+  - Детекция reply chains через `ReplyToMessageId`
+  - Построение хронологии обсуждений (когда что обсуждали)
+  - Определение "горячих моментов" (bursts сообщений)
+
+  **Event/Decision Detection:**
+  - `EventDetector` — LLM-извлечение ключевых событий и решений
+  - Определение важности событий (critical/notable/minor)
+  - Выделение нерешённых вопросов
+
+  **Quote Mining:**
+  - `QuoteMiner` — LLM-поиск запоминающихся цитат
+  - Категоризация цитат (funny/wise/savage/wholesome)
+  - Обнаружение горячих моментов дискуссий
+
+  **Enhanced Summary Output:**
+  - Новый формат вывода с секциями: Хронология, Ключевое, Открытые вопросы, Цитаты дня, Горячие моменты, Герои дня
+  - Параллельное выполнение EventDetector + QuoteMiner для производительности
+  - Автоматический fallback на стандартный алгоритм для малых чатов (<50 сообщений)
+
+  **New Files:**
+  - `Features/Summary/Models/EnhancedSummaryModels.cs` — модели для enhanced summary
+  - `Features/Summary/Services/ThreadDetector.cs` — детекция активности и тредов
+  - `Features/Summary/Services/EventDetector.cs` — LLM-извлечение событий
+  - `Features/Summary/Services/QuoteMiner.cs` — LLM-поиск цитат
+
 ### Changed
 
 - **Vertical Slices Architecture Refactoring** — полная реорганизация в вертикальные слайсы:

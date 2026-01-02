@@ -175,6 +175,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<TopicExtractor>(); // Extracted from SmartSummaryService
         services.AddScoped<SummaryContextBuilder>(); // Extracted from SmartSummaryService
         services.AddScoped<SummaryStageExecutor>(); // Extracted from SmartSummaryService
+        services.AddScoped<ThreadDetector>(); // Enhanced: activity segmentation & reply chains
+        services.AddScoped<EventDetector>(); // Enhanced: LLM event/decision extraction
+        services.AddScoped<QuoteMiner>(); // Enhanced: LLM quote mining
         services.AddScoped<SmartSummaryService>(); // Orchestrator (delegates to specialized services)
 
         // Chat Import Services

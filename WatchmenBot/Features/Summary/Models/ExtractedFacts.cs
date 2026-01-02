@@ -32,8 +32,4 @@ public class QuoteFact
     public string? Context { get; set; }
 }
 
-public class HeroFact
-{
-    public string Name { get; set; } = string.Empty;
-    public string Why { get; set; } = string.Empty;
-}
+// Note: HeroFact is defined in EnhancedSummaryModels.cs with additional Achievement property

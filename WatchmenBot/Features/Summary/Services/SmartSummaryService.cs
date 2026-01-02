@@ -10,6 +10,7 @@ namespace WatchmenBot.Features.Summary.Services;
 /// <summary>
 /// Orchestrates smart summary generation using topic extraction and two-stage LLM generation.
 /// Delegates context building, topic extraction, and stage execution to specialized services.
+/// Enhanced with thread detection, event extraction, and quote mining.
 /// </summary>
 public class SmartSummaryService(
     EmbeddingService embeddingService,
@@ -17,10 +18,18 @@ public class SmartSummaryService(
     TopicExtractor topicExtractor,
     SummaryContextBuilder contextBuilder,
     SummaryStageExecutor stageExecutor,
+    ThreadDetector threadDetector,
+    EventDetector eventDetector,
+    QuoteMiner quoteMiner,
     DebugService debugService,
     ILogger<SmartSummaryService> logger)
 {
     private const int MaxMessagesPerTopic = 12;
+
+    /// <summary>
+    /// Minimum messages to use enhanced summary (with thread detection, events, quotes)
+    /// </summary>
+    private const int EnhancedSummaryThreshold = 50;
 
     /// <summary>
     /// Generate a smart summary using embeddings for topic extraction and relevance
@@ -70,7 +79,14 @@ public class SmartSummaryService(
 
         string summaryContent;
 
-        if (diverseMessages.Count >= 10)
+        // Choose generation strategy based on message count and embedding availability
+        if (humanMessages.Count >= EnhancedSummaryThreshold && diverseMessages.Count >= 10)
+        {
+            logger.LogInformation("[SmartSummary] Using ENHANCED approach with {Count} messages, {Diverse} diverse",
+                humanMessages.Count, diverseMessages.Count);
+            summaryContent = await GenerateEnhancedSummaryAsync(chatId, humanMessages, diverseMessages, startUtc, endUtc, debugReport, ct);
+        }
+        else if (diverseMessages.Count >= 10)
         {
             logger.LogInformation("[SmartSummary] Using embedding-based approach with {Count} diverse messages",
                 diverseMessages.Count);
@@ -131,6 +147,124 @@ public class SmartSummaryService(
         var result = await stageExecutor.ExecuteTwoStageAsync(context, stats, debugReport, ct);
 
         return result.FinalContent;
+    }
+
+    /// <summary>
+    /// Generate enhanced summary with thread detection, event extraction, and quote mining
+    /// </summary>
+    private async Task<string> GenerateEnhancedSummaryAsync(
+        long chatId,
+        List<MessageRecord> allMessages,
+        List<SearchResult> diverseMessages,
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        DebugReport debugReport,
+        CancellationToken ct)
+    {
+        debugReport.IsMultiStage = true;
+        debugReport.StageCount = 3; // Topic extraction + Events/Quotes + Final
+
+        // Step 1: Thread detection (no LLM, fast)
+        var timezoneOffset = TimeSpan.FromHours(3); // MSK
+        var segments = threadDetector.SegmentByActivity(allMessages, timezoneOffset);
+        var threads = threadDetector.DetectReplyChains(allMessages);
+        var timeline = threadDetector.BuildTimeline(segments, threads);
+        var hotMoments = threadDetector.DetectHotMoments(allMessages);
+
+        logger.LogDebug("[SmartSummary] Thread detection: {Segments} segments, {Threads} threads, {Hot} hot moments",
+            segments.Count, threads.Count, hotMoments.Count);
+
+        // Step 2: Extract topics (for gathering relevant messages)
+        var topicsTask = topicExtractor.ExtractTopicsAsync(diverseMessages, ct: ct);
+
+        // Step 3: Build context for event/quote extraction (in parallel with topics)
+        var stats = contextBuilder.BuildStats(allMessages);
+        var participants = contextBuilder.BuildParticipantActivity(allMessages, segments);
+
+        // Await topics
+        var topics = await topicsTask;
+
+        if (topics.Count == 0)
+        {
+            logger.LogWarning("[SmartSummary] No topics extracted in enhanced mode, using fallback");
+            return await GenerateTraditionalSummaryAsync(allMessages, debugReport, ct);
+        }
+
+        // Step 4: Gather topic messages
+        var topicMessages = await GatherTopicMessagesAsync(chatId, topics, startUtc, endUtc, ct);
+
+        // Step 5: Build context for LLM extraction
+        var (context, messagesIncluded, tokensEstimate) = contextBuilder.BuildEnhancedContext(
+            timeline, topicMessages, stats, participants);
+
+        debugReport.ContextSent = context;
+        debugReport.ContextMessagesCount = messagesIncluded;
+        debugReport.ContextTokensEstimate = tokensEstimate;
+
+        // Step 6: Run EventDetector and QuoteMiner in PARALLEL
+        var eventsTask = eventDetector.ExtractEventsAsync(context, ct);
+        var quotesTask = quoteMiner.MineQuotesAsync(context, ct);
+
+        await Task.WhenAll(eventsTask, quotesTask);
+
+        var extractedEvents = await eventsTask;
+        var minedQuotes = await quotesTask;
+
+        logger.LogDebug("[SmartSummary] Extracted: {Events} events, {Decisions} decisions, {Quotes} quotes",
+            extractedEvents.Events.Count, extractedEvents.Decisions.Count, minedQuotes.BestQuotes.Count);
+
+        // Step 7: Build enhanced facts from all sources
+        var enhancedFacts = BuildEnhancedFacts(
+            timeline, segments, extractedEvents, minedQuotes, hotMoments);
+
+        // Step 8: Execute enhanced two-stage generation
+        var result = await stageExecutor.ExecuteEnhancedTwoStageAsync(context, stats, enhancedFacts, debugReport, ct);
+
+        return result.FinalContent;
+    }
+
+    /// <summary>
+    /// Build enhanced facts from thread detection, events, and quotes
+    /// </summary>
+    private static EnhancedExtractedFacts BuildEnhancedFacts(
+        List<TimelineEntry> timeline,
+        List<TimeSegment> segments,
+        ExtractedEvents events,
+        MinedQuotes quotes,
+        List<HotMoment> hotMoments)
+    {
+        var facts = new EnhancedExtractedFacts();
+
+        // Timeline from thread detector
+        foreach (var entry in timeline.Take(5))
+        {
+            var segment = segments.FirstOrDefault(s => s.Period == entry.TimeRange);
+            facts.Timeline.Add(new TimelineFact
+            {
+                Period = entry.TimeRange,
+                Label = entry.Title,
+                Topics = segment?.DetectedTopics ?? [],
+                MessageCount = entry.MessageCount
+            });
+        }
+
+        // Events from EventDetector
+        facts.Events.AddRange(events.Events.Take(5));
+        facts.Decisions.AddRange(events.Decisions.Take(5));
+        facts.OpenQuestions.AddRange(events.OpenQuestions.Take(3));
+
+        // Quotes from QuoteMiner
+        facts.Quotes.AddRange(quotes.BestQuotes.Take(3));
+
+        // Hot moments: merge from thread detector (message bursts) and quote miner (LLM-detected)
+        var allHotMoments = hotMoments.Concat(quotes.HotMoments)
+            .GroupBy(h => h.Time ?? h.Description)
+            .Select(g => g.First())
+            .Take(3)
+            .ToList();
+        facts.HotMoments.AddRange(allHotMoments);
+
+        return facts;
     }
 
     private async Task<Dictionary<string, List<MessageWithTime>>> GatherTopicMessagesAsync(
