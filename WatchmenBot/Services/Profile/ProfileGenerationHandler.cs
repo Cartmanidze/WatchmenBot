@@ -1,3 +1,4 @@
+using System.Data;
 using System.Diagnostics;
 using System.Text.Json;
 using Dapper;
@@ -10,32 +11,20 @@ namespace WatchmenBot.Services.Profile;
 /// Handler for generating deep user profiles.
 /// Runs periodically (nightly) to generate comprehensive profiles from accumulated facts.
 /// </summary>
-public class ProfileGenerationHandler : IProfileHandler
+public class ProfileGenerationHandler(
+    IDbConnectionFactory connectionFactory,
+    LlmRouter llmRouter,
+    ProfileOptions options,
+    ILogger<ProfileGenerationHandler> logger)
+    : IProfileHandler
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly LlmRouter _llmRouter;
-    private readonly ProfileOptions _options;
-    private readonly ILogger<ProfileGenerationHandler> _logger;
-
     public string Name => "profiles";
 
     public bool IsEnabled => true; // Always enabled for now
 
-    public ProfileGenerationHandler(
-        IDbConnectionFactory connectionFactory,
-        LlmRouter llmRouter,
-        ProfileOptions options,
-        ILogger<ProfileGenerationHandler> logger)
-    {
-        _connectionFactory = connectionFactory;
-        _llmRouter = llmRouter;
-        _options = options;
-        _logger = logger;
-    }
-
     public async Task<ProfileStats> GetStatsAsync(CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         // Get count of users who need profile updates
         var pending = await connection.ExecuteScalarAsync<long>("""
@@ -44,7 +33,7 @@ public class ProfileGenerationHandler : IProfileHandler
             WHERE message_count >= @MinMessages
               AND last_message_at > NOW() - INTERVAL '7 days'
             """,
-            new { MinMessages = _options.MinMessagesForProfile });
+            new { MinMessages = options.MinMessagesForProfile });
 
         var total = await connection.ExecuteScalarAsync<long>("""
             SELECT COUNT(*)
@@ -64,9 +53,9 @@ public class ProfileGenerationHandler : IProfileHandler
 
         try
         {
-            _logger.LogInformation("[ProfileHandler] Starting profile generation");
+            logger.LogInformation("[ProfileHandler] Starting profile generation");
 
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Get active users who need profiles
             var activeUsers = await connection.QueryAsync<ActiveUser>("""
@@ -77,10 +66,10 @@ public class ProfileGenerationHandler : IProfileHandler
                   AND last_message_at > NOW() - INTERVAL '7 days'
                 ORDER BY message_count DESC
                 """,
-                new { MinMessages = _options.MinMessagesForProfile });
+                new { MinMessages = options.MinMessagesForProfile });
 
             var users = activeUsers.ToList();
-            _logger.LogInformation("[ProfileHandler] Found {Count} active users for profile generation", users.Count);
+            logger.LogInformation("[ProfileHandler] Found {Count} active users for profile generation", users.Count);
 
             var generated = 0;
             foreach (var user in users)
@@ -95,19 +84,19 @@ public class ProfileGenerationHandler : IProfileHandler
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "[ProfileHandler] Failed to generate profile for user {UserId}", user.UserId);
+                    logger.LogWarning(ex, "[ProfileHandler] Failed to generate profile for user {UserId}", user.UserId);
                 }
 
                 // Delay between LLM requests
-                if (_options.LlmRequestDelaySeconds > 0)
+                if (options.LlmRequestDelaySeconds > 0)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(_options.LlmRequestDelaySeconds), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(options.LlmRequestDelaySeconds), ct);
                 }
             }
 
             sw.Stop();
 
-            _logger.LogInformation("[ProfileHandler] Complete: Generated {Count}/{Total} profiles in {Elapsed:F1}s",
+            logger.LogInformation("[ProfileHandler] Complete: Generated {Count}/{Total} profiles in {Elapsed:F1}s",
                 generated, users.Count, sw.Elapsed.TotalSeconds);
 
             return new ProfileResult(
@@ -118,13 +107,13 @@ public class ProfileGenerationHandler : IProfileHandler
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogError(ex, "[ProfileHandler] Error in ProcessAsync");
+            logger.LogError(ex, "[ProfileHandler] Error in ProcessAsync");
             throw;
         }
     }
 
     private async Task GenerateUserProfileAsync(
-        System.Data.IDbConnection connection,
+        IDbConnection connection,
         ActiveUser user,
         CancellationToken ct)
     {
@@ -136,7 +125,7 @@ public class ProfileGenerationHandler : IProfileHandler
             ORDER BY confidence DESC
             LIMIT @MaxFacts
             """,
-            new { user.ChatId, user.UserId, MaxFacts = _options.MaxFactsPerUser });
+            new { user.ChatId, user.UserId, MaxFacts = options.MaxFactsPerUser });
 
         var factsList = facts.ToList();
 
@@ -149,13 +138,13 @@ public class ProfileGenerationHandler : IProfileHandler
             ORDER BY RANDOM()
             LIMIT @Limit
             """,
-            new { user.ChatId, user.UserId, Limit = _options.ProfileSampleSize });
+            new { user.ChatId, user.UserId, Limit = options.ProfileSampleSize });
 
         var messagesList = messages.ToList();
 
         if (messagesList.Count < 5 && factsList.Count < 3)
         {
-            _logger.LogDebug("[ProfileHandler] Not enough data for user {UserId}", user.UserId);
+            logger.LogDebug("[ProfileHandler] Not enough data for user {UserId}", user.UserId);
             return;
         }
 
@@ -197,7 +186,7 @@ public class ProfileGenerationHandler : IProfileHandler
             - Если данных мало — пиши "недостаточно данных" в соответствующих полях
             """;
 
-        var llmResponse = await _llmRouter.CompleteWithFallbackAsync(
+        var llmResponse = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest { SystemPrompt = "", UserPrompt = prompt, Temperature = 0.3 },
             preferredTag: null, ct: ct);
         var response = llmResponse.Content;
@@ -213,13 +202,13 @@ public class ProfileGenerationHandler : IProfileHandler
             if (profile != null)
             {
                 await SaveProfileAsync(connection, user.ChatId, user.UserId, profile);
-                _logger.LogInformation("[ProfileHandler] Generated profile for {DisplayName} ({UserId})",
+                logger.LogInformation("[ProfileHandler] Generated profile for {DisplayName} ({UserId})",
                     user.DisplayName, user.UserId);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[ProfileHandler] Failed to parse profile JSON: {Response}", response);
+            logger.LogWarning(ex, "[ProfileHandler] Failed to parse profile JSON: {Response}", response);
         }
     }
 
@@ -260,14 +249,14 @@ public class ProfileGenerationHandler : IProfileHandler
     }
 
     private static async Task SaveProfileAsync(
-        System.Data.IDbConnection connection,
+        IDbConnection connection,
         long chatId,
         long userId,
         GeneratedProfile profile)
     {
-        var interestsJson = JsonSerializer.Serialize(profile.MainInterests ?? new List<string>());
-        var traitsJson = JsonSerializer.Serialize(profile.PersonalityTraits ?? new List<string>());
-        var roastJson = JsonSerializer.Serialize(profile.RoastMaterial ?? new List<string>());
+        var interestsJson = JsonSerializer.Serialize(profile.MainInterests ?? []);
+        var traitsJson = JsonSerializer.Serialize(profile.PersonalityTraits ?? []);
+        var roastJson = JsonSerializer.Serialize(profile.RoastMaterial ?? []);
 
         await connection.ExecuteAsync("""
             UPDATE user_profiles SET

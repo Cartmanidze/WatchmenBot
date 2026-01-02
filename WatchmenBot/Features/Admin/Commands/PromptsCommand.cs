@@ -7,21 +7,15 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin prompts - list all prompts with status
 /// </summary>
-public class PromptsCommand : AdminCommandBase
+public class PromptsCommand(
+    ITelegramBotClient bot,
+    PromptSettingsStore promptSettings,
+    ILogger<PromptsCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly PromptSettingsStore _promptSettings;
-
-    public PromptsCommand(
-        ITelegramBotClient bot,
-        PromptSettingsStore promptSettings,
-        ILogger<PromptsCommand> logger) : base(bot, logger)
-    {
-        _promptSettings = promptSettings;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
-        var prompts = await _promptSettings.GetAllPromptsAsync();
+        var prompts = await promptSettings.GetAllPromptsAsync();
 
         var sb = new StringBuilder();
         sb.AppendLine("<b>🎭 Промпты команд</b>\n");

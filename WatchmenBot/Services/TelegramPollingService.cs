@@ -12,47 +12,33 @@ namespace WatchmenBot.Services;
 /// Polling service for local development (instead of webhooks).
 /// Enable by setting Telegram:UsePolling = true in appsettings.
 /// </summary>
-public class TelegramPollingService : BackgroundService
+public class TelegramPollingService(
+    ITelegramBotClient bot,
+    IServiceProvider serviceProvider,
+    LogCollector logCollector,
+    ILogger<TelegramPollingService> logger,
+    IConfiguration configuration)
+    : BackgroundService
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly IServiceProvider _serviceProvider;
-    private readonly LogCollector _logCollector;
-    private readonly ILogger<TelegramPollingService> _logger;
-    private readonly IConfiguration _configuration;
-
-    public TelegramPollingService(
-        ITelegramBotClient bot,
-        IServiceProvider serviceProvider,
-        LogCollector logCollector,
-        ILogger<TelegramPollingService> logger,
-        IConfiguration configuration)
-    {
-        _bot = bot;
-        _serviceProvider = serviceProvider;
-        _logCollector = logCollector;
-        _logger = logger;
-        _configuration = configuration;
-    }
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Always register bot commands menu (works for both polling and webhook modes)
         await RegisterBotCommandsAsync(stoppingToken);
 
-        var usePolling = _configuration.GetValue<bool>("Telegram:UsePolling", false);
+        var usePolling = configuration.GetValue<bool>("Telegram:UsePolling", false);
         if (!usePolling)
         {
-            _logger.LogInformation("[Telegram] Polling DISABLED - using webhooks mode");
+            logger.LogInformation("[Telegram] Polling DISABLED - using webhooks mode");
             return;
         }
 
-        _logger.LogInformation("[Telegram] Starting polling mode...");
+        logger.LogInformation("[Telegram] Starting polling mode...");
 
         // Delete webhook if exists (polling and webhook can't work together)
-        await _bot.DeleteWebhook(cancellationToken: stoppingToken);
+        await bot.DeleteWebhook(cancellationToken: stoppingToken);
 
-        var me = await _bot.GetMe(stoppingToken);
-        _logger.LogInformation("[Telegram] Bot ONLINE: @{Username} (ID: {Id})", me.Username, me.Id);
+        var me = await bot.GetMe(stoppingToken);
+        logger.LogInformation("[Telegram] Bot ONLINE: @{Username} (ID: {Id})", me.Username, me.Id);
 
         int offset = 0;
         var totalMessages = 0L;
@@ -61,9 +47,9 @@ public class TelegramPollingService : BackgroundService
         {
             try
             {
-                var updates = await _bot.GetUpdates(
+                var updates = await bot.GetUpdates(
                     offset: offset,
-                    allowedUpdates: new[] { UpdateType.Message },
+                    allowedUpdates: [UpdateType.Message],
                     cancellationToken: stoppingToken);
 
                 foreach (var update in updates)
@@ -79,13 +65,13 @@ public class TelegramPollingService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Telegram] Error getting updates, retrying in 5s...");
-                _logCollector.LogError("TelegramPolling", "Error getting updates", ex);
+                logger.LogError(ex, "[Telegram] Error getting updates, retrying in 5s...");
+                logCollector.LogError("TelegramPolling", "Error getting updates", ex);
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
         }
 
-        _logger.LogInformation("[Telegram] Polling STOPPED (processed {Total} messages this session)", totalMessages);
+        logger.LogInformation("[Telegram] Polling STOPPED (processed {Total} messages this session)", totalMessages);
     }
 
     private async Task ProcessUpdateAsync(Update update, CancellationToken ct)
@@ -98,7 +84,7 @@ public class TelegramPollingService : BackgroundService
 
         try
         {
-            using var scope = _serviceProvider.CreateScope();
+            using var scope = serviceProvider.CreateScope();
 
             // Handle private messages (admin commands and /q)
             if (message.Chat.Type == ChatType.Private)
@@ -118,7 +104,7 @@ public class TelegramPollingService : BackgroundService
             // Only process group/supergroup messages
             if (message.Chat.Type != ChatType.Group && message.Chat.Type != ChatType.Supergroup)
             {
-                _logger.LogDebug("[Telegram] Skipping {Type} message from {User}", message.Chat.Type, userName);
+                logger.LogDebug("[Telegram] Skipping {Type} message from {User}", message.Chat.Type, userName);
                 return;
             }
 
@@ -160,7 +146,7 @@ public class TelegramPollingService : BackgroundService
             // Log message receipt
             var msgType = string.IsNullOrWhiteSpace(message.Text) ? $"[{message.Type}]" : "text";
             var preview = message.Text?.Length > 40 ? message.Text.Substring(0, 40) + "..." : message.Text ?? "";
-            _logger.LogInformation("[Telegram] [{Chat}] @{User}: {Preview} ({Type})",
+            logger.LogInformation("[Telegram] [{Chat}] @{User}: {Preview} ({Type})",
                 chatName, userName, preview, msgType);
 
             // Save message to database
@@ -170,18 +156,18 @@ public class TelegramPollingService : BackgroundService
 
             if (response.IsSuccess)
             {
-                _logCollector.IncrementMessages();
+                logCollector.IncrementMessages();
             }
             else
             {
-                _logger.LogWarning("[Telegram] Failed to save message: {Error}", response.ErrorMessage);
-                _logCollector.LogWarning("SaveMessage", response.ErrorMessage ?? "Unknown error");
+                logger.LogWarning("[Telegram] Failed to save message: {Error}", response.ErrorMessage);
+                logCollector.LogWarning("SaveMessage", response.ErrorMessage ?? "Unknown error");
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Telegram] Error processing message {MessageId} in {Chat}", message.MessageId, chatName);
-            _logCollector.LogError("TelegramPolling", $"Error processing message in {chatName}", ex);
+            logger.LogError(ex, "[Telegram] Error processing message {MessageId} in {Chat}", message.MessageId, chatName);
+            logCollector.LogError("TelegramPolling", $"Error processing message in {chatName}", ex);
         }
     }
 
@@ -235,7 +221,7 @@ public class TelegramPollingService : BackgroundService
         var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
         var hours = GenerateSummaryHandler.ParseHoursFromCommand(message.Text);
 
-        _logger.LogInformation("[Telegram] [{Chat}] @{User} requested /summary for {Hours}h",
+        logger.LogInformation("[Telegram] [{Chat}] @{User} requested /summary for {Hours}h",
             chatName, userName, hours);
 
         var summaryHandler = serviceProvider.GetRequiredService<GenerateSummaryHandler>();
@@ -250,21 +236,21 @@ public class TelegramPollingService : BackgroundService
 
         if (response.IsSuccess)
         {
-            _logCollector.IncrementSummaries();
-            _logger.LogInformation("[Telegram] [{Chat}] Summary sent: {Count} messages analyzed",
+            logCollector.IncrementSummaries();
+            logger.LogInformation("[Telegram] [{Chat}] Summary sent: {Count} messages analyzed",
                 chatName, response.MessageCount);
         }
         else
         {
-            _logCollector.LogWarning("Summary", response.ErrorMessage ?? "Unknown error");
-            _logger.LogWarning("[Telegram] [{Chat}] Summary failed: {Error}", chatName, response.ErrorMessage);
+            logCollector.LogWarning("Summary", response.ErrorMessage ?? "Unknown error");
+            logger.LogWarning("[Telegram] [{Chat}] Summary failed: {Error}", chatName, response.ErrorMessage);
         }
     }
 
     private async Task HandleAdminCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
     {
         var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
-        _logger.LogInformation("[Telegram] Admin command from @{User}", userName);
+        logger.LogInformation("[Telegram] Admin command from @{User}", userName);
 
         var adminHandler = serviceProvider.GetRequiredService<AdminCommandHandler>();
         await adminHandler.HandleAsync(message, ct);
@@ -275,7 +261,7 @@ public class TelegramPollingService : BackgroundService
         var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
         var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
 
-        _logger.LogInformation("[Telegram] [{Chat}] @{User} requested /ask", chatName, userName);
+        logger.LogInformation("[Telegram] [{Chat}] @{User} requested /ask", chatName, userName);
 
         var askHandler = serviceProvider.GetRequiredService<AskHandler>();
         await askHandler.HandleAsync(message, ct);
@@ -286,7 +272,7 @@ public class TelegramPollingService : BackgroundService
         var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
         var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
 
-        _logger.LogInformation("[Telegram] [{Chat}] @{User} requested /recall", chatName, userName);
+        logger.LogInformation("[Telegram] [{Chat}] @{User} requested /recall", chatName, userName);
 
         var recallHandler = serviceProvider.GetRequiredService<RecallHandler>();
         await recallHandler.HandleAsync(message, ct);
@@ -297,7 +283,7 @@ public class TelegramPollingService : BackgroundService
         var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
         var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
 
-        _logger.LogInformation("[Telegram] [{Chat}] @{User} requested /q", chatName, userName);
+        logger.LogInformation("[Telegram] [{Chat}] @{User} requested /q", chatName, userName);
 
         var askHandler = serviceProvider.GetRequiredService<AskHandler>();
         await askHandler.HandleQuestionAsync(message, ct);
@@ -324,22 +310,22 @@ public class TelegramPollingService : BackgroundService
             };
 
             // Set commands for all group chats
-            await _bot.SetMyCommands(
+            await bot.SetMyCommands(
                 groupCommands,
                 new BotCommandScopeAllGroupChats(),
                 cancellationToken: ct);
 
             // Set commands for private chats
-            await _bot.SetMyCommands(
+            await bot.SetMyCommands(
                 privateCommands,
                 new BotCommandScopeAllPrivateChats(),
                 cancellationToken: ct);
 
-            _logger.LogInformation("[Telegram] Bot commands menu registered");
+            logger.LogInformation("[Telegram] Bot commands menu registered");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Telegram] Failed to register bot commands");
+            logger.LogWarning(ex, "[Telegram] Failed to register bot commands");
         }
     }
 }

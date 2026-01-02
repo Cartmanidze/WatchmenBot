@@ -6,18 +6,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin debug [on|off] - toggle or show debug mode status
 /// </summary>
-public class DebugCommand : AdminCommandBase
+public class DebugCommand(
+    ITelegramBotClient bot,
+    AdminSettingsStore settings,
+    ILogger<DebugCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly AdminSettingsStore _settings;
-
-    public DebugCommand(
-        ITelegramBotClient bot,
-        AdminSettingsStore settings,
-        ILogger<DebugCommand> logger) : base(bot, logger)
-    {
-        _settings = settings;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         // If no argument, show status
@@ -43,7 +37,7 @@ public class DebugCommand : AdminCommandBase
         }
 
         // Toggle debug mode
-        await _settings.SetDebugModeAsync(enable.Value);
+        await settings.SetDebugModeAsync(enable.Value);
 
         var status = enable.Value ? "✅ включён" : "❌ выключен";
         var info = enable.Value
@@ -56,7 +50,7 @@ public class DebugCommand : AdminCommandBase
 
     private async Task<bool> ShowStatusAsync(long chatId, CancellationToken ct)
     {
-        var enabled = await _settings.IsDebugModeEnabledAsync();
+        var enabled = await settings.IsDebugModeEnabledAsync();
 
         await SendMessageAsync(chatId, $"""
             🔍 <b>Debug Mode</b>

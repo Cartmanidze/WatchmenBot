@@ -6,38 +6,26 @@ namespace WatchmenBot.Services.Indexing;
 /// Handler for context embeddings (sliding windows) indexing.
 /// Processes chats one at a time to build context windows.
 /// </summary>
-public class ContextEmbeddingHandler : IEmbeddingHandler
+public class ContextEmbeddingHandler(
+    MessageStore messageStore,
+    ContextEmbeddingService contextService,
+    IConfiguration configuration,
+    ILogger<ContextEmbeddingHandler> logger)
+    : IEmbeddingHandler
 {
-    private readonly MessageStore _messageStore;
-    private readonly ContextEmbeddingService _contextService;
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<ContextEmbeddingHandler> _logger;
-
     // State: current chat index being processed
     private List<long>? _chatIds;
     private int _currentChatIndex;
 
     public string Name => "context";
 
-    public bool IsEnabled => _configuration.GetValue<bool>("Embeddings:ContextEmbeddings:Enabled", true);
-
-    public ContextEmbeddingHandler(
-        MessageStore messageStore,
-        ContextEmbeddingService contextService,
-        IConfiguration configuration,
-        ILogger<ContextEmbeddingHandler> logger)
-    {
-        _messageStore = messageStore;
-        _contextService = contextService;
-        _configuration = configuration;
-        _logger = logger;
-    }
+    public bool IsEnabled => configuration.GetValue("Embeddings:ContextEmbeddings:Enabled", true);
 
     public async Task<IndexingStats> GetStatsAsync(CancellationToken ct = default)
     {
         // For context embeddings, we don't have a simple "pending count"
         // Instead, we return the number of chats that need processing
-        var chats = await _messageStore.GetDistinctChatIdsAsync();
+        var chats = await messageStore.GetDistinctChatIdsAsync();
         var totalChats = chats.Count;
 
         // Approximate: count chats that have context embeddings
@@ -57,9 +45,9 @@ public class ContextEmbeddingHandler : IEmbeddingHandler
             // Lazy load chat IDs on first call
             if (_chatIds == null)
             {
-                _chatIds = await _messageStore.GetDistinctChatIdsAsync();
+                _chatIds = await messageStore.GetDistinctChatIdsAsync();
                 _currentChatIndex = 0;
-                _logger.LogDebug("[ContextHandler] Loaded {Count} chats for processing", _chatIds.Count);
+                logger.LogDebug("[ContextHandler] Loaded {Count} chats for processing", _chatIds.Count);
             }
 
             // No chats to process
@@ -77,11 +65,11 @@ public class ContextEmbeddingHandler : IEmbeddingHandler
 
             // Process current chat
             var chatId = _chatIds[_currentChatIndex];
-            var contextBatchSize = _configuration.GetValue<int>("Embeddings:ContextEmbeddings:BatchSize", 100);
+            var contextBatchSize = configuration.GetValue<int>("Embeddings:ContextEmbeddings:BatchSize", 100);
 
             try
             {
-                await _contextService.BuildContextEmbeddingsAsync(chatId, contextBatchSize, ct);
+                await contextService.BuildContextEmbeddingsAsync(chatId, contextBatchSize, ct);
 
                 // Move to next chat
                 _currentChatIndex++;
@@ -105,7 +93,7 @@ public class ContextEmbeddingHandler : IEmbeddingHandler
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[ContextHandler] Failed to build context embeddings for chat {ChatId}", chatId);
+                logger.LogWarning(ex, "[ContextHandler] Failed to build context embeddings for chat {ChatId}", chatId);
 
                 // Skip to next chat on error
                 _currentChatIndex++;
@@ -128,7 +116,7 @@ public class ContextEmbeddingHandler : IEmbeddingHandler
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogError(ex, "[ContextHandler] Error in ProcessBatchAsync");
+            logger.LogError(ex, "[ContextHandler] Error in ProcessBatchAsync");
             throw;
         }
     }

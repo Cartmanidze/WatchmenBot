@@ -7,24 +7,13 @@ namespace WatchmenBot.Services;
 /// RAG Fusion service: generates query variations and merges results using RRF
 /// Based on: https://habr.com/ru/companies/postgrespro/articles/979820/
 /// </summary>
-public class RagFusionService
+public class RagFusionService(
+    LlmRouter llmRouter,
+    EmbeddingService embeddingService,
+    ILogger<RagFusionService> logger)
 {
-    private readonly LlmRouter _llmRouter;
-    private readonly EmbeddingService _embeddingService;
-    private readonly ILogger<RagFusionService> _logger;
-
     // RRF constant (standard value from literature)
     private const int RrfK = 60;
-
-    public RagFusionService(
-        LlmRouter llmRouter,
-        EmbeddingService embeddingService,
-        ILogger<RagFusionService> logger)
-    {
-        _llmRouter = llmRouter;
-        _embeddingService = embeddingService;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Search with RAG Fusion: generate query variations, search each, merge with RRF
@@ -52,7 +41,7 @@ public class RagFusionService
             var variations = await GenerateQueryVariationsAsync(query, variationCount, participantNames, ct);
             response.QueryVariations = variations;
 
-            _logger.LogInformation("[RAG Fusion] Generated {Count} variations for: {Query}",
+            logger.LogInformation("[RAG Fusion] Generated {Count} variations for: {Query}",
                 variations.Count, TruncateForLog(query, 50));
 
             // Step 2: Search with original + all variations in parallel
@@ -60,12 +49,12 @@ public class RagFusionService
             allQueries.AddRange(variations);
 
             var searchTasks = allQueries.Select(q =>
-                _embeddingService.SearchSimilarAsync(chatId, q, resultsPerQuery, ct));
+                embeddingService.SearchSimilarAsync(chatId, q, resultsPerQuery, ct));
 
             var allResults = await Task.WhenAll(searchTasks);
 
             // Step 3: Apply Reciprocal Rank Fusion
-            var fusedResults = ApplyRrfFusion(allResults, allQueries);
+            var fusedResults = ApplyRrfFusion(allResults);
 
             // Step 3.5: Filter out near-exact matches (likely the query itself or similar previous queries)
             var filteredResults = fusedResults
@@ -74,7 +63,7 @@ public class RagFusionService
 
             if (filteredResults.Count < fusedResults.Count)
             {
-                _logger.LogInformation("[RAG Fusion] Filtered {Count} near-exact matches (sim >= 0.98)",
+                logger.LogInformation("[RAG Fusion] Filtered {Count} near-exact matches (sim >= 0.98)",
                     fusedResults.Count - filteredResults.Count);
             }
 
@@ -105,7 +94,7 @@ public class RagFusionService
             sw.Stop();
             response.TotalTimeMs = sw.ElapsedMilliseconds;
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "[RAG Fusion] Query: '{Query}' | Variations: {Vars} | Results: {Count} | Best RRF: {Best:F4} | Confidence: {Conf} | Time: {Ms}ms",
                 TruncateForLog(query, 30), variations.Count, fusedResults.Count,
                 response.BestScore, response.Confidence, response.TotalTimeMs);
@@ -115,7 +104,7 @@ public class RagFusionService
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogError(ex, "[RAG Fusion] Failed for query: {Query}", query);
+            logger.LogError(ex, "[RAG Fusion] Failed for query: {Query}", query);
 
             response.Confidence = SearchConfidence.None;
             response.ConfidenceReason = "Fusion search failed";
@@ -162,7 +151,7 @@ public class RagFusionService
                 ["вариация 1", "вариация 2", "вариация 3"]
                 """;
 
-            var response = await _llmRouter.CompleteWithFallbackAsync(
+            var response = await llmRouter.CompleteWithFallbackAsync(
                 new LlmRequest
                 {
                     SystemPrompt = systemPrompt,
@@ -186,7 +175,7 @@ public class RagFusionService
 
             if (variations == null || variations.Count == 0)
             {
-                _logger.LogWarning("[RAG Fusion] LLM returned empty variations, using fallback");
+                logger.LogWarning("[RAG Fusion] LLM returned empty variations, using fallback");
                 return GenerateFallbackVariations(query);
             }
 
@@ -198,7 +187,7 @@ public class RagFusionService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[RAG Fusion] Failed to generate variations, using fallback");
+            logger.LogWarning(ex, "[RAG Fusion] Failed to generate variations, using fallback");
             return GenerateFallbackVariations(query);
         }
     }
@@ -232,8 +221,7 @@ public class RagFusionService
     /// Formula: score(d) = Σ 1/(k + rank(d, q))
     /// </summary>
     private List<FusedSearchResult> ApplyRrfFusion(
-        List<SearchResult>[] allResults,
-        List<string> queries)
+        List<SearchResult>[] allResults)
     {
         // Dictionary: MessageId -> (FusedScore, BestResult, ContributingQueries)
         var fusionScores = new Dictionary<long, (double Score, SearchResult Result, List<int> QueryIndices)>();
@@ -263,7 +251,7 @@ public class RagFusionService
                     fusionScores[result.MessageId] = (
                         rrfScore,
                         result,
-                        new List<int> { queryIndex }
+                        [queryIndex]
                     );
                 }
             }
@@ -288,7 +276,7 @@ public class RagFusionService
             .OrderByDescending(r => r.FusedScore)
             .ToList();
 
-        _logger.LogDebug("[RRF] Fused {InputCount} result sets into {OutputCount} unique results",
+        logger.LogDebug("[RRF] Fused {InputCount} result sets into {OutputCount} unique results",
             allResults.Length, fusedResults.Count);
 
         // Log top results with their query contributions
@@ -298,7 +286,7 @@ public class RagFusionService
                 .Select(i => i == 0 ? "original" : $"var{i}")
                 .ToList();
 
-            _logger.LogDebug("[RRF] MsgId={Id} | RRF={Score:F4} | Sim={Sim:F3} | Queries=[{Queries}]",
+            logger.LogDebug("[RRF] MsgId={Id} | RRF={Score:F4} | Sim={Sim:F3} | Queries=[{Queries}]",
                 result.MessageId, result.FusedScore, result.Similarity, string.Join(",", matchedQueries));
         }
 
@@ -361,7 +349,7 @@ public class FusedSearchResult : SearchResult
     /// <summary>
     /// Which query indices matched (0 = original, 1+ = variations)
     /// </summary>
-    public List<int> MatchedQueryIndices { get; set; } = new();
+    public List<int> MatchedQueryIndices { get; set; } = [];
 }
 
 /// <summary>
@@ -370,8 +358,10 @@ public class FusedSearchResult : SearchResult
 public class RagFusionResponse
 {
     public string OriginalQuery { get; set; } = string.Empty;
-    public List<string> QueryVariations { get; set; } = new();
-    public List<FusedSearchResult> Results { get; set; } = new();
+    
+    public List<string> QueryVariations { get; set; } = [];
+    
+    public List<FusedSearchResult> Results { get; set; } = [];
 
     public SearchConfidence Confidence { get; set; }
     public string? ConfidenceReason { get; set; }

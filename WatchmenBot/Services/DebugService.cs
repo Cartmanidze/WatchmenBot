@@ -7,28 +7,17 @@ namespace WatchmenBot.Services;
 /// <summary>
 /// Service for collecting and sending debug information to admin
 /// </summary>
-public class DebugService
+public class DebugService(
+    ITelegramBotClient bot,
+    AdminSettingsStore adminSettings,
+    ILogger<DebugService> logger)
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly AdminSettingsStore _adminSettings;
-    private readonly ILogger<DebugService> _logger;
-
-    public DebugService(
-        ITelegramBotClient bot,
-        AdminSettingsStore adminSettings,
-        ILogger<DebugService> logger)
-    {
-        _bot = bot;
-        _adminSettings = adminSettings;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Check if debug mode is enabled
     /// </summary>
-    public async Task<bool> IsEnabledAsync()
+    private async Task<bool> IsEnabledAsync()
     {
-        return await _adminSettings.IsDebugModeEnabledAsync();
+        return await adminSettings.IsDebugModeEnabledAsync();
     }
 
     /// <summary>
@@ -39,7 +28,7 @@ public class DebugService
         if (!await IsEnabledAsync())
             return;
 
-        var adminId = _adminSettings.GetAdminUserId();
+        var adminId = adminSettings.GetAdminUserId();
         if (adminId == 0)
             return;
 
@@ -52,7 +41,7 @@ public class DebugService
             {
                 // Send header
                 var header = FormatHeader(report);
-                await _bot.SendMessage(adminId, header, parseMode: ParseMode.Html, cancellationToken: ct);
+                await bot.SendMessage(adminId, header, parseMode: ParseMode.Html, cancellationToken: ct);
 
                 // Send search results
                 if (report.SearchResults.Count > 0)
@@ -84,14 +73,14 @@ public class DebugService
             }
             else
             {
-                await _bot.SendMessage(adminId, message, parseMode: ParseMode.Html, cancellationToken: ct);
+                await bot.SendMessage(adminId, message, parseMode: ParseMode.Html, cancellationToken: ct);
             }
 
-            _logger.LogDebug("[Debug] Sent debug report for {Command}", report.Command);
+            logger.LogDebug("[Debug] Sent debug report for {Command}", report.Command);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Debug] Failed to send debug report");
+            logger.LogWarning(ex, "[Debug] Failed to send debug report");
         }
     }
 
@@ -101,13 +90,13 @@ public class DebugService
         {
             try
             {
-                await _bot.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
+                await bot.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
             }
             catch
             {
                 // Fallback to plain text
                 var plain = System.Text.RegularExpressions.Regex.Replace(text, "<[^>]+>", "");
-                await _bot.SendMessage(chatId, plain, cancellationToken: ct);
+                await bot.SendMessage(chatId, plain, cancellationToken: ct);
             }
             return;
         }
@@ -118,12 +107,12 @@ public class DebugService
         {
             try
             {
-                await _bot.SendMessage(chatId, chunk, parseMode: ParseMode.Html, cancellationToken: ct);
+                await bot.SendMessage(chatId, chunk, parseMode: ParseMode.Html, cancellationToken: ct);
             }
             catch
             {
                 var plain = System.Text.RegularExpressions.Regex.Replace(chunk, "<[^>]+>", "");
-                await _bot.SendMessage(chatId, plain, cancellationToken: ct);
+                await bot.SendMessage(chatId, plain, cancellationToken: ct);
             }
         }
     }
@@ -361,18 +350,18 @@ public class DebugReport
     public long QueryRewriteTimeMs { get; set; }
 
     // RAG Fusion info
-    public List<string> QueryVariations { get; set; } = new(); // Generated query variations
+    public List<string> QueryVariations { get; set; } = []; // Generated query variations
     public long RagFusionTimeMs { get; set; } // Total time for RAG Fusion search
 
     // Rerank info
     public long RerankTimeMs { get; set; }
     public int RerankTokensUsed { get; set; }
-    public List<int> RerankScores { get; set; } = new(); // LLM scores (0-3)
+    public List<int> RerankScores { get; set; } = []; // LLM scores (0-3)
     public bool RerankOrderChanged { get; set; }
     public int RerankFilteredOut { get; set; } // Count of results filtered out due to low score
 
     // Search results
-    public List<DebugSearchResult> SearchResults { get; set; } = new();
+    public List<DebugSearchResult> SearchResults { get; set; } = [];
 
     // Confidence assessment
     public string? SearchConfidence { get; set; }
@@ -407,14 +396,14 @@ public class DebugReport
     // Multi-stage info
     public bool IsMultiStage { get; set; }
     public int StageCount { get; set; }
-    public List<DebugStage> Stages { get; set; } = new();
+    public List<DebugStage> Stages { get; set; } = [];
 }
 
 public class DebugSearchResult
 {
     public double Similarity { get; set; }
     public double Distance { get; set; }
-    public long[] MessageIds { get; set; } = Array.Empty<long>();
+    public long[] MessageIds { get; set; } = [];
     public string Text { get; set; } = "";
     public DateTimeOffset? Timestamp { get; set; }
     public bool IsNewsDump { get; set; }

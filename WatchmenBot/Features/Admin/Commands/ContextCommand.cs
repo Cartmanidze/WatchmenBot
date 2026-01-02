@@ -1,6 +1,5 @@
 using System.Text;
 using Telegram.Bot;
-using Telegram.Bot.Types.Enums;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Admin.Commands;
@@ -9,24 +8,14 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// /admin context [chat_id] - show context embeddings stats
 /// Shows statistics for all chats or specific chat
 /// </summary>
-public class ContextCommand : AdminCommandBase
+public class ContextCommand(
+    ITelegramBotClient bot,
+    ContextEmbeddingService contextEmbeddingService,
+    EmbeddingService embeddingService,
+    MessageStore messageStore,
+    ILogger<ContextCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly ContextEmbeddingService _contextEmbeddingService;
-    private readonly EmbeddingService _embeddingService;
-    private readonly MessageStore _messageStore;
-
-    public ContextCommand(
-        ITelegramBotClient bot,
-        ContextEmbeddingService contextEmbeddingService,
-        EmbeddingService embeddingService,
-        MessageStore messageStore,
-        ILogger<ContextCommand> logger) : base(bot, logger)
-    {
-        _contextEmbeddingService = contextEmbeddingService;
-        _embeddingService = embeddingService;
-        _messageStore = messageStore;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         // No arguments - show all chats
@@ -47,7 +36,7 @@ public class ContextCommand : AdminCommandBase
 
     private async Task<bool> ShowAllChatsAsync(long chatId, CancellationToken ct)
     {
-        var chats = await _messageStore.GetKnownChatsAsync();
+        var chats = await messageStore.GetKnownChatsAsync();
 
         var sb = new StringBuilder();
         sb.AppendLine("<b>📊 Контекстные эмбеддинги (Sliding Windows)</b>\n");
@@ -55,7 +44,7 @@ public class ContextCommand : AdminCommandBase
         var totalWindows = 0;
         foreach (var chat in chats.Take(10))
         {
-            var stats = await _contextEmbeddingService.GetStatsAsync(chat.ChatId, ct);
+            var stats = await contextEmbeddingService.GetStatsAsync(chat.ChatId, ct);
             totalWindows += stats.TotalWindows;
 
             var title = !string.IsNullOrWhiteSpace(chat.Title) ? chat.Title : $"Chat {chat.ChatId}";
@@ -75,8 +64,8 @@ public class ContextCommand : AdminCommandBase
 
     private async Task<bool> ShowChatStatsAsync(long chatId, long targetChatId, CancellationToken ct)
     {
-        var stats = await _contextEmbeddingService.GetStatsAsync(targetChatId, ct);
-        var embStats = await _embeddingService.GetStatsAsync(targetChatId, ct);
+        var stats = await contextEmbeddingService.GetStatsAsync(targetChatId, ct);
+        var embStats = await embeddingService.GetStatsAsync(targetChatId, ct);
 
         var coverage = embStats.TotalEmbeddings > 0
             ? $"{(double)stats.TotalWindows * 10 / embStats.TotalEmbeddings * 100:F1}%"

@@ -1,7 +1,6 @@
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Summary;
@@ -31,25 +30,12 @@ public class GenerateSummaryResponse
     };
 }
 
-public class GenerateSummaryHandler
+public partial class GenerateSummaryHandler(
+    ITelegramBotClient bot,
+    MessageStore store,
+    SmartSummaryService smartSummary,
+    ILogger<GenerateSummaryHandler> logger)
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly MessageStore _store;
-    private readonly SmartSummaryService _smartSummary;
-    private readonly ILogger<GenerateSummaryHandler> _logger;
-
-    public GenerateSummaryHandler(
-        ITelegramBotClient bot,
-        MessageStore store,
-        SmartSummaryService smartSummary,
-        ILogger<GenerateSummaryHandler> logger)
-    {
-        _bot = bot;
-        _store = store;
-        _smartSummary = smartSummary;
-        _logger = logger;
-    }
-
     public async Task<GenerateSummaryResponse> HandleAsync(GenerateSummaryRequest request, CancellationToken ct)
     {
         var message = request.Message;
@@ -59,18 +45,18 @@ public class GenerateSummaryHandler
         try
         {
             // Send "typing" indicator
-            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+            await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
             var nowUtc = DateTimeOffset.UtcNow;
             var startUtc = nowUtc.AddHours(-hours);
 
-            _logger.LogInformation("Generating summary for chat {ChatId}, last {Hours} hours", chatId, hours);
+            logger.LogInformation("Generating summary for chat {ChatId}, last {Hours} hours", chatId, hours);
 
-            var messages = await _store.GetMessagesAsync(chatId, startUtc, nowUtc);
+            var messages = await store.GetMessagesAsync(chatId, startUtc, nowUtc);
 
             if (messages.Count == 0)
             {
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: chatId,
                     text: $"За последние {hours} часов сообщений не найдено.",
                     replyParameters: new ReplyParameters { MessageId = message.MessageId },
@@ -81,13 +67,13 @@ public class GenerateSummaryHandler
 
             // Build and send the report using smart summary
             var periodText = GetPeriodText(hours);
-            var report = await _smartSummary.GenerateSmartSummaryAsync(
+            var report = await smartSummary.GenerateSmartSummaryAsync(
                 chatId, messages, startUtc, nowUtc, periodText, ct);
 
             // Try HTML first, fallback to plain text if parsing fails
             try
             {
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: chatId,
                     text: report,
                     parseMode: ParseMode.Html,
@@ -97,10 +83,10 @@ public class GenerateSummaryHandler
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
             {
-                _logger.LogWarning("HTML parsing failed, sending as plain text");
+                logger.LogWarning("HTML parsing failed, sending as plain text");
                 // Strip HTML tags for plain text
-                var plainText = System.Text.RegularExpressions.Regex.Replace(report, "<[^>]+>", "");
-                await _bot.SendMessage(
+                var plainText = MyRegex().Replace(report, "");
+                await bot.SendMessage(
                     chatId: chatId,
                     text: plainText,
                     linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
@@ -108,17 +94,17 @@ public class GenerateSummaryHandler
                     cancellationToken: ct);
             }
 
-            _logger.LogInformation("Sent summary to chat {ChatId} ({MessageCount} messages)", chatId, messages.Count);
+            logger.LogInformation("Sent summary to chat {ChatId} ({MessageCount} messages)", chatId, messages.Count);
 
             return GenerateSummaryResponse.Success(messages.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to generate summary for chat {ChatId}", chatId);
+            logger.LogError(ex, "Failed to generate summary for chat {ChatId}", chatId);
 
             try
             {
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: chatId,
                     text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
                     replyParameters: new ReplyParameters { MessageId = message.MessageId },
@@ -138,7 +124,7 @@ public class GenerateSummaryHandler
         return hours switch
         {
             24 => "за сутки",
-            _ when hours < 24 => $"за {hours} час{GetHourSuffix(hours)}",
+            < 24 => $"за {hours} час{GetHourSuffix(hours)}",
             _ => $"за {hours / 24} дн{GetDaySuffix(hours / 24)}"
         };
     }
@@ -199,4 +185,7 @@ public class GenerateSummaryHandler
 
         return 24;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex("<[^>]+>")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

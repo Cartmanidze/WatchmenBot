@@ -1,4 +1,3 @@
-using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 
 namespace WatchmenBot.Services;
@@ -6,41 +5,30 @@ namespace WatchmenBot.Services;
 /// <summary>
 /// Service to fetch OpenRouter API usage and credits
 /// </summary>
-public class OpenRouterUsageService
+public class OpenRouterUsageService(
+    HttpClient httpClient,
+    IConfiguration configuration,
+    ILogger<OpenRouterUsageService> logger)
 {
-    private readonly HttpClient _httpClient;
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<OpenRouterUsageService> _logger;
-
-    public OpenRouterUsageService(
-        HttpClient httpClient,
-        IConfiguration configuration,
-        ILogger<OpenRouterUsageService> logger)
-    {
-        _httpClient = httpClient;
-        _configuration = configuration;
-        _logger = logger;
-    }
-
     public async Task<UsageInfo?> GetUsageInfoAsync(CancellationToken ct = default)
     {
         try
         {
-            var apiKey = _configuration["Llm:Providers:0:ApiKey"];
+            var apiKey = configuration["Llm:Providers:0:ApiKey"];
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                _logger.LogWarning("[Usage] No API key configured");
+                logger.LogWarning("[Usage] No API key configured");
                 return null;
             }
 
-            _httpClient.DefaultRequestHeaders.Clear();
-            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
+            httpClient.DefaultRequestHeaders.Clear();
+            httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
 
             // Get credits balance from /api/v1/credits
-            var creditsResponse = await _httpClient.GetAsync("https://openrouter.ai/api/v1/credits", ct);
+            var creditsResponse = await httpClient.GetAsync("https://openrouter.ai/api/v1/credits", ct);
             if (!creditsResponse.IsSuccessStatusCode)
             {
-                _logger.LogWarning("[Usage] Failed to get credits: {Status}", creditsResponse.StatusCode);
+                logger.LogWarning("[Usage] Failed to get credits: {Status}", creditsResponse.StatusCode);
                 return null;
             }
 
@@ -61,7 +49,7 @@ public class OpenRouterUsageService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Usage] Failed to get usage info");
+            logger.LogError(ex, "[Usage] Failed to get usage info");
             return null;
         }
     }

@@ -12,18 +12,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// - /admin context_reindex <chat_id> confirm - execute reindex for chat
 /// - /admin context_reindex all confirm - execute reindex for all chats
 /// </summary>
-public class ContextReindexCommand : AdminCommandBase
+public class ContextReindexCommand(
+    ITelegramBotClient bot,
+    ContextEmbeddingService contextEmbeddingService,
+    ILogger<ContextReindexCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly ContextEmbeddingService _contextEmbeddingService;
-
-    public ContextReindexCommand(
-        ITelegramBotClient bot,
-        ContextEmbeddingService contextEmbeddingService,
-        ILogger<ContextReindexCommand> logger) : base(bot, logger)
-    {
-        _contextEmbeddingService = contextEmbeddingService;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         if (context.Args.Length == 0)
@@ -86,7 +80,7 @@ public class ContextReindexCommand : AdminCommandBase
 
     private async Task<bool> ShowConfirmationAsync(long chatId, long targetChatId, CancellationToken ct)
     {
-        var stats = await _contextEmbeddingService.GetStatsAsync(targetChatId, ct);
+        var stats = await contextEmbeddingService.GetStatsAsync(targetChatId, ct);
 
         await SendMessageAsync(chatId, $"""
             ⚠️ <b>Переиндексация контекстных эмбеддингов</b>
@@ -109,7 +103,7 @@ public class ContextReindexCommand : AdminCommandBase
             text: $"⏳ Удаляю контекстные эмбеддинги чата {targetChatId}...",
             cancellationToken: ct);
 
-        await _contextEmbeddingService.DeleteChatContextEmbeddingsAsync(targetChatId, ct);
+        await contextEmbeddingService.DeleteChatContextEmbeddingsAsync(targetChatId, ct);
 
         await Bot.EditMessageText(
             chatId: chatId,
@@ -135,7 +129,7 @@ public class ContextReindexCommand : AdminCommandBase
             text: "⏳ Удаляю ВСЕ контекстные эмбеддинги...",
             cancellationToken: ct);
 
-        await _contextEmbeddingService.DeleteAllContextEmbeddingsAsync(ct);
+        await contextEmbeddingService.DeleteAllContextEmbeddingsAsync(ct);
 
         await Bot.EditMessageText(
             chatId: chatId,

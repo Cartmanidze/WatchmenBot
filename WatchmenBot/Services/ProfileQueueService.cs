@@ -7,20 +7,11 @@ namespace WatchmenBot.Services;
 /// Лёгкий сервис для добавления сообщений в очередь на анализ профиля.
 /// Вызывается из SaveMessage fire-and-forget.
 /// </summary>
-public class ProfileQueueService
+public class ProfileQueueService(
+    IDbConnectionFactory connectionFactory,
+    ILogger<ProfileQueueService> logger)
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<ProfileQueueService> _logger;
-
     private const int MinTextLength = 20; // Минимальная длина текста для анализа
-
-    public ProfileQueueService(
-        IDbConnectionFactory connectionFactory,
-        ILogger<ProfileQueueService> logger)
-    {
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Добавить сообщение в очередь на анализ профиля
@@ -32,7 +23,7 @@ public class ProfileQueueService
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             await connection.ExecuteAsync("""
                 INSERT INTO message_queue (chat_id, message_id, user_id, display_name, text)
@@ -46,7 +37,7 @@ public class ProfileQueueService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to enqueue message {ChatId}/{MessageId}", chatId, messageId);
+            logger.LogWarning(ex, "Failed to enqueue message {ChatId}/{MessageId}", chatId, messageId);
         }
     }
 
@@ -57,7 +48,7 @@ public class ProfileQueueService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             var hour = DateTime.UtcNow.Hour;
 
@@ -83,7 +74,7 @@ public class ProfileQueueService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to update activity for user {UserId} in chat {ChatId}", userId, chatId);
+            logger.LogWarning(ex, "Failed to update activity for user {UserId} in chat {ChatId}", userId, chatId);
         }
     }
 
@@ -94,7 +85,7 @@ public class ProfileQueueService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             var messages = await connection.QueryAsync<QueuedMessage>("""
                 SELECT id, chat_id AS ChatId, message_id AS MessageId, user_id AS UserId,
@@ -110,21 +101,21 @@ public class ProfileQueueService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get pending messages");
-            return new List<QueuedMessage>();
+            logger.LogError(ex, "Failed to get pending messages");
+            return [];
         }
     }
 
     /// <summary>
     /// Пометить сообщения как обработанные
     /// </summary>
-    public async Task MarkAsProcessedAsync(IEnumerable<int> ids)
+    public async Task MarkAsProcessedAsync(List<int> ids)
     {
         if (!ids.Any()) return;
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             await connection.ExecuteAsync("""
                 UPDATE message_queue SET processed = TRUE WHERE id = ANY(@Ids)
@@ -133,7 +124,7 @@ public class ProfileQueueService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to mark messages as processed");
+            logger.LogError(ex, "Failed to mark messages as processed");
         }
     }
 
@@ -144,7 +135,7 @@ public class ProfileQueueService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             var deleted = await connection.ExecuteAsync("""
                 DELETE FROM message_queue
@@ -154,12 +145,12 @@ public class ProfileQueueService
 
             if (deleted > 0)
             {
-                _logger.LogInformation("Cleaned up {Count} old processed messages from queue", deleted);
+                logger.LogInformation("Cleaned up {Count} old processed messages from queue", deleted);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to cleanup old messages");
+            logger.LogWarning(ex, "Failed to cleanup old messages");
         }
     }
 }

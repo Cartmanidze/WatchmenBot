@@ -31,26 +31,15 @@ public class SetWebhookResponse
     };
 }
 
-public class SetWebhookHandler
+public class SetWebhookHandler(
+    ITelegramBotClient botClient,
+    IConfiguration configuration,
+    ILogger<SetWebhookHandler> logger)
 {
-    private readonly ITelegramBotClient _botClient;
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<SetWebhookHandler> _logger;
-
-    public SetWebhookHandler(
-        ITelegramBotClient botClient,
-        IConfiguration configuration,
-        ILogger<SetWebhookHandler> logger)
-    {
-        _botClient = botClient;
-        _configuration = configuration;
-        _logger = logger;
-    }
-
     public async Task<SetWebhookResponse> HandleAsync(SetWebhookRequest request, CancellationToken cancellationToken)
     {
-        var webhookUrl = _configuration["Telegram:WebhookUrl"];
-        var secretToken = _configuration["Telegram:WebhookSecret"];
+        var webhookUrl = configuration["Telegram:WebhookUrl"];
+        var secretToken = configuration["Telegram:WebhookSecret"];
 
         if (string.IsNullOrWhiteSpace(webhookUrl))
         {
@@ -64,21 +53,21 @@ public class SetWebhookHandler
 
         try
         {
-            await _botClient.SetWebhook(
+            await botClient.SetWebhook(
                 url: webhookUrl,
-                allowedUpdates: new[] { UpdateType.Message },
+                allowedUpdates: [UpdateType.Message],
                 secretToken: string.IsNullOrWhiteSpace(secretToken) ? null : secretToken,
                 maxConnections: 40,
                 dropPendingUpdates: true,
                 cancellationToken: cancellationToken);
 
-            _logger.LogInformation("Webhook set to {WebhookUrl}", webhookUrl);
+            logger.LogInformation("Webhook set to {WebhookUrl}", webhookUrl);
             
             return SetWebhookResponse.Success(webhookUrl, !string.IsNullOrWhiteSpace(secretToken));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to set webhook");
+            logger.LogError(ex, "Failed to set webhook");
             return SetWebhookResponse.Error($"Failed to set webhook: {ex.Message}");
         }
     }

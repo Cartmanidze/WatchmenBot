@@ -9,42 +9,30 @@ namespace WatchmenBot.Services.Llm;
 /// <summary>
 /// Провайдер для OpenAI-совместимых API (OpenAI, OpenRouter, Together, Groq, Ollama, etc.)
 /// </summary>
-public class OpenAiCompatibleProvider : ILlmProvider
+public class OpenAiCompatibleProvider(HttpClient httpClient, OpenAiProviderConfig config, ILogger logger)
+    : ILlmProvider
 {
-    private readonly HttpClient _httpClient;
-    private readonly OpenAiProviderConfig _config;
-    private readonly ILogger _logger;
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = false
     };
 
-    public string Name => _config.Name;
-    public string Model => _config.Model;
-
-    public OpenAiCompatibleProvider(HttpClient httpClient, OpenAiProviderConfig config, ILogger logger)
-    {
-        _httpClient = httpClient;
-        _config = config;
-        _logger = logger;
-    }
+    public string Name => config.Name;
+    public string Model => config.Model;
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
     {
-        var model = request.ModelOverride ?? _config.Model;
+        var model = request.ModelOverride ?? config.Model;
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_config.BaseUrl}/chat/completions")
-        {
-            Version = HttpVersion.Version11,
-            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
-        };
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{config.BaseUrl}/chat/completions");
+        httpRequest.Version = HttpVersion.Version11;
+        httpRequest.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
 
-        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.ApiKey);
 
         // Дополнительные заголовки для OpenRouter
-        if (_config.Name.Equals("openrouter", StringComparison.OrdinalIgnoreCase))
+        if (config.Name.Equals("openrouter", StringComparison.OrdinalIgnoreCase))
         {
             httpRequest.Headers.Add("HTTP-Referer", "https://github.com/watchmenbot");
             httpRequest.Headers.Add("X-Title", "WatchmenBot");
@@ -71,16 +59,16 @@ public class OpenAiCompatibleProvider : ILlmProvider
 
         var sw = Stopwatch.StartNew();
 
-        _logger.LogDebug("[{Provider}] Requesting {Model}: {InputChars} chars",
+        logger.LogDebug("[{Provider}] Requesting {Model}: {InputChars} chars",
             Name, model, request.SystemPrompt.Length + request.UserPrompt.Length);
 
-        using var response = await _httpClient.SendAsync(httpRequest, ct);
+        using var response = await httpClient.SendAsync(httpRequest, ct);
         var json = await response.Content.ReadAsStringAsync(ct);
         sw.Stop();
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("[{Provider}] API error {StatusCode}: {Response}", Name, response.StatusCode, json);
+            logger.LogError("[{Provider}] API error {StatusCode}: {Response}", Name, response.StatusCode, json);
             response.EnsureSuccessStatusCode();
         }
 
@@ -96,7 +84,7 @@ public class OpenAiCompatibleProvider : ILlmProvider
             completionTokens = usage.TryGetProperty("completion_tokens", out var ct2) ? ct2.GetInt32() : 0;
         }
 
-        _logger.LogInformation("[{Provider}] {Model}: {PromptTokens}+{CompletionTokens} tokens, {Ms}ms",
+        logger.LogInformation("[{Provider}] {Model}: {PromptTokens}+{CompletionTokens} tokens, {Ms}ms",
             Name, model, promptTokens, completionTokens, sw.ElapsedMilliseconds);
 
         return new LlmResponse
@@ -115,10 +103,10 @@ public class OpenAiCompatibleProvider : ILlmProvider
         try
         {
             // Простой запрос для проверки доступности
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.BaseUrl}/models");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{config.BaseUrl}/models");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.ApiKey);
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var response = await httpClient.SendAsync(request, ct);
             return response.IsSuccessStatusCode;
         }
         catch

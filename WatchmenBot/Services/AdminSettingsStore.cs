@@ -3,57 +3,46 @@ using WatchmenBot.Infrastructure.Database;
 
 namespace WatchmenBot.Services;
 
-public class AdminSettingsStore
+public class AdminSettingsStore(
+    IDbConnectionFactory connectionFactory,
+    IConfiguration configuration,
+    ILogger<AdminSettingsStore> logger)
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<AdminSettingsStore> _logger;
-
     // Default settings
     private const string DefaultSummaryTime = "21:00";
     private const string DefaultReportTime = "10:00";
     private const string DefaultTimezone = "+06:00"; // Omsk
 
-    public AdminSettingsStore(
-        IDbConnectionFactory connectionFactory,
-        IConfiguration configuration,
-        ILogger<AdminSettingsStore> logger)
-    {
-        _connectionFactory = connectionFactory;
-        _configuration = configuration;
-        _logger = logger;
-    }
-
     public async Task<string> GetSummaryTimeAsync()
     {
         return await GetSettingAsync("summary_time")
-               ?? _configuration["DailySummary:TimeOfDay"]
+               ?? configuration["DailySummary:TimeOfDay"]
                ?? DefaultSummaryTime;
     }
 
     public async Task SetSummaryTimeAsync(string time)
     {
         await SetSettingAsync("summary_time", time);
-        _logger.LogInformation("[Admin] Summary time changed to {Time}", time);
+        logger.LogInformation("[Admin] Summary time changed to {Time}", time);
     }
 
     public async Task<string> GetReportTimeAsync()
     {
         return await GetSettingAsync("report_time")
-               ?? _configuration["Admin:ReportTime"]
+               ?? configuration["Admin:ReportTime"]
                ?? DefaultReportTime;
     }
 
     public async Task SetReportTimeAsync(string time)
     {
         await SetSettingAsync("report_time", time);
-        _logger.LogInformation("[Admin] Report time changed to {Time}", time);
+        logger.LogInformation("[Admin] Report time changed to {Time}", time);
     }
 
     public async Task<TimeSpan> GetTimezoneOffsetAsync()
     {
         var offsetStr = await GetSettingAsync("timezone_offset")
-                        ?? _configuration["Admin:TimezoneOffset"]
+                        ?? configuration["Admin:TimezoneOffset"]
                         ?? DefaultTimezone;
 
         if (TimeSpan.TryParse(offsetStr.TrimStart('+'), out var offset))
@@ -65,17 +54,17 @@ public class AdminSettingsStore
     public async Task SetTimezoneOffsetAsync(string offset)
     {
         await SetSettingAsync("timezone_offset", offset);
-        _logger.LogInformation("[Admin] Timezone offset changed to {Offset}", offset);
+        logger.LogInformation("[Admin] Timezone offset changed to {Offset}", offset);
     }
 
     public long GetAdminUserId()
     {
-        return _configuration.GetValue<long>("Admin:UserId", 0);
+        return configuration.GetValue<long>("Admin:UserId", 0);
     }
 
     public string? GetAdminUsername()
     {
-        return _configuration["Admin:Username"];
+        return configuration["Admin:Username"];
     }
 
     public bool IsAdmin(long userId, string? username)
@@ -97,14 +86,14 @@ public class AdminSettingsStore
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             return await connection.QuerySingleOrDefaultAsync<string>(
                 "SELECT value FROM admin_settings WHERE key = @Key",
                 new { Key = key });
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get setting {Key}", key);
+            logger.LogWarning(ex, "Failed to get setting {Key}", key);
             return null;
         }
     }
@@ -113,7 +102,7 @@ public class AdminSettingsStore
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             await connection.ExecuteAsync(
                 """
                 INSERT INTO admin_settings (key, value, updated_at)
@@ -126,7 +115,7 @@ public class AdminSettingsStore
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to set setting {Key}", key);
+            logger.LogError(ex, "Failed to set setting {Key}", key);
             throw;
         }
     }
@@ -152,6 +141,6 @@ public class AdminSettingsStore
     public async Task SetDebugModeAsync(bool enabled)
     {
         await SetSettingAsync("debug_mode", enabled ? "true" : "false");
-        _logger.LogInformation("[Admin] Debug mode {Status}", enabled ? "enabled" : "disabled");
+        logger.LogInformation("[Admin] Debug mode {Status}", enabled ? "enabled" : "disabled");
     }
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
@@ -7,31 +8,14 @@ using WatchmenBot.Services.Llm;
 
 namespace WatchmenBot.Features.Search;
 
-public class FactCheckHandler
+public class FactCheckHandler(
+    ITelegramBotClient bot,
+    MessageStore messageStore,
+    LlmRouter llmRouter,
+    PromptSettingsStore promptSettings,
+    DebugService debugService,
+    ILogger<FactCheckHandler> logger)
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly MessageStore _messageStore;
-    private readonly LlmRouter _llmRouter;
-    private readonly PromptSettingsStore _promptSettings;
-    private readonly DebugService _debugService;
-    private readonly ILogger<FactCheckHandler> _logger;
-
-    public FactCheckHandler(
-        ITelegramBotClient bot,
-        MessageStore messageStore,
-        LlmRouter llmRouter,
-        PromptSettingsStore promptSettings,
-        DebugService debugService,
-        ILogger<FactCheckHandler> logger)
-    {
-        _bot = bot;
-        _messageStore = messageStore;
-        _llmRouter = llmRouter;
-        _promptSettings = promptSettings;
-        _debugService = debugService;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Handle /truth command - fact-check last N messages
     /// </summary>
@@ -52,16 +36,16 @@ public class FactCheckHandler
 
         try
         {
-            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+            await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
-            _logger.LogInformation("[TRUTH] Checking last {Count} messages in chat {ChatId}", count, chatId);
+            logger.LogInformation("[TRUTH] Checking last {Count} messages in chat {ChatId}", count, chatId);
 
             // Get latest messages
-            var messages = await _messageStore.GetLatestMessagesAsync(chatId, count);
+            var messages = await messageStore.GetLatestMessagesAsync(chatId, count);
 
             if (messages.Count == 0)
             {
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: chatId,
                     text: "Не нашёл сообщений для проверки.",
                     replyParameters: new ReplyParameters { MessageId = message.MessageId },
@@ -83,7 +67,7 @@ public class FactCheckHandler
             debugReport.ContextTokensEstimate = context.Length / 4;
 
             // Get prompt settings
-            var settings = await _promptSettings.GetSettingsAsync("truth");
+            var settings = await promptSettings.GetSettingsAsync("truth");
 
             var userPrompt = $"""
                 Сегодняшняя дата: {DateTime.UtcNow:dd.MM.yyyy}
@@ -96,7 +80,7 @@ public class FactCheckHandler
                 """;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var response = await _llmRouter.CompleteWithFallbackAsync(
+            var response = await llmRouter.CompleteWithFallbackAsync(
                 new LlmRequest
                 {
                     SystemPrompt = settings.SystemPrompt,
@@ -120,13 +104,13 @@ public class FactCheckHandler
             debugReport.TotalTokens = response.TotalTokens;
             debugReport.LlmTimeMs = sw.ElapsedMilliseconds;
 
-            _logger.LogDebug("[TRUTH] Used provider: {Provider}", response.Provider);
+            logger.LogDebug("[TRUTH] Used provider: {Provider}", response.Provider);
 
             // Sanitize HTML for Telegram
             var sanitizedResponse = TelegramHtmlSanitizer.Sanitize(response.Content);
 
             // Send response
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: chatId,
                 text: sanitizedResponse,
                 parseMode: ParseMode.Html,
@@ -134,16 +118,16 @@ public class FactCheckHandler
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
 
-            _logger.LogInformation("[TRUTH] Completed fact-check for {Count} messages", messages.Count);
+            logger.LogInformation("[TRUTH] Completed fact-check for {Count} messages", messages.Count);
 
             // Send debug report to admin
-            await _debugService.SendDebugReportAsync(debugReport, ct);
+            await debugService.SendDebugReportAsync(debugReport, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[TRUTH] Failed to fact-check in chat {ChatId}", chatId);
+            logger.LogError(ex, "[TRUTH] Failed to fact-check in chat {ChatId}", chatId);
 
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: chatId,
                 text: "Произошла ошибка при проверке фактов. Попробуйте позже.",
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
@@ -186,31 +170,31 @@ public class FactCheckHandler
     /// </summary>
     private async Task<(string expanded, long timeMs)> ExpandContextForFactCheckAsync(string context, CancellationToken ct)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew();
 
         try
         {
-            var systemPrompt = """
-                Ты — помощник для подготовки текста к фактчеку.
+            const string systemPrompt = """
+                                        Ты — помощник для подготовки текста к фактчеку.
 
-                Твоя задача: расшифровать аббревиатуры и сокращения в сообщениях, чтобы поисковик лучше понял о чём речь.
+                                        Твоя задача: расшифровать аббревиатуры и сокращения в сообщениях, чтобы поисковик лучше понял о чём речь.
 
-                Правила:
-                1. Расшифруй известные аббревиатуры: SGA → SGA (Shai Gilgeous-Alexander), МУ → МУ (Манчестер Юнайтед)
-                2. Добавь контекст в скобках рядом с первым упоминанием
-                3. НЕ меняй структуру сообщений — только добавляй пояснения
-                4. НЕ меняй имена авторов сообщений
-                5. Если нет аббревиатур — верни текст как есть
-                6. Сохрани формат [время] автор: текст
+                                        Правила:
+                                        1. Расшифруй известные аббревиатуры: SGA → SGA (Shai Gilgeous-Alexander), МУ → МУ (Манчестер Юнайтед)
+                                        2. Добавь контекст в скобках рядом с первым упоминанием
+                                        3. НЕ меняй структуру сообщений — только добавляй пояснения
+                                        4. НЕ меняй имена авторов сообщений
+                                        5. Если нет аббревиатур — верни текст как есть
+                                        6. Сохрани формат [время] автор: текст
 
-                Пример:
-                Вход: "[14:30] Вася: SGA лучше Эдварда"
-                Выход: "[14:30] Вася: SGA (Shai Gilgeous-Alexander, NBA) лучше Эдварда (Anthony Edwards, NBA)"
+                                        Пример:
+                                        Вход: "[14:30] Вася: SGA лучше Эдварда"
+                                        Выход: "[14:30] Вася: SGA (Shai Gilgeous-Alexander, NBA) лучше Эдварда (Anthony Edwards, NBA)"
 
-                Отвечай ТОЛЬКО обработанным текстом, без объяснений.
-                """;
+                                        Отвечай ТОЛЬКО обработанным текстом, без объяснений.
+                                        """;
 
-            var response = await _llmRouter.CompleteWithFallbackAsync(
+            var response = await llmRouter.CompleteWithFallbackAsync(
                 new LlmRequest
                 {
                     SystemPrompt = systemPrompt,
@@ -229,11 +213,11 @@ public class FactCheckHandler
                 expanded.Length > context.Length * 3 || // Too much expansion
                 expanded.Length < context.Length / 2)   // Lost content
             {
-                _logger.LogWarning("[FactCheck] Context expansion returned invalid result, using original");
+                logger.LogWarning("[FactCheck] Context expansion returned invalid result, using original");
                 return (context, sw.ElapsedMilliseconds);
             }
 
-            _logger.LogInformation("[FactCheck] Expanded context: {Original} → {Expanded} chars ({Ms}ms)",
+            logger.LogInformation("[FactCheck] Expanded context: {Original} → {Expanded} chars ({Ms}ms)",
                 context.Length, expanded.Length, sw.ElapsedMilliseconds);
 
             return (expanded, sw.ElapsedMilliseconds);
@@ -241,7 +225,7 @@ public class FactCheckHandler
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogWarning(ex, "[FactCheck] Context expansion failed, using original");
+            logger.LogWarning(ex, "[FactCheck] Context expansion failed, using original");
             return (context, sw.ElapsedMilliseconds);
         }
     }

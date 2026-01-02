@@ -6,22 +6,11 @@ namespace WatchmenBot.Services;
 /// <summary>
 /// Service to import chat history from Telegram Desktop export
 /// </summary>
-public class ChatImportService
+public class ChatImportService(
+    TelegramExportParser parser,
+    IDbConnectionFactory connectionFactory,
+    ILogger<ChatImportService> logger)
 {
-    private readonly TelegramExportParser _parser;
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<ChatImportService> _logger;
-
-    public ChatImportService(
-        TelegramExportParser parser,
-        IDbConnectionFactory connectionFactory,
-        ILogger<ChatImportService> logger)
-    {
-        _parser = parser;
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Import messages from Telegram Desktop export directory
     /// </summary>
@@ -36,8 +25,8 @@ public class ChatImportService
         try
         {
             // Parse HTML files
-            _logger.LogInformation("[Import] Starting import from {Path} for chat {ChatId}", directoryPath, chatId);
-            var messages = await _parser.ParseExportDirectoryAsync(directoryPath, chatId, ct);
+            logger.LogInformation("[Import] Starting import from {Path} for chat {ChatId}", directoryPath, chatId);
+            var messages = await parser.ParseExportDirectoryAsync(directoryPath, chatId, ct);
 
             result.TotalParsed = messages.Count;
 
@@ -50,7 +39,7 @@ public class ChatImportService
             // Get existing message IDs to skip duplicates
             var existingIds = skipExisting
                 ? await GetExistingMessageIdsAsync(chatId, ct)
-                : new HashSet<long>();
+                : [];
 
             result.SkippedExisting = existingIds.Count;
 
@@ -61,7 +50,7 @@ public class ChatImportService
 
             if (newMessages.Count == 0)
             {
-                _logger.LogInformation("[Import] All messages already exist in database");
+                logger.LogInformation("[Import] All messages already exist in database");
                 result.IsSuccess = true;
                 return result;
             }
@@ -78,19 +67,19 @@ public class ChatImportService
                 await InsertMessagesBatchAsync(batch, ct);
 
                 imported += batch.Count;
-                _logger.LogInformation("[Import] Progress: {Imported}/{Total} messages",
+                logger.LogInformation("[Import] Progress: {Imported}/{Total} messages",
                     imported, newMessages.Count);
             }
 
             result.Imported = imported;
             result.IsSuccess = true;
 
-            _logger.LogInformation("[Import] Complete: {Imported} new messages imported, {Skipped} skipped",
+            logger.LogInformation("[Import] Complete: {Imported} new messages imported, {Skipped} skipped",
                 imported, result.SkippedExisting);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Import] Failed to import from {Path}", directoryPath);
+            logger.LogError(ex, "[Import] Failed to import from {Path}", directoryPath);
             result.ErrorMessage = ex.Message;
         }
 
@@ -99,7 +88,7 @@ public class ChatImportService
 
     private async Task<HashSet<long>> GetExistingMessageIdsAsync(long chatId, CancellationToken ct)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var ids = await connection.QueryAsync<long>(
             "SELECT id FROM messages WHERE chat_id = @ChatId",
@@ -110,7 +99,7 @@ public class ChatImportService
 
     private async Task InsertMessagesBatchAsync(List<ImportedMessage> messages, CancellationToken ct)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
         using var transaction = connection.BeginTransaction();
 
         try

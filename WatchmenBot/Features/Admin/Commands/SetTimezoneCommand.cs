@@ -6,18 +6,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin set_timezone +N - set timezone offset
 /// </summary>
-public class SetTimezoneCommand : AdminCommandBase
+public class SetTimezoneCommand(
+    ITelegramBotClient bot,
+    AdminSettingsStore settings,
+    ILogger<SetTimezoneCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly AdminSettingsStore _settings;
-
-    public SetTimezoneCommand(
-        ITelegramBotClient bot,
-        AdminSettingsStore settings,
-        ILogger<SetTimezoneCommand> logger) : base(bot, logger)
-    {
-        _settings = settings;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         if (context.Args.Length == 0)
@@ -42,7 +36,7 @@ public class SetTimezoneCommand : AdminCommandBase
             return true;
         }
 
-        await _settings.SetTimezoneOffsetAsync($"+{cleanOffset}");
+        await settings.SetTimezoneOffsetAsync($"+{cleanOffset}");
 
         await SendMessageAsync(context.ChatId,
             $"✅ Часовой пояс изменён на <b>UTC+{parsedOffset:hh\\:mm}</b>", ct);

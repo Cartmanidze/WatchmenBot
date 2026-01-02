@@ -6,27 +6,17 @@ namespace WatchmenBot.Services;
 /// Background service for fact extraction from message queue.
 /// Delegates all processing logic to ProfileOrchestrator.
 /// </summary>
-public class ProfileWorkerService : BackgroundService
+public class ProfileWorkerService(
+    IServiceProvider serviceProvider,
+    ILogger<ProfileWorkerService> logger,
+    IConfiguration configuration)
+    : BackgroundService
 {
-    private readonly IServiceProvider _serviceProvider;
-    private readonly ILogger<ProfileWorkerService> _logger;
-    private readonly IConfiguration _configuration;
-    private readonly ProfileOptions _options;
-
-    public ProfileWorkerService(
-        IServiceProvider serviceProvider,
-        ILogger<ProfileWorkerService> logger,
-        IConfiguration configuration)
-    {
-        _serviceProvider = serviceProvider;
-        _logger = logger;
-        _configuration = configuration;
-        _options = ProfileOptions.FromConfiguration(configuration);
-    }
+    private readonly ProfileOptions _options = ProfileOptions.FromConfiguration(configuration);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("[ProfileWorker] Started. Processing interval: {Interval}min",
+        logger.LogInformation("[ProfileWorker] Started. Processing interval: {Interval}min",
             _options.QueueProcessingIntervalMinutes);
 
         // Startup delay
@@ -37,7 +27,7 @@ public class ProfileWorkerService : BackgroundService
             try
             {
                 // Create scope for each run (fresh DI instances)
-                using var scope = _serviceProvider.CreateScope();
+                using var scope = serviceProvider.CreateScope();
                 var orchestrator = scope.ServiceProvider.GetRequiredService<ProfileOrchestrator>();
 
                 // Run fact extraction
@@ -46,7 +36,7 @@ public class ProfileWorkerService : BackgroundService
                 // Adaptive delay: continue if more work, otherwise wait full interval
                 if (hasMoreWork)
                 {
-                    _logger.LogDebug("[ProfileWorker] More work available, continuing in 10s...");
+                    logger.LogDebug("[ProfileWorker] More work available, continuing in 10s...");
                     await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
                 }
                 else
@@ -60,11 +50,11 @@ public class ProfileWorkerService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[ProfileWorker] Error during fact extraction");
+                logger.LogError(ex, "[ProfileWorker] Error during fact extraction");
                 await Task.Delay(TimeSpan.FromSeconds(_options.ErrorRetryDelaySeconds), stoppingToken);
             }
         }
 
-        _logger.LogInformation("[ProfileWorker] Stopped");
+        logger.LogInformation("[ProfileWorker] Stopped");
     }
 }

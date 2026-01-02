@@ -8,21 +8,13 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin rename [-chat_id] "Old Name" "New Name" - rename display name in messages and embeddings
 /// </summary>
-public class RenameCommand : AdminCommandBase
+public class RenameCommand(
+    ITelegramBotClient bot,
+    MessageStore messageStore,
+    EmbeddingService embeddingService,
+    ILogger<RenameCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly MessageStore _messageStore;
-    private readonly EmbeddingService _embeddingService;
-
-    public RenameCommand(
-        ITelegramBotClient bot,
-        MessageStore messageStore,
-        EmbeddingService embeddingService,
-        ILogger<RenameCommand> logger) : base(bot, logger)
-    {
-        _messageStore = messageStore;
-        _embeddingService = embeddingService;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         // Parse: /admin rename [-1234567] "Old Name" "New Name"
@@ -60,7 +52,7 @@ public class RenameCommand : AdminCommandBase
             text: "⏳ Переименовываю сообщения...",
             cancellationToken: ct);
 
-        var messagesAffected = await _messageStore.RenameDisplayNameAsync(targetChatId, oldName, newName);
+        var messagesAffected = await messageStore.RenameDisplayNameAsync(targetChatId, oldName, newName);
 
         await Bot.EditMessageText(
             chatId: context.ChatId,
@@ -68,7 +60,7 @@ public class RenameCommand : AdminCommandBase
             text: "⏳ Переименовываю эмбеддинги...",
             cancellationToken: ct);
 
-        var embeddingsAffected = await _embeddingService.RenameInEmbeddingsAsync(targetChatId, oldName, newName, ct);
+        var embeddingsAffected = await embeddingService.RenameInEmbeddingsAsync(targetChatId, oldName, newName, ct);
 
         var scope = targetChatId.HasValue ? $"в чате {targetChatId}" : "во всех чатах";
 

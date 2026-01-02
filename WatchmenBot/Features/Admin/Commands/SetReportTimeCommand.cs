@@ -6,18 +6,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin set_report_time HH:mm - set daily report time
 /// </summary>
-public class SetReportTimeCommand : AdminCommandBase
+public class SetReportTimeCommand(
+    ITelegramBotClient bot,
+    AdminSettingsStore settings,
+    ILogger<SetReportTimeCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly AdminSettingsStore _settings;
-
-    public SetReportTimeCommand(
-        ITelegramBotClient bot,
-        AdminSettingsStore settings,
-        ILogger<SetReportTimeCommand> logger) : base(bot, logger)
-    {
-        _settings = settings;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         if (context.Args.Length == 0)
@@ -36,7 +30,7 @@ public class SetReportTimeCommand : AdminCommandBase
             return true;
         }
 
-        await _settings.SetReportTimeAsync(time);
+        await settings.SetReportTimeAsync(time);
 
         await SendMessageAsync(context.ChatId,
             $"✅ Время отчёта в личку изменено на <b>{time}</b>", ct);

@@ -6,29 +6,19 @@ namespace WatchmenBot.Services;
 /// Nightly background service for deep profile generation.
 /// Delegates all processing logic to ProfileOrchestrator.
 /// </summary>
-public class ProfileGeneratorService : BackgroundService
+public class ProfileGeneratorService(
+    IServiceProvider serviceProvider,
+    ILogger<ProfileGeneratorService> logger,
+    IConfiguration configuration)
+    : BackgroundService
 {
-    private readonly IServiceProvider _serviceProvider;
-    private readonly ILogger<ProfileGeneratorService> _logger;
-    private readonly IConfiguration _configuration;
-    private readonly ProfileOptions _options;
-
-    public ProfileGeneratorService(
-        IServiceProvider serviceProvider,
-        ILogger<ProfileGeneratorService> logger,
-        IConfiguration configuration)
-    {
-        _serviceProvider = serviceProvider;
-        _logger = logger;
-        _configuration = configuration;
-        _options = ProfileOptions.FromConfiguration(configuration);
-    }
+    private readonly ProfileOptions _options = ProfileOptions.FromConfiguration(configuration);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var nightlyTime = TimeSpan.Parse(_options.NightlyProfileTime);
 
-        _logger.LogInformation("[ProfileGenerator] Started. Nightly run at: {Time}", nightlyTime);
+        logger.LogInformation("[ProfileGenerator] Started. Nightly run at: {Time}", nightlyTime);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -38,13 +28,13 @@ public class ProfileGeneratorService : BackgroundService
                 var nextRun = CalculateNextRun(now, nightlyTime);
                 var delay = nextRun - now;
 
-                _logger.LogInformation("[ProfileGenerator] Next run at: {NextRun} UTC (in {Delay})",
+                logger.LogInformation("[ProfileGenerator] Next run at: {NextRun} UTC (in {Delay})",
                     nextRun, delay);
 
                 await Task.Delay(delay, stoppingToken);
 
                 // Create scope for each run (fresh DI instances)
-                using var scope = _serviceProvider.CreateScope();
+                using var scope = serviceProvider.CreateScope();
                 var orchestrator = scope.ServiceProvider.GetRequiredService<ProfileOrchestrator>();
 
                 // Run profile generation
@@ -56,13 +46,13 @@ public class ProfileGeneratorService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[ProfileGenerator] Error during profile generation");
+                logger.LogError(ex, "[ProfileGenerator] Error during profile generation");
                 // Wait before retry
                 await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
             }
         }
 
-        _logger.LogInformation("[ProfileGenerator] Stopped");
+        logger.LogInformation("[ProfileGenerator] Stopped");
     }
 
     private static DateTime CalculateNextRun(DateTime now, TimeSpan targetTime)

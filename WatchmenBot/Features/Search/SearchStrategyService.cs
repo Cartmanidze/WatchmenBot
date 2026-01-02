@@ -6,22 +6,11 @@ namespace WatchmenBot.Features.Search;
 /// Search strategy service for /ask command
 /// Handles personal (hybrid) and context-only search strategies
 /// </summary>
-public class SearchStrategyService
+public class SearchStrategyService(
+    EmbeddingService embeddingService,
+    ContextEmbeddingService contextEmbeddingService,
+    ILogger<SearchStrategyService> logger)
 {
-    private readonly EmbeddingService _embeddingService;
-    private readonly ContextEmbeddingService _contextEmbeddingService;
-    private readonly ILogger<SearchStrategyService> _logger;
-
-    public SearchStrategyService(
-        EmbeddingService embeddingService,
-        ContextEmbeddingService contextEmbeddingService,
-        ILogger<SearchStrategyService> logger)
-    {
-        _embeddingService = embeddingService;
-        _contextEmbeddingService = contextEmbeddingService;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Hybrid search for personal questions:
     /// 1. Try finding user's messages via message_embeddings (precise targeting)
@@ -39,11 +28,11 @@ public class SearchStrategyService
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // Step 1: Try finding user's relevant messages using message_embeddings
-        var personalTask = _embeddingService.GetPersonalContextAsync(
+        var personalTask = embeddingService.GetPersonalContextAsync(
             chatId, usernameOrName, displayName, query, days, ct);
 
         // Step 2: Parallel search in context embeddings (user might be in dialogs)
-        var contextTask = _contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
+        var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
 
         await Task.WhenAll(personalTask, contextTask);
 
@@ -69,7 +58,7 @@ public class SearchStrategyService
                 .Select(r => r.MessageId)
                 .ToList();
 
-            var expandedWindows = await _contextEmbeddingService.GetContextWindowsByMessageIdsAsync(
+            var expandedWindows = await contextEmbeddingService.GetContextWindowsByMessageIdsAsync(
                 chatId, topMessageIds, limit: 5, ct);
 
             var expandedResults = expandedWindows.Select(cw => new SearchResult
@@ -113,7 +102,7 @@ public class SearchStrategyService
             .OrderByDescending(r => r.Similarity)
             .ToList();
 
-        _logger.LogInformation(
+        logger.LogInformation(
             "[HybridPersonal] User: {User} | Found {Total} results in {Ms}ms ({Personal} personal + {Context} context)",
             usernameOrName, mergedResults.Count, sw.ElapsedMilliseconds, personalCount, contextCount);
 
@@ -161,8 +150,8 @@ public class SearchStrategyService
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // Parallel search in both embedding types
-        var contextTask = _contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
-        var messageTask = _embeddingService.SearchSimilarAsync(chatId, query, limit: 10, ct);
+        var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
+        var messageTask = embeddingService.SearchSimilarAsync(chatId, query, limit: 10, ct);
 
         await Task.WhenAll(contextTask, messageTask);
 
@@ -170,7 +159,7 @@ public class SearchStrategyService
         var messageResults = await messageTask;
 
         sw.Stop();
-        _logger.LogInformation(
+        logger.LogInformation(
             "[HybridSearch] Found {ContextCount} context windows + {MessageCount} messages in {Ms}ms",
             contextResults.Count, messageResults.Count, sw.ElapsedMilliseconds);
 
@@ -209,7 +198,7 @@ public class SearchStrategyService
             .OrderByDescending(r => r.Similarity)
             .ToList();
 
-        _logger.LogInformation(
+        logger.LogInformation(
             "[HybridSearch] Merged {Total} results ({Context} context + {Message} messages)",
             allResults.Count, contextResults.Count, messageResults.Count);
 

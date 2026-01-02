@@ -1,7 +1,6 @@
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.ReplyMarkups;
 
 namespace WatchmenBot.Services;
 
@@ -9,33 +8,19 @@ namespace WatchmenBot.Services;
 /// Фоновый воркер для обработки запросов на генерацию summary.
 /// Не привязан к nginx timeout — работает сколько нужно.
 /// </summary>
-public class BackgroundSummaryWorker : BackgroundService
+public partial class BackgroundSummaryWorker(
+    SummaryQueueService queue,
+    ITelegramBotClient bot,
+    IServiceProvider serviceProvider,
+    LogCollector logCollector,
+    ILogger<BackgroundSummaryWorker> logger)
+    : BackgroundService
 {
-    private readonly SummaryQueueService _queue;
-    private readonly ITelegramBotClient _bot;
-    private readonly IServiceProvider _serviceProvider;
-    private readonly LogCollector _logCollector;
-    private readonly ILogger<BackgroundSummaryWorker> _logger;
-
-    public BackgroundSummaryWorker(
-        SummaryQueueService queue,
-        ITelegramBotClient bot,
-        IServiceProvider serviceProvider,
-        LogCollector logCollector,
-        ILogger<BackgroundSummaryWorker> logger)
-    {
-        _queue = queue;
-        _bot = bot;
-        _serviceProvider = serviceProvider;
-        _logCollector = logCollector;
-        _logger = logger;
-    }
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("[BackgroundSummary] Worker started");
+        logger.LogInformation("[BackgroundSummary] Worker started");
 
-        await foreach (var item in _queue.Reader.ReadAllAsync(stoppingToken))
+        await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
         {
             try
             {
@@ -43,12 +28,12 @@ public class BackgroundSummaryWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[BackgroundSummary] Failed to process summary for chat {ChatId}", item.ChatId);
+                logger.LogError(ex, "[BackgroundSummary] Failed to process summary for chat {ChatId}", item.ChatId);
 
                 // Отправляем сообщение об ошибке пользователю
                 try
                 {
-                    await _bot.SendMessage(
+                    await bot.SendMessage(
                         chatId: item.ChatId,
                         text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
                         replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
@@ -61,17 +46,17 @@ public class BackgroundSummaryWorker : BackgroundService
             }
         }
 
-        _logger.LogInformation("[BackgroundSummary] Worker stopped");
+        logger.LogInformation("[BackgroundSummary] Worker stopped");
     }
 
     private async Task ProcessSummaryRequestAsync(SummaryQueueItem item, CancellationToken ct)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        _logger.LogInformation("[BackgroundSummary] Processing summary for chat {ChatId}, {Hours}h, requested by @{User}",
+        logger.LogInformation("[BackgroundSummary] Processing summary for chat {ChatId}, {Hours}h, requested by @{User}",
             item.ChatId, item.Hours, item.RequestedBy);
 
-        using var scope = _serviceProvider.CreateScope();
+        using var scope = serviceProvider.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<MessageStore>();
         var smartSummary = scope.ServiceProvider.GetRequiredService<SmartSummaryService>();
 
@@ -82,7 +67,7 @@ public class BackgroundSummaryWorker : BackgroundService
 
         if (messages.Count == 0)
         {
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: item.ChatId,
                 text: $"За последние {item.Hours} часов сообщений не найдено.",
                 replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
@@ -98,30 +83,30 @@ public class BackgroundSummaryWorker : BackgroundService
         // Отправляем результат
         try
         {
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: item.ChatId,
                 text: report,
                 parseMode: ParseMode.Html,
-                linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true },
+                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
                 replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
                 cancellationToken: ct);
         }
         catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
         {
-            _logger.LogWarning("[BackgroundSummary] HTML parsing failed, sending as plain text");
-            var plainText = System.Text.RegularExpressions.Regex.Replace(report, "<[^>]+>", "");
-            await _bot.SendMessage(
+            logger.LogWarning("[BackgroundSummary] HTML parsing failed, sending as plain text");
+            var plainText = MyRegex().Replace(report, "");
+            await bot.SendMessage(
                 chatId: item.ChatId,
                 text: plainText,
-                linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true },
+                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
                 replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
                 cancellationToken: ct);
         }
 
         sw.Stop();
-        _logCollector.IncrementSummaries();
+        logCollector.IncrementSummaries();
 
-        _logger.LogInformation("[BackgroundSummary] Summary sent to chat {ChatId} ({MessageCount} messages) in {Elapsed:F1}s",
+        logger.LogInformation("[BackgroundSummary] Summary sent to chat {ChatId} ({MessageCount} messages) in {Elapsed:F1}s",
             item.ChatId, messages.Count, sw.Elapsed.TotalSeconds);
     }
 
@@ -156,4 +141,7 @@ public class BackgroundSummaryWorker : BackgroundService
             _ => "ей"
         };
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex("<[^>]+>")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

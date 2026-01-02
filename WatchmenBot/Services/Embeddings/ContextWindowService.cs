@@ -7,19 +7,10 @@ namespace WatchmenBot.Services.Embeddings;
 /// Service for retrieving and merging context windows around messages.
 /// Provides surrounding conversation context for search results.
 /// </summary>
-public class ContextWindowService
+public class ContextWindowService(
+    IDbConnectionFactory connectionFactory,
+    ILogger<ContextWindowService> logger)
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<ContextWindowService> _logger;
-
-    public ContextWindowService(
-        IDbConnectionFactory connectionFactory,
-        ILogger<ContextWindowService> logger)
-    {
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Get context window around a specific message (N messages before + N after)
     /// </summary>
@@ -31,7 +22,7 @@ public class ContextWindowService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Get the target message's timestamp first
             var targetTime = await connection.ExecuteScalarAsync<DateTime?>(
@@ -39,7 +30,7 @@ public class ContextWindowService
                 new { ChatId = chatId, MessageId = messageId });
 
             if (targetTime == null)
-                return new List<ContextMessage>();
+                return [];
 
             // Get messages before (including target)
             var before = await connection.QueryAsync<ContextMessage>(
@@ -82,14 +73,14 @@ public class ContextWindowService
             // Combine and sort chronologically
             var window = before.Reverse().Concat(after).ToList();
 
-            _logger.LogDebug("[ContextWindow] MsgId={Id} → {Count} messages in window", messageId, window.Count);
+            logger.LogDebug("[ContextWindow] MsgId={Id} → {Count} messages in window", messageId, window.Count);
 
             return window;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get context window for message {MessageId}", messageId);
-            return new List<ContextMessage>();
+            logger.LogWarning(ex, "Failed to get context window for message {MessageId}", messageId);
+            return [];
         }
     }
 
@@ -104,11 +95,11 @@ public class ContextWindowService
         CancellationToken ct = default)
     {
         if (messageIds.Count == 0)
-            return new List<ContextWindow>();
+            return [];
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             var distinctIds = messageIds.Distinct().Take(10).ToArray();
 
@@ -194,15 +185,15 @@ public class ContextWindowService
             // Merge overlapping windows
             var merged = MergeOverlappingWindows(allWindows);
 
-            _logger.LogInformation("[ContextWindows] {Input} messages → {Windows} windows → {Merged} merged (optimized single query)",
+            logger.LogInformation("[ContextWindows] {Input} messages → {Windows} windows → {Merged} merged (optimized single query)",
                 messageIds.Count, allWindows.Count, merged.Count);
 
             return merged;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get merged context windows for {Count} messages", messageIds.Count);
-            return new List<ContextWindow>();
+            logger.LogWarning(ex, "Failed to get merged context windows for {Count} messages", messageIds.Count);
+            return [];
         }
     }
 

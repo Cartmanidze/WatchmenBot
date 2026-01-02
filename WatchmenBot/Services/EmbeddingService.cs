@@ -11,44 +11,27 @@ namespace WatchmenBot.Services;
 /// Core embedding service - handles search and RAG operations.
 /// Storage, personal search, and context window operations are delegated to specialized services.
 /// </summary>
-public class EmbeddingService
+public partial class EmbeddingService(
+    EmbeddingClient embeddingClient,
+    IDbConnectionFactory connectionFactory,
+    ILogger<EmbeddingService> logger,
+    EmbeddingStorageService storageService,
+    PersonalSearchService personalSearchService,
+    ContextWindowService contextWindowService)
 {
-    private readonly EmbeddingClient _embeddingClient;
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<EmbeddingService> _logger;
-
     // Delegated services (injected for backward compatibility)
-    private readonly EmbeddingStorageService _storageService;
-    private readonly PersonalSearchService _personalSearchService;
-    private readonly ContextWindowService _contextWindowService;
-
-    public EmbeddingService(
-        EmbeddingClient embeddingClient,
-        IDbConnectionFactory connectionFactory,
-        ILogger<EmbeddingService> logger,
-        EmbeddingStorageService storageService,
-        PersonalSearchService personalSearchService,
-        ContextWindowService contextWindowService)
-    {
-        _embeddingClient = embeddingClient;
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-        _storageService = storageService;
-        _personalSearchService = personalSearchService;
-        _contextWindowService = contextWindowService;
-    }
 
     /// <summary>
     /// Stores embedding for a message (delegates to EmbeddingStorageService)
     /// </summary>
     public Task StoreMessageEmbeddingAsync(MessageRecord message, CancellationToken ct = default)
-        => _storageService.StoreMessageEmbeddingAsync(message, ct);
+        => storageService.StoreMessageEmbeddingAsync(message, ct);
 
     /// <summary>
     /// Batch store embeddings for multiple messages (delegates to EmbeddingStorageService)
     /// </summary>
     public Task StoreMessageEmbeddingsBatchAsync(IEnumerable<MessageRecord> messages, CancellationToken ct = default)
-        => _storageService.StoreMessageEmbeddingsBatchAsync(messages, ct);
+        => storageService.StoreMessageEmbeddingsBatchAsync(messages, ct);
 
     /// <summary>
     /// Search for similar messages using vector similarity
@@ -62,37 +45,37 @@ public class EmbeddingService
         try
         {
             // First check how many embeddings exist for this chat
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var embeddingCount = await connection.ExecuteScalarAsync<long>(
                 "SELECT COUNT(*) FROM message_embeddings WHERE chat_id = @ChatId",
                 new { ChatId = chatId });
 
-            _logger.LogInformation("[Search] Chat {ChatId} has {Count} embeddings", chatId, embeddingCount);
+            logger.LogInformation("[Search] Chat {ChatId} has {Count} embeddings", chatId, embeddingCount);
 
             if (embeddingCount == 0)
             {
-                _logger.LogWarning("[Search] No embeddings found for chat {ChatId}", chatId);
-                return new List<SearchResult>();
+                logger.LogWarning("[Search] No embeddings found for chat {ChatId}", chatId);
+                return [];
             }
 
-            var queryEmbedding = await _embeddingClient.GetEmbeddingAsync(query, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
-                _logger.LogWarning("[Search] Failed to get embedding for query: {Query}", query);
-                return new List<SearchResult>();
+                logger.LogWarning("[Search] Failed to get embedding for query: {Query}", query);
+                return [];
             }
 
-            _logger.LogDebug("[Search] Got query embedding with {Dims} dimensions", queryEmbedding.Length);
+            logger.LogDebug("[Search] Got query embedding with {Dims} dimensions", queryEmbedding.Length);
 
             var results = await SearchByVectorAsync(chatId, queryEmbedding, limit, ct, queryText: query);
-            _logger.LogInformation("[Search] Found {Count} results for query in chat {ChatId} (hybrid)", results.Count, chatId);
+            logger.LogInformation("[Search] Found {Count} results for query in chat {ChatId} (hybrid)", results.Count, chatId);
 
             return results;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to search similar messages for query: {Query}", query);
-            return new List<SearchResult>();
+            logger.LogWarning(ex, "Failed to search similar messages for query: {Query}", query);
+            return [];
         }
     }
 
@@ -133,11 +116,11 @@ public class EmbeddingService
     {
         try
         {
-            var queryEmbedding = await _embeddingClient.GetEmbeddingAsync(query, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
-                return new List<SearchResult>();
+                return [];
 
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
             var results = await connection.QueryAsync<SearchResult>(
@@ -168,8 +151,8 @@ public class EmbeddingService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to search similar messages in range for query: {Query}", query);
-            return new List<SearchResult>();
+            logger.LogWarning(ex, "Failed to search similar messages in range for query: {Query}", query);
+            return [];
         }
     }
 
@@ -185,7 +168,7 @@ public class EmbeddingService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Simple approach: sample messages evenly across time period
             // This avoids loading vectors into memory
@@ -217,8 +200,8 @@ public class EmbeddingService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get diverse messages for chat {ChatId}", chatId);
-            return new List<SearchResult>();
+            logger.LogWarning(ex, "Failed to get diverse messages for chat {ChatId}", chatId);
+            return [];
         }
     }
 
@@ -227,7 +210,7 @@ public class EmbeddingService
     /// </summary>
     public async Task<bool> HasEmbeddingAsync(long chatId, long messageId, CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var exists = await connection.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM message_embeddings WHERE chat_id = @ChatId AND message_id = @MessageId)",
@@ -240,25 +223,25 @@ public class EmbeddingService
     /// Delete embeddings for a chat (delegates to EmbeddingStorageService)
     /// </summary>
     public Task DeleteChatEmbeddingsAsync(long chatId, CancellationToken ct = default)
-        => _storageService.DeleteChatEmbeddingsAsync(chatId, ct);
+        => storageService.DeleteChatEmbeddingsAsync(chatId, ct);
 
     /// <summary>
     /// Delete ALL embeddings (delegates to EmbeddingStorageService)
     /// </summary>
     public Task DeleteAllEmbeddingsAsync(CancellationToken ct = default)
-        => _storageService.DeleteAllEmbeddingsAsync(ct);
+        => storageService.DeleteAllEmbeddingsAsync(ct);
 
     /// <summary>
     /// Replace display name in embeddings (delegates to EmbeddingStorageService)
     /// </summary>
     public Task<int> RenameInEmbeddingsAsync(long? chatId, string oldName, string newName, CancellationToken ct = default)
-        => _storageService.RenameInEmbeddingsAsync(chatId, oldName, newName, ct);
+        => storageService.RenameInEmbeddingsAsync(chatId, oldName, newName, ct);
 
     /// <summary>
     /// Get embedding statistics (delegates to EmbeddingStorageService)
     /// </summary>
     public Task<EmbeddingStats> GetStatsAsync(long chatId, CancellationToken ct = default)
-        => _storageService.GetStatsAsync(chatId, ct);
+        => storageService.GetStatsAsync(chatId, ct);
 
     // Weight for hybrid search: 70% semantic, 30% keyword
     private const double DenseWeight = 0.7;
@@ -271,7 +254,7 @@ public class EmbeddingService
         CancellationToken ct,
         string? queryText = null)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
@@ -326,7 +309,7 @@ public class EmbeddingService
             sql,
             new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, Limit = limit });
 
-        _logger.LogDebug("[Search] Hybrid={Hybrid}, Terms='{Terms}'", useHybrid, searchTerms ?? "none");
+        logger.LogDebug("[Search] Hybrid={Hybrid}, Terms='{Terms}'", useHybrid, searchTerms ?? "none");
 
         return results.Select(r =>
         {
@@ -363,7 +346,7 @@ public class EmbeddingService
 
                 if (newResults.Count > 0)
                 {
-                    _logger.LogInformation("[Search] Full-text added {Count} exact matches", newResults.Count);
+                    logger.LogInformation("[Search] Full-text added {Count} exact matches", newResults.Count);
                     // Full-text results go first (they have exact word matches)
                     results = newResults.Concat(results).ToList();
                 }
@@ -432,7 +415,7 @@ public class EmbeddingService
 
                 if (newResults.Count > 0)
                 {
-                    _logger.LogInformation("[Search] ILIKE fallback added {Count} new results (total: {Total})",
+                    logger.LogInformation("[Search] ILIKE fallback added {Count} new results (total: {Total})",
                         newResults.Count, ilikeResults.Count);
 
                     results.AddRange(newResults);
@@ -452,7 +435,7 @@ public class EmbeddingService
                 }
             }
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "[Search] Query: '{Query}' | Best: {Best:F3} | Gap: {Gap:F3} | FullText: {FT} | Confidence: {Conf}",
                 TruncateForLog(query, 50), best, gap, response.HasFullTextMatch, response.Confidence);
 
@@ -460,7 +443,7 @@ public class EmbeddingService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to search with confidence for query: {Query}", query);
+            logger.LogWarning(ex, "Failed to search with confidence for query: {Query}", query);
             response.Confidence = SearchConfidence.None;
             response.ConfidenceReason = "Ошибка поиска";
             return response;
@@ -478,12 +461,12 @@ public class EmbeddingService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Extract meaningful words for full-text search
             var searchTerms = ExtractSearchTerms(query);
             if (string.IsNullOrWhiteSpace(searchTerms))
-                return new List<SearchResult>();
+                return [];
 
             var results = await connection.QueryAsync<SearchResult>(
                 """
@@ -507,8 +490,8 @@ public class EmbeddingService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Full-text search failed for query: {Query}", query);
-            return new List<SearchResult>();
+            logger.LogDebug(ex, "Full-text search failed for query: {Query}", query);
+            return [];
         }
     }
 
@@ -525,7 +508,7 @@ public class EmbeddingService
         {
             // Extract words longer than 3 chars for ILIKE search
             var rawWords = query
-                .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries)
+                .Split([' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\''], StringSplitOptions.RemoveEmptyEntries)
                 .Where(w => w.Length > 3)
                 .Select(w => w.ToLowerInvariant())
                 .Distinct()
@@ -533,7 +516,7 @@ public class EmbeddingService
                 .ToList();
 
             if (rawWords.Count == 0)
-                return new List<SearchResult>();
+                return [];
 
             // Add stems (word roots) to catch different word forms
             // e.g., "сосунов" -> also search for "сосун"
@@ -547,10 +530,10 @@ public class EmbeddingService
                 }
             }
 
-            _logger.LogDebug("[ILIKE] Words: [{Raw}] + stems: [{All}]",
+            logger.LogDebug("[ILIKE] Words: [{Raw}] + stems: [{All}]",
                 string.Join(", ", rawWords), string.Join(", ", words));
 
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Build ILIKE conditions for each word
             var wordList = words.ToList();
@@ -587,7 +570,7 @@ public class EmbeddingService
 
             var results = (await connection.QueryAsync<SearchResult>(embeddingsSql, parameters)).ToList();
 
-            _logger.LogDebug("[ILIKE] Embeddings: {Count} results for words: {Words}",
+            logger.LogDebug("[ILIKE] Embeddings: {Count} results for words: {Words}",
                 results.Count, string.Join(", ", wordList));
 
             // Fallback: search raw messages table ONLY if embeddings found nothing
@@ -626,21 +609,21 @@ public class EmbeddingService
 
                 if (rawResults.Count > 0)
                 {
-                    _logger.LogInformation("[ILIKE] Raw messages fallback found {Count} results (last 30 days)",
+                    logger.LogInformation("[ILIKE] Raw messages fallback found {Count} results (last 30 days)",
                         rawResults.Count);
                     results.AddRange(rawResults);
                 }
             }
 
-            _logger.LogDebug("[ILIKE] Total: {Count} results for words: {Words}",
+            logger.LogDebug("[ILIKE] Total: {Count} results for words: {Words}",
                 results.Count, string.Join(", ", wordList));
 
             return results;
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "ILIKE search failed for query: {Query}", query);
-            return new List<SearchResult>();
+            logger.LogDebug(ex, "ILIKE search failed for query: {Query}", query);
+            return [];
         }
     }
 
@@ -696,7 +679,7 @@ public class EmbeddingService
 
         var words = query
             .ToLowerInvariant()
-            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries)
+            .Split([' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\''], StringSplitOptions.RemoveEmptyEntries)
             .Where(w => w.Length > 2 && !stopWords.Contains(w))
             .Distinct()
             .ToList();
@@ -753,7 +736,7 @@ public class EmbeddingService
         if (text.Length > 800) indicators++;
 
         // Multiple URLs
-        var urlCount = System.Text.RegularExpressions.Regex.Matches(text, @"https?://").Count;
+        var urlCount = MyRegex().Matches(text).Count;
         if (urlCount >= 2) indicators++;
 
         // News indicators
@@ -801,7 +784,7 @@ public class EmbeddingService
         int days = 7,
         int limit = 30,
         CancellationToken ct = default)
-        => _personalSearchService.GetUserMessagesAsync(chatId, usernameOrName, days, limit, ct);
+        => personalSearchService.GetUserMessagesAsync(chatId, usernameOrName, days, limit, ct);
 
     /// <summary>
     /// Get messages that mention a specific user (delegates to PersonalSearchService)
@@ -812,7 +795,7 @@ public class EmbeddingService
         int days = 7,
         int limit = 20,
         CancellationToken ct = default)
-        => _personalSearchService.GetMentionsOfUserAsync(chatId, usernameOrName, days, limit, ct);
+        => personalSearchService.GetMentionsOfUserAsync(chatId, usernameOrName, days, limit, ct);
 
     /// <summary>
     /// Combined personal retrieval (delegates to PersonalSearchService)
@@ -824,7 +807,7 @@ public class EmbeddingService
         string question,
         int days = 7,
         CancellationToken ct = default)
-        => _personalSearchService.GetPersonalContextAsync(chatId, usernameOrName, displayName, question, days, ct);
+        => personalSearchService.GetPersonalContextAsync(chatId, usernameOrName, displayName, question, days, ct);
 
     /// <summary>
     /// Get context window around a message (delegates to ContextWindowService)
@@ -834,7 +817,7 @@ public class EmbeddingService
         long messageId,
         int windowSize = 2,
         CancellationToken ct = default)
-        => _contextWindowService.GetContextWindowAsync(chatId, messageId, windowSize, ct);
+        => contextWindowService.GetContextWindowAsync(chatId, messageId, windowSize, ct);
 
     /// <summary>
     /// Get merged context windows (delegates to ContextWindowService)
@@ -844,7 +827,10 @@ public class EmbeddingService
         List<long> messageIds,
         int windowSize = 2,
         CancellationToken ct = default)
-        => _contextWindowService.GetMergedContextWindowsAsync(chatId, messageIds, windowSize, ct);
+        => contextWindowService.GetMergedContextWindowsAsync(chatId, messageIds, windowSize, ct);
+    
+    [System.Text.RegularExpressions.GeneratedRegex(@"https?://")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }
 
 // ============================================================================
@@ -874,7 +860,7 @@ public class SearchResult
 
 public class SearchResponse
 {
-    public List<SearchResult> Results { get; set; } = new();
+    public List<SearchResult> Results { get; set; } = [];
 
     /// <summary>
     /// Уверенность в результатах: High, Medium, Low, None
@@ -942,7 +928,7 @@ public class ContextWindow
     /// <summary>
     /// All messages in the window (including center message)
     /// </summary>
-    public List<ContextMessage> Messages { get; set; } = new();
+    public List<ContextMessage> Messages { get; set; } = [];
 
     /// <summary>
     /// Format the window as readable text

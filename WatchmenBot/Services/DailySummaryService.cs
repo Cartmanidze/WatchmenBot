@@ -6,38 +6,24 @@ using WatchmenBot.Models;
 
 namespace WatchmenBot.Services;
 
-public class DailySummaryService : BackgroundService
+public class DailySummaryService(
+    ITelegramBotClient bot,
+    IServiceProvider serviceProvider,
+    LogCollector logCollector,
+    ILogger<DailySummaryService> logger,
+    IConfiguration configuration)
+    : BackgroundService
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly IServiceProvider _serviceProvider;
-    private readonly LogCollector _logCollector;
-    private readonly ILogger<DailySummaryService> _logger;
-    private readonly IConfiguration _configuration;
-
-    public DailySummaryService(
-        ITelegramBotClient bot,
-        IServiceProvider serviceProvider,
-        LogCollector logCollector,
-        ILogger<DailySummaryService> logger,
-        IConfiguration configuration)
-    {
-        _bot = bot;
-        _serviceProvider = serviceProvider;
-        _logCollector = logCollector;
-        _logger = logger;
-        _configuration = configuration;
-    }
-
     private TimeSpan GetTimezoneOffset()
     {
-        var offsetStr = _configuration["Admin:TimezoneOffset"] ?? "+06:00";
+        var offsetStr = configuration["Admin:TimezoneOffset"] ?? "+06:00";
         var clean = offsetStr.TrimStart('+');
         return TimeSpan.TryParse(clean, out var offset) ? offset : TimeSpan.FromHours(6);
     }
 
     private TimeSpan GetSummaryTime()
     {
-        var timeStr = _configuration["DailySummary:TimeOfDay"] ?? "21:00";
+        var timeStr = configuration["DailySummary:TimeOfDay"] ?? "21:00";
         return TimeSpan.TryParse(timeStr, out var parsed) ? parsed : new TimeSpan(21, 0, 0);
     }
 
@@ -46,7 +32,7 @@ public class DailySummaryService : BackgroundService
         var tz = GetTimezoneOffset();
         var summaryTime = GetSummaryTime();
 
-        _logger.LogInformation("[DailySummary] Service STARTED. Scheduled at {Time} (UTC+{Offset})",
+        logger.LogInformation("[DailySummary] Service STARTED. Scheduled at {Time} (UTC+{Offset})",
             summaryTime, tz);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -54,7 +40,7 @@ public class DailySummaryService : BackgroundService
             try
             {
                 // Re-read settings each iteration (allows dynamic updates via DB)
-                using var scope = _serviceProvider.CreateScope();
+                using var scope = serviceProvider.CreateScope();
                 var settings = scope.ServiceProvider.GetRequiredService<AdminSettingsStore>();
 
                 tz = await settings.GetTimezoneOffsetAsync();
@@ -66,7 +52,7 @@ public class DailySummaryService : BackgroundService
                 if (delay < TimeSpan.Zero) delay = TimeSpan.FromMinutes(1);
 
                 var nextRunInTz = nextRun.ToOffset(tz);
-                _logger.LogInformation("[DailySummary] Next run at {NextRun} UTC+{Offset} (in {Hours:F1}h)",
+                logger.LogInformation("[DailySummary] Next run at {NextRun} UTC+{Offset} (in {Hours:F1}h)",
                     nextRunInTz.ToString("yyyy-MM-dd HH:mm"), tz, delay.TotalHours);
 
                 await Task.Delay(delay, stoppingToken);
@@ -81,13 +67,13 @@ public class DailySummaryService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[DailySummary] Error in summary loop");
-                _logCollector.LogError("DailySummary", "Error in summary loop", ex);
+                logger.LogError(ex, "[DailySummary] Error in summary loop");
+                logCollector.LogError("DailySummary", "Error in summary loop", ex);
                 await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             }
         }
 
-        _logger.LogInformation("[DailySummary] Service STOPPED");
+        logger.LogInformation("[DailySummary] Service STOPPED");
     }
 
     private static DateTimeOffset GetNextRunTime(TimeSpan targetTime, TimeSpan timezoneOffset)
@@ -107,7 +93,7 @@ public class DailySummaryService : BackgroundService
 
     private async Task RunSummaryForToday(TimeSpan timezoneOffset, CancellationToken ct)
     {
-        using var scope = _serviceProvider.CreateScope();
+        using var scope = serviceProvider.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<MessageStore>();
         var smartSummary = scope.ServiceProvider.GetRequiredService<SmartSummaryService>();
         var embeddingService = scope.ServiceProvider.GetRequiredService<EmbeddingService>();
@@ -121,9 +107,8 @@ public class DailySummaryService : BackgroundService
         var todayStart = new DateTimeOffset(
             nowInTz.Year, nowInTz.Month, nowInTz.Day, 0, 0, 0, timezoneOffset);
         var startUtc = todayStart.ToUniversalTime();
-        var endUtc = nowUtc;
 
-        _logger.LogInformation("[DailySummary] Starting for {Date}, {ChatCount} chats to process",
+        logger.LogInformation("[DailySummary] Starting for {Date}, {ChatCount} chats to process",
             todayStart.ToString("yyyy-MM-dd"), chatIds.Count);
 
         var successCount = 0;
@@ -135,14 +120,14 @@ public class DailySummaryService : BackgroundService
 
             try
             {
-                var messages = await store.GetMessagesAsync(chatId, startUtc, endUtc);
+                var messages = await store.GetMessagesAsync(chatId, startUtc, nowUtc);
                 if (messages.Count == 0)
                 {
-                    _logger.LogDebug("[DailySummary] Chat {ChatId}: no messages yesterday", chatId);
+                    logger.LogDebug("[DailySummary] Chat {ChatId}: no messages yesterday", chatId);
                     continue;
                 }
 
-                _logger.LogInformation("[DailySummary] Chat {ChatId}: processing {Count} messages...",
+                logger.LogInformation("[DailySummary] Chat {ChatId}: processing {Count} messages...",
                     chatId, messages.Count);
 
                 // Store embeddings for new messages (for RAG)
@@ -150,12 +135,12 @@ public class DailySummaryService : BackgroundService
 
                 // Generate smart summary using embeddings
                 var report = await smartSummary.GenerateSmartSummaryAsync(
-                    chatId, messages, startUtc, endUtc, "за сегодня", ct);
+                    chatId, messages, startUtc, nowUtc, "за сегодня", ct);
 
                 // Try HTML first, fallback to plain text if parsing fails
                 try
                 {
-                    await _bot.SendMessage(
+                    await bot.SendMessage(
                         chatId: chatId,
                         text: report,
                         parseMode: ParseMode.Html,
@@ -164,9 +149,9 @@ public class DailySummaryService : BackgroundService
                 }
                 catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
                 {
-                    _logger.LogWarning("[DailySummary] HTML parsing failed for chat {ChatId}, sending as plain text", chatId);
+                    logger.LogWarning("[DailySummary] HTML parsing failed for chat {ChatId}, sending as plain text", chatId);
                     var plainText = System.Text.RegularExpressions.Regex.Replace(report, "<[^>]+>", "");
-                    await _bot.SendMessage(
+                    await bot.SendMessage(
                         chatId: chatId,
                         text: plainText,
                         linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
@@ -175,19 +160,19 @@ public class DailySummaryService : BackgroundService
 
                 successCount++;
                 totalMessages += messages.Count;
-                _logCollector.IncrementSummaries();
-                _logger.LogInformation("[DailySummary] Chat {ChatId}: summary SENT ({Count} messages)",
+                logCollector.IncrementSummaries();
+                logger.LogInformation("[DailySummary] Chat {ChatId}: summary SENT ({Count} messages)",
                     chatId, messages.Count);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[DailySummary] Chat {ChatId}: FAILED", chatId);
-                _logCollector.LogError("DailySummary", $"Chat {chatId} failed", ex);
+                logger.LogError(ex, "[DailySummary] Chat {ChatId}: FAILED", chatId);
+                logCollector.LogError("DailySummary", $"Chat {chatId} failed", ex);
             }
         }
 
         sw.Stop();
-        _logger.LogInformation("[DailySummary] Complete: {Success}/{Total} chats, {Messages} messages, {Elapsed:F1}s",
+        logger.LogInformation("[DailySummary] Complete: {Success}/{Total} chats, {Messages} messages, {Elapsed:F1}s",
             successCount, chatIds.Count, totalMessages, sw.Elapsed.TotalSeconds);
     }
 
@@ -208,13 +193,13 @@ public class DailySummaryService : BackgroundService
             if (newMessages.Count > 0)
             {
                 await embeddingService.StoreMessageEmbeddingsBatchAsync(newMessages, ct);
-                _logCollector.IncrementEmbeddings(newMessages.Count);
-                _logger.LogDebug("Stored {Count} new embeddings for chat {ChatId}", newMessages.Count, chatId);
+                logCollector.IncrementEmbeddings(newMessages.Count);
+                logger.LogDebug("Stored {Count} new embeddings for chat {ChatId}", newMessages.Count, chatId);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to store embeddings for chat {ChatId}", chatId);
+            logger.LogWarning(ex, "Failed to store embeddings for chat {ChatId}", chatId);
         }
     }
 }

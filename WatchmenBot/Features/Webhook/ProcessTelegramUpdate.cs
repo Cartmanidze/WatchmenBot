@@ -2,7 +2,6 @@ using System.Net;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Extensions;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
@@ -31,46 +30,29 @@ public class ProcessTelegramUpdateResponse
     public static ProcessTelegramUpdateResponse InternalError(string message) => new() { IsSuccess = false, ErrorMessage = message, StatusCode = 500 };
 }
 
-public class ProcessTelegramUpdateHandler
+public class ProcessTelegramUpdateHandler(
+    IConfiguration configuration,
+    IServiceProvider serviceProvider,
+    ITelegramBotClient bot,
+    SummaryQueueService summaryQueue,
+    LogCollector logCollector,
+    ILogger<ProcessTelegramUpdateHandler> logger)
 {
-    private readonly IConfiguration _configuration;
-    private readonly IServiceProvider _serviceProvider;
-    private readonly ITelegramBotClient _bot;
-    private readonly SummaryQueueService _summaryQueue;
-    private readonly LogCollector _logCollector;
-    private readonly ILogger<ProcessTelegramUpdateHandler> _logger;
-
-    public ProcessTelegramUpdateHandler(
-        IConfiguration configuration,
-        IServiceProvider serviceProvider,
-        ITelegramBotClient bot,
-        SummaryQueueService summaryQueue,
-        LogCollector logCollector,
-        ILogger<ProcessTelegramUpdateHandler> logger)
-    {
-        _configuration = configuration;
-        _serviceProvider = serviceProvider;
-        _bot = bot;
-        _summaryQueue = summaryQueue;
-        _logCollector = logCollector;
-        _logger = logger;
-    }
-
     public async Task<ProcessTelegramUpdateResponse> HandleAsync(ProcessTelegramUpdateRequest request, CancellationToken cancellationToken)
     {
         // Security validation using extensions
-        var secretValidation = request.Headers.ValidateSecretToken(_configuration["Telegram:WebhookSecret"]);
+        var secretValidation = request.Headers.ValidateSecretToken(configuration["Telegram:WebhookSecret"]);
         if (!secretValidation.IsValid)
         {
-            _logger.LogWarning("Unauthorized webhook request from {RemoteIpAddress}: {Reason}",
+            logger.LogWarning("Unauthorized webhook request from {RemoteIpAddress}: {Reason}",
                 request.RemoteIpAddress, secretValidation.Reason);
             return ProcessTelegramUpdateResponse.Unauthorized(secretValidation.Reason);
         }
 
-        var ipValidation = request.RemoteIpAddress.ValidateIpRange(_configuration.GetValue<bool>("Telegram:ValidateIpRange"));
+        var ipValidation = request.RemoteIpAddress.ValidateIpRange(configuration.GetValue<bool>("Telegram:ValidateIpRange"));
         if (!ipValidation.IsValid)
         {
-            _logger.LogWarning("Webhook request from invalid IP: {RemoteIpAddress}", request.RemoteIpAddress);
+            logger.LogWarning("Webhook request from invalid IP: {RemoteIpAddress}", request.RemoteIpAddress);
             return ProcessTelegramUpdateResponse.Unauthorized("Invalid IP address");
         }
 
@@ -87,7 +69,7 @@ public class ProcessTelegramUpdateHandler
 
         try
         {
-            using var scope = _serviceProvider.CreateScope();
+            using var scope = serviceProvider.CreateScope();
 
             // Handle private messages (for admin commands and /smart)
             if (message.Chat.Type == ChatType.Private)
@@ -101,7 +83,7 @@ public class ProcessTelegramUpdateHandler
                 }
                 else if (IsSmartCommand(commandText))
                 {
-                    _logger.LogInformation("[Webhook] [PM] @{User} requested /smart", userName);
+                    logger.LogInformation("[Webhook] [PM] @{User} requested /smart", userName);
                     var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
                     await askHandler.HandleQuestionAsync(message, cancellationToken);
                 }
@@ -125,25 +107,25 @@ public class ProcessTelegramUpdateHandler
             if (IsCommand(message.Text, "/summary"))
             {
                 var hours = GenerateSummaryHandler.ParseHoursFromCommand(message.Text);
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /summary for {Hours}h", chatName, userName, hours);
+                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /summary for {Hours}h", chatName, userName, hours);
 
                 // Сразу отвечаем пользователю и запускаем генерацию в фоне
                 // Это позволяет избежать nginx timeout (60 сек)
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: message.Chat.Id,
                     text: "Генерирую выжимку, подождите...",
                     replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: cancellationToken);
 
                 // Добавляем в очередь для фоновой обработки
-                _summaryQueue.EnqueueFromMessage(message, hours);
+                summaryQueue.EnqueueFromMessage(message, hours);
 
                 return ProcessTelegramUpdateResponse.Success();
             }
 
             if (IsCommand(message.Text, "/ask"))
             {
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /ask", chatName, userName);
+                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /ask", chatName, userName);
                 var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
                 await askHandler.HandleAsync(message, cancellationToken);
                 return ProcessTelegramUpdateResponse.Success();
@@ -151,7 +133,7 @@ public class ProcessTelegramUpdateHandler
 
             if (IsSmartCommand(message.Text))
             {
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /smart", chatName, userName);
+                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /smart", chatName, userName);
                 var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
                 await askHandler.HandleQuestionAsync(message, cancellationToken);
                 return ProcessTelegramUpdateResponse.Success();
@@ -159,7 +141,7 @@ public class ProcessTelegramUpdateHandler
 
             if (IsCommand(message.Text, "/recall"))
             {
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /recall", chatName, userName);
+                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /recall", chatName, userName);
                 var recallHandler = scope.ServiceProvider.GetRequiredService<RecallHandler>();
                 await recallHandler.HandleAsync(message, cancellationToken);
                 return ProcessTelegramUpdateResponse.Success();
@@ -167,7 +149,7 @@ public class ProcessTelegramUpdateHandler
 
             if (IsCommand(message.Text, "/truth"))
             {
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} requested /truth", chatName, userName);
+                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /truth", chatName, userName);
                 var factCheckHandler = scope.ServiceProvider.GetRequiredService<FactCheckHandler>();
                 await factCheckHandler.HandleAsync(message, cancellationToken);
                 return ProcessTelegramUpdateResponse.Success();
@@ -180,17 +162,17 @@ public class ProcessTelegramUpdateHandler
 
             if (saveResponse.IsSuccess)
             {
-                _logCollector.IncrementMessages();
+                logCollector.IncrementMessages();
             }
             else
             {
-                _logger.LogError("Failed to save message: {Error}", saveResponse.ErrorMessage);
+                logger.LogError("Failed to save message: {Error}", saveResponse.ErrorMessage);
             }
 
             // Check for "это правда?" trigger (after saving the message)
             if (IsTruthQuestion(message.Text))
             {
-                _logger.LogInformation("[Webhook] [{Chat}] @{User} triggered truth check with '{Text}'",
+                logger.LogInformation("[Webhook] [{Chat}] @{User} triggered truth check with '{Text}'",
                     chatName, userName, message.Text?.Trim());
                 var factCheckHandler = scope.ServiceProvider.GetRequiredService<FactCheckHandler>();
                 await factCheckHandler.HandleAsync(message, cancellationToken);
@@ -200,7 +182,7 @@ public class ProcessTelegramUpdateHandler
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Webhook] Error processing message {MessageId} in {Chat}", message.MessageId, chatName);
+            logger.LogError(ex, "[Webhook] Error processing message {MessageId} in {Chat}", message.MessageId, chatName);
             return ProcessTelegramUpdateResponse.InternalError("Internal server error");
         }
     }

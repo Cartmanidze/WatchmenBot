@@ -27,7 +27,7 @@ public class DebugReportCollector
             {
                 Similarity = r.Similarity,
                 Distance = r.Distance,
-                MessageIds = new[] { r.MessageId },
+                MessageIds = [r.MessageId],
                 Text = r.ChunkText,
                 Timestamp = AskHandlerHelpers.ParseTimestamp(r.MetadataJson),
                 IsNewsDump = r.IsNewsDump,

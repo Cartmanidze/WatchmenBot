@@ -31,28 +31,13 @@ public class SaveMessageResponse
     };
 }
 
-public class SaveMessageHandler
+public class SaveMessageHandler(
+    MessageStore messageStore,
+    EmbeddingService embeddingService,
+    ProfileQueueService profileQueueService,
+    LogCollector logCollector,
+    ILogger<SaveMessageHandler> logger)
 {
-    private readonly MessageStore _messageStore;
-    private readonly EmbeddingService _embeddingService;
-    private readonly ProfileQueueService _profileQueueService;
-    private readonly LogCollector _logCollector;
-    private readonly ILogger<SaveMessageHandler> _logger;
-
-    public SaveMessageHandler(
-        MessageStore messageStore,
-        EmbeddingService embeddingService,
-        ProfileQueueService profileQueueService,
-        LogCollector logCollector,
-        ILogger<SaveMessageHandler> logger)
-    {
-        _messageStore = messageStore;
-        _embeddingService = embeddingService;
-        _profileQueueService = profileQueueService;
-        _logCollector = logCollector;
-        _logger = logger;
-    }
-
     public async Task<SaveMessageResponse> HandleAsync(SaveMessageRequest request, CancellationToken cancellationToken)
     {
         try
@@ -66,21 +51,21 @@ public class SaveMessageHandler
             }
 
             var record = CreateMessageRecord(message);
-            await _messageStore.SaveAsync(record);
+            await messageStore.SaveAsync(record);
 
             // Save chat info (title, type)
-            await _messageStore.SaveChatAsync(
+            await messageStore.SaveChatAsync(
                 message.Chat.Id,
                 message.Chat.Title,
                 message.Chat.Type.ToString().ToLowerInvariant());
 
-            _logger.LogDebug("[DB] Saved msg #{MessageId} to chat {ChatId}",
+            logger.LogDebug("[DB] Saved msg #{MessageId} to chat {ChatId}",
                 message.MessageId, message.Chat.Id);
 
             // Queue message for profile analysis (fire-and-forget)
             if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length >= 20)
             {
-                _ = _profileQueueService.EnqueueMessageAsync(
+                _ = profileQueueService.EnqueueMessageAsync(
                     record.ChatId, record.Id, record.FromUserId, record.DisplayName, record.Text);
             }
 
@@ -92,17 +77,17 @@ public class SaveMessageHandler
                 {
                     // Use separate timeout token to avoid cancellation when webhook completes
                     using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                    await _embeddingService.StoreMessageEmbeddingAsync(record, timeoutCts.Token);
-                    _logCollector.IncrementEmbeddings();
-                    _logger.LogDebug("[Embedding] Created embedding for msg #{MessageId}", message.MessageId);
+                    await embeddingService.StoreMessageEmbeddingAsync(record, timeoutCts.Token);
+                    logCollector.IncrementEmbeddings();
+                    logger.LogDebug("[Embedding] Created embedding for msg #{MessageId}", message.MessageId);
                 }
                 catch (OperationCanceledException)
                 {
-                    _logger.LogWarning("[Embedding] Timeout creating embedding for msg #{MessageId} - will be picked up by background service", message.MessageId);
+                    logger.LogWarning("[Embedding] Timeout creating embedding for msg #{MessageId} - will be picked up by background service", message.MessageId);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "[Embedding] Failed to create embedding for msg #{MessageId} - will retry in background", message.MessageId);
+                    logger.LogWarning(ex, "[Embedding] Failed to create embedding for msg #{MessageId} - will retry in background", message.MessageId);
                 }
             }
 
@@ -110,7 +95,7 @@ public class SaveMessageHandler
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to save message {MessageId} from chat {ChatId}",
+            logger.LogError(ex, "Failed to save message {MessageId} from chat {ChatId}",
                 request.Message.MessageId, request.Message.Chat.Id);
             return SaveMessageResponse.Error($"Failed to save message: {ex.Message}");
         }

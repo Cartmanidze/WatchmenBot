@@ -5,24 +5,15 @@ namespace WatchmenBot.Services;
 /// <summary>
 /// Обёртка для обратной совместимости — делегирует вызовы в LlmRouter
 /// </summary>
-public class OpenRouterClient
+public class OpenRouterClient(LlmRouter router, ILogger<OpenRouterClient> logger)
 {
-    private readonly LlmRouter _router;
-    private readonly ILogger<OpenRouterClient> _logger;
-
-    public OpenRouterClient(LlmRouter router, ILogger<OpenRouterClient> logger)
-    {
-        _router = router;
-        _logger = logger;
-    }
-
     public async Task<string> ChatCompletionAsync(
         string systemPrompt,
         string userPrompt,
         double temperature = 0.7,
         CancellationToken ct = default)
     {
-        var response = await _router.CompleteAsync(new LlmRequest
+        var response = await router.CompleteAsync(new LlmRequest
         {
             SystemPrompt = systemPrompt,
             UserPrompt = userPrompt,
@@ -56,11 +47,11 @@ public class OpenRouterClient
         return await ChatCompletionAsync(systemPrompt, fullUserPrompt, temperature, ct);
     }
 
-    public async Task<(double totalCredits, double totalUsage)> GetCreditsAsync(CancellationToken ct = default)
+    public Task<(double totalCredits, double totalUsage)> GetCreditsAsync(CancellationToken ct = default)
     {
         // Credits endpoint is OpenRouter-specific, keep legacy implementation
         // This will only work if we have an OpenRouter provider configured
-        _logger.LogWarning("GetCreditsAsync is deprecated - use provider-specific API");
-        return (0, 0);
+        logger.LogWarning("GetCreditsAsync is deprecated - use provider-specific API");
+        return Task.FromResult<(double, double)>((0, 0));
     }
 }

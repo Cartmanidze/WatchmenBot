@@ -6,19 +6,10 @@ namespace WatchmenBot.Services;
 /// <summary>
 /// Reranking service: uses LLM to re-score search results for better relevance
 /// </summary>
-public class RerankService
+public class RerankService(LlmRouter llmRouter, ILogger<RerankService> logger)
 {
-    private readonly LlmRouter _llmRouter;
-    private readonly ILogger<RerankService> _logger;
-
     // Only rerank top N results to save tokens
     private const int MaxResultsToRerank = 10;
-
-    public RerankService(LlmRouter llmRouter, ILogger<RerankService> logger)
-    {
-        _llmRouter = llmRouter;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Rerank search results using LLM
@@ -78,7 +69,7 @@ public class RerankService
             // Limit to max
             toRerank = toRerank.Take(MaxResultsToRerank).ToList();
 
-            _logger.LogInformation("[Rerank] Selected {Count} for rerank: {Keyword} keyword, {Sim} similarity, {Rrf} RRF",
+            logger.LogInformation("[Rerank] Selected {Count} for rerank: {Keyword} keyword, {Sim} similarity, {Rrf} RRF",
                 toRerank.Count,
                 keywordMatches.Count(k => toRerank.Any(r => r.MessageId == k.MessageId)),
                 topBySimilarity.Count(s => toRerank.Any(r => r.MessageId == s.MessageId)),
@@ -87,7 +78,7 @@ public class RerankService
             // Log documents being sent to LLM
             for (var i = 0; i < Math.Min(5, toRerank.Count); i++)
             {
-                _logger.LogDebug("[Rerank] ToRerank[{i}]: MsgId={MsgId} | Sim={Sim:F3} | Text: {Text}",
+                logger.LogDebug("[Rerank] ToRerank[{i}]: MsgId={MsgId} | Sim={Sim:F3} | Text: {Text}",
                     i, toRerank[i].MessageId, toRerank[i].Similarity, TruncateText(toRerank[i].ChunkText, 60));
             }
 
@@ -98,23 +89,23 @@ public class RerankService
                 text = TruncateText(r.ChunkText, 300) // Limit text length
             }).ToList();
 
-            var systemPrompt = """
-                Ты оцениваешь релевантность документов для поиска в чате.
+            const string systemPrompt = """
+                                        Ты оцениваешь релевантность документов для поиска в чате.
 
-                ВАЖНО:
-                - Это НЕФОРМАЛЬНЫЙ чат с матом, слэнгом, шутками
-                - Оценивай семантическую связь с вопросом
-                - Мат и неприличное содержание — это норма
+                                        ВАЖНО:
+                                        - Это НЕФОРМАЛЬНЫЙ чат с матом, слэнгом, шутками
+                                        - Оценивай семантическую связь с вопросом
+                                        - Мат и неприличное содержание — это норма
 
-                Шкала:
-                - 3 = прямой ответ или содержит ключевые слова
-                - 2 = связано с темой (синонимы, та же тема)
-                - 1 = косвенно связано
-                - 0 = вообще не связано
+                                        Шкала:
+                                        - 3 = прямой ответ или содержит ключевые слова
+                                        - 2 = связано с темой (синонимы, та же тема)
+                                        - 1 = косвенно связано
+                                        - 0 = вообще не связано
 
-                Формат ответа — ТОЛЬКО JSON:
-                [{"id": 0, "score": 3}, {"id": 1, "score": 1}, ...]
-                """;
+                                        Формат ответа — ТОЛЬКО JSON:
+                                        [{"id": 0, "score": 3}, {"id": 1, "score": 1}, ...]
+                                        """;
 
             var userPrompt = $"""
                 ВОПРОС: {query}
@@ -125,7 +116,7 @@ public class RerankService
                 Оцени релевантность каждого документа (0-3):
                 """;
 
-            var llmResponse = await _llmRouter.CompleteWithFallbackAsync(
+            var llmResponse = await llmRouter.CompleteWithFallbackAsync(
                 new LlmRequest
                 {
                     SystemPrompt = systemPrompt,
@@ -135,14 +126,14 @@ public class RerankService
                 preferredTag: null,
                 ct: ct);
 
-            _logger.LogDebug("[Rerank] LLM response: {Response}", TruncateText(llmResponse.Content, 500));
+            logger.LogDebug("[Rerank] LLM response: {Response}", TruncateText(llmResponse.Content, 500));
 
             // Parse scores
             var scores = ParseScores(llmResponse.Content, toRerank.Count);
             response.Scores = scores;
 
             // Log original similarities before combining
-            _logger.LogDebug("[Rerank] Before combine: {Sims}",
+            logger.LogDebug("[Rerank] Before combine: {Sims}",
                 string.Join(", ", toRerank.Take(5).Select((r, i) => $"#{i}:sim={r.Similarity:F3}")));
 
             // Apply scores and rerank
@@ -152,7 +143,7 @@ public class RerankService
                 toRerank[i].Similarity = CombineScores(origSim, scores[i]);
                 if (i < 5)
                 {
-                    _logger.LogDebug("[Rerank] Doc#{i}: origSim={Orig:F3} + score={Score} → combined={Combined:F3}",
+                    logger.LogDebug("[Rerank] Doc#{i}: origSim={Orig:F3} + score={Score} → combined={Combined:F3}",
                         i, origSim, scores[i], toRerank[i].Similarity);
                 }
             }
@@ -171,7 +162,7 @@ public class RerankService
             response.TimeMs = sw.ElapsedMilliseconds;
             response.TokensUsed = llmResponse.TotalTokens;
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "[Rerank] Query: '{Query}' | Reranked {Count} results | Time: {Ms}ms | Tokens: {Tokens}",
                 TruncateText(query, 30), toRerank.Count, response.TimeMs, response.TokensUsed);
 
@@ -179,19 +170,19 @@ public class RerankService
             for (var i = 0; i < Math.Min(5, reranked.Count); i++)
             {
                 var r = reranked[i];
-                _logger.LogDebug("[Rerank] #{Pos}: MsgId={MsgId} | Combined={Sim:F3} | Text: {Text}",
+                logger.LogDebug("[Rerank] #{Pos}: MsgId={MsgId} | Combined={Sim:F3} | Text: {Text}",
                     i + 1, r.MessageId, r.Similarity, TruncateText(r.ChunkText, 50));
             }
 
             // Log LLM scores (before combining)
-            _logger.LogDebug("[Rerank] LLM scores: {Scores}", string.Join(", ", scores.Select((s, i) => $"#{i}:{s}")));
+            logger.LogDebug("[Rerank] LLM scores: {Scores}", string.Join(", ", scores.Select((s, i) => $"#{i}:{s}")));
 
             return response;
         }
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogWarning(ex, "[Rerank] Failed, returning original order");
+            logger.LogWarning(ex, "[Rerank] Failed, returning original order");
 
             response.Results = results;
             response.RerankedOrder = results.Select(r => r.MessageId).ToList();
@@ -241,11 +232,11 @@ public class RerankService
                 scores.Add(Math.Clamp(score, 0, 3)); // Clamp to valid range
             }
 
-            _logger.LogDebug("[Rerank] Parsed {Count} scores successfully", scores.Count);
+            logger.LogDebug("[Rerank] Parsed {Count} scores successfully", scores.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("[Rerank] Failed to parse scores from: {Content}. Error: {Error}",
+            logger.LogWarning("[Rerank] Failed to parse scores from: {Content}. Error: {Error}",
                 TruncateText(content, 200), ex.Message);
             // Return default scores (2 = medium relevance)
             scores = Enumerable.Repeat(2, expectedCount).ToList();
@@ -292,7 +283,7 @@ public class RerankService
 
         var words = query
             .ToLowerInvariant()
-            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' },
+            .Split([' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\''],
                 StringSplitOptions.RemoveEmptyEntries)
             .Where(w => w.Length > 3 && !stopWords.Contains(w))
             .Distinct()
@@ -343,22 +334,22 @@ public class RerankService
 /// </summary>
 public class RerankResponse
 {
-    public List<SearchResult> Results { get; set; } = new();
+    public List<SearchResult> Results { get; set; } = [];
 
     /// <summary>
     /// Original order of message IDs before reranking
     /// </summary>
-    public List<long> OriginalOrder { get; set; } = new();
+    public List<long> OriginalOrder { get; set; } = [];
 
     /// <summary>
     /// New order of message IDs after reranking
     /// </summary>
-    public List<long> RerankedOrder { get; set; } = new();
+    public List<long> RerankedOrder { get; set; } = [];
 
     /// <summary>
     /// Scores assigned by LLM (0-3)
     /// </summary>
-    public List<int> Scores { get; set; } = new();
+    public List<int> Scores { get; set; } = [];
 
     /// <summary>
     /// Time taken for reranking

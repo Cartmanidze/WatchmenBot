@@ -8,18 +8,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin llm_test [provider_name] - test LLM provider
 /// </summary>
-public class LlmTestCommand : AdminCommandBase
+public class LlmTestCommand(
+    ITelegramBotClient bot,
+    LlmRouter llmRouter,
+    ILogger<LlmTestCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly LlmRouter _llmRouter;
-
-    public LlmTestCommand(
-        ITelegramBotClient bot,
-        LlmRouter llmRouter,
-        ILogger<LlmTestCommand> logger) : base(bot, logger)
-    {
-        _llmRouter = llmRouter;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         var providerName = context.Args.Length > 0 ? context.Args[0] : null;
@@ -34,11 +28,11 @@ public class LlmTestCommand : AdminCommandBase
             ILlmProvider provider;
             if (string.IsNullOrEmpty(providerName))
             {
-                provider = _llmRouter.GetDefault();
+                provider = llmRouter.GetDefault();
             }
             else
             {
-                provider = _llmRouter.GetProvider(providerName)
+                provider = llmRouter.GetProvider(providerName)
                     ?? throw new ArgumentException($"Провайдер '{providerName}' не найден");
             }
 
@@ -54,7 +48,7 @@ public class LlmTestCommand : AdminCommandBase
             sw.Stop();
 
             var sb = new StringBuilder();
-            sb.AppendLine($"✅ <b>Тест пройден!</b>\n");
+            sb.AppendLine("✅ <b>Тест пройден!</b>\n");
             sb.AppendLine($"📦 <b>Провайдер:</b> {response.Provider}");
             sb.AppendLine($"🤖 <b>Модель:</b> {response.Model}");
             sb.AppendLine($"⏱️ <b>Время:</b> {sw.ElapsedMilliseconds}ms");

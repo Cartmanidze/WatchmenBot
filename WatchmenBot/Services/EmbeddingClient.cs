@@ -77,20 +77,20 @@ public class EmbeddingClient
 
     public async Task<float[]> GetEmbeddingAsync(string text, CancellationToken ct = default)
     {
-        var embeddings = await GetEmbeddingsAsync(new[] { text }, ct);
-        return embeddings.FirstOrDefault() ?? Array.Empty<float>();
+        var embeddings = await GetEmbeddingsAsync([text], ct);
+        return embeddings.FirstOrDefault() ?? [];
     }
 
     public async Task<List<float[]>> GetEmbeddingsAsync(IEnumerable<string> texts, CancellationToken ct = default)
     {
         var textList = texts.ToList();
         if (textList.Count == 0)
-            return new List<float[]>();
+            return [];
 
         if (!_isConfigured)
         {
             _logger.LogDebug("[Embeddings] Skipping - API key not configured");
-            return new List<float[]>();
+            return [];
         }
 
         return _provider == EmbeddingProvider.HuggingFace
@@ -270,7 +270,7 @@ public class EmbeddingUsageStats
 
     public string ToTelegramHtml()
     {
-        var sb = new System.Text.StringBuilder();
+        var sb = new StringBuilder();
         sb.AppendLine($"<b>Embeddings ({Provider}):</b>");
         sb.AppendLine($"  Токенов: {TotalTokens:N0}");
         sb.AppendLine($"  Запросов: {TotalRequests:N0}");

@@ -7,24 +7,18 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin indexing - show indexing pipeline status
 /// </summary>
-public class IndexingCommand : AdminCommandBase
+public class IndexingCommand(
+    ITelegramBotClient bot,
+    EmbeddingOrchestrator embeddingOrchestrator,
+    ILogger<IndexingCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly EmbeddingOrchestrator _embeddingOrchestrator;
-
-    public IndexingCommand(
-        ITelegramBotClient bot,
-        EmbeddingOrchestrator embeddingOrchestrator,
-        ILogger<IndexingCommand> logger) : base(bot, logger)
-    {
-        _embeddingOrchestrator = embeddingOrchestrator;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         try
         {
             // Get stats from all handlers
-            var allStats = await _embeddingOrchestrator.GetAllStatsAsync(ct);
+            var allStats = await embeddingOrchestrator.GetAllStatsAsync(ct);
 
             var sb = new StringBuilder();
             sb.AppendLine("<b>📊 Indexing Pipeline Status</b>\n");

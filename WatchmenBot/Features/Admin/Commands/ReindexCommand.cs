@@ -12,21 +12,13 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// - /admin reindex <chat_id> confirm - execute reindex for chat
 /// - /admin reindex all confirm - execute reindex for all chats
 /// </summary>
-public class ReindexCommand : AdminCommandBase
+public class ReindexCommand(
+    ITelegramBotClient bot,
+    EmbeddingService embeddingService,
+    MessageStore messageStore,
+    ILogger<ReindexCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly EmbeddingService _embeddingService;
-    private readonly MessageStore _messageStore;
-
-    public ReindexCommand(
-        ITelegramBotClient bot,
-        EmbeddingService embeddingService,
-        MessageStore messageStore,
-        ILogger<ReindexCommand> logger) : base(bot, logger)
-    {
-        _embeddingService = embeddingService;
-        _messageStore = messageStore;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         // No arguments - show help
@@ -70,7 +62,7 @@ public class ReindexCommand : AdminCommandBase
 
     private async Task<bool> ShowHelpAsync(long chatId, CancellationToken ct)
     {
-        var (total, indexed, pending) = await _messageStore.GetEmbeddingStatsAsync();
+        var (total, indexed, pending) = await messageStore.GetEmbeddingStatsAsync();
 
         await SendMessageAsync(chatId, $"""
             ⚠️ <b>Переиндексация ВСЕХ эмбеддингов</b>
@@ -90,7 +82,7 @@ public class ReindexCommand : AdminCommandBase
 
     private async Task<bool> ShowConfirmationAsync(long chatId, long targetChatId, CancellationToken ct)
     {
-        var stats = await _embeddingService.GetStatsAsync(targetChatId, ct);
+        var stats = await embeddingService.GetStatsAsync(targetChatId, ct);
 
         await SendMessageAsync(chatId, $"""
             ⚠️ <b>Переиндексация эмбеддингов</b>
@@ -113,7 +105,7 @@ public class ReindexCommand : AdminCommandBase
             text: $"⏳ Удаляю эмбеддинги чата {targetChatId}...",
             cancellationToken: ct);
 
-        await _embeddingService.DeleteChatEmbeddingsAsync(targetChatId, ct);
+        await embeddingService.DeleteChatEmbeddingsAsync(targetChatId, ct);
 
         await Bot.EditMessageText(
             chatId: chatId,
@@ -139,9 +131,9 @@ public class ReindexCommand : AdminCommandBase
             text: "⏳ Удаляю ВСЕ эмбеддинги...",
             cancellationToken: ct);
 
-        await _embeddingService.DeleteAllEmbeddingsAsync(ct);
+        await embeddingService.DeleteAllEmbeddingsAsync(ct);
 
-        var (total, _, _) = await _messageStore.GetEmbeddingStatsAsync();
+        var (total, _, _) = await messageStore.GetEmbeddingStatsAsync();
 
         await Bot.EditMessageText(
             chatId: chatId,

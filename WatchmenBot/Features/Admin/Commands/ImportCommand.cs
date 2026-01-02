@@ -1,6 +1,5 @@
 using System.IO.Compression;
 using Telegram.Bot;
-using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Services;
 
@@ -10,21 +9,13 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// /admin import <chat_id> - import Telegram export
 /// Handles both text command (shows instructions) and file upload (performs import)
 /// </summary>
-public class ImportCommand : AdminCommandBase
+public class ImportCommand(
+    ITelegramBotClient bot,
+    ChatImportService importService,
+    TelegramExportParser exportParser,
+    ILogger<ImportCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly ChatImportService _importService;
-    private readonly TelegramExportParser _exportParser;
-
-    public ImportCommand(
-        ITelegramBotClient bot,
-        ChatImportService importService,
-        TelegramExportParser exportParser,
-        ILogger<ImportCommand> logger) : base(bot, logger)
-    {
-        _importService = importService;
-        _exportParser = exportParser;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         // Check if this is a file upload
@@ -105,7 +96,7 @@ public class ImportCommand : AdminCommandBase
             {
                 // Download file
                 var file = await Bot.GetFile(document.FileId, ct);
-                await using (var fileStream = System.IO.File.Create(zipPath))
+                await using (var fileStream = File.Create(zipPath))
                 {
                     await Bot.DownloadFile(file.FilePath!, fileStream, ct);
                 }
@@ -132,7 +123,7 @@ public class ImportCommand : AdminCommandBase
                 }
 
                 // Get chat title from export
-                var exportChatTitle = _exportParser.GetChatTitleFromExport(exportDir);
+                var exportChatTitle = exportParser.GetChatTitleFromExport(exportDir);
                 var chatTitleInfo = !string.IsNullOrEmpty(exportChatTitle)
                     ? $"\n📝 Чат из экспорта: <b>{exportChatTitle}</b>"
                     : "";
@@ -145,7 +136,7 @@ public class ImportCommand : AdminCommandBase
                     cancellationToken: ct);
 
                 // Import
-                var result = await _importService.ImportFromDirectoryAsync(exportDir, targetChatId, true, ct);
+                var result = await importService.ImportFromDirectoryAsync(exportDir, targetChatId, true, ct);
 
                 if (result.IsSuccess)
                 {

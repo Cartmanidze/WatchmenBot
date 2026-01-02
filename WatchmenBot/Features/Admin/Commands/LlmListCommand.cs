@@ -7,22 +7,16 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin llm - list all LLM providers
 /// </summary>
-public class LlmListCommand : AdminCommandBase
+public class LlmListCommand(
+    ITelegramBotClient bot,
+    LlmRouter llmRouter,
+    ILogger<LlmListCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly LlmRouter _llmRouter;
-
-    public LlmListCommand(
-        ITelegramBotClient bot,
-        LlmRouter llmRouter,
-        ILogger<LlmListCommand> logger) : base(bot, logger)
-    {
-        _llmRouter = llmRouter;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
-        var providers = _llmRouter.GetAllProviders();
-        var defaultName = _llmRouter.DefaultProviderName;
+        var providers = llmRouter.GetAllProviders();
+        var defaultName = llmRouter.DefaultProviderName;
 
         var sb = new StringBuilder();
         sb.AppendLine("<b>🤖 LLM Провайдеры</b>\n");

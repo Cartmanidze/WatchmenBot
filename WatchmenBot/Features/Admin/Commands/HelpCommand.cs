@@ -5,12 +5,8 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin help - show admin command help
 /// </summary>
-public class HelpCommand : AdminCommandBase
+public class HelpCommand(ITelegramBotClient bot, ILogger<HelpCommand> logger) : AdminCommandBase(bot, logger)
 {
-    public HelpCommand(ITelegramBotClient bot, ILogger<HelpCommand> logger) : base(bot, logger)
-    {
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         const string help = """

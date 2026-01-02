@@ -3,17 +3,11 @@ namespace WatchmenBot.Services.Llm;
 /// <summary>
 /// Роутер для LLM запросов — выбирает провайдера по тегам, fallback, комбинация
 /// </summary>
-public class LlmRouter
+public class LlmRouter(ILogger<LlmRouter> logger)
 {
     private readonly Dictionary<string, ILlmProvider> _providers = new();
     private readonly Dictionary<string, LlmProviderOptions> _options = new();
-    private readonly ILogger<LlmRouter> _logger;
     private string _defaultProviderName = "";
-
-    public LlmRouter(ILogger<LlmRouter> logger)
-    {
-        _logger = logger;
-    }
 
     /// <summary>
     /// Зарегистрировать провайдера
@@ -28,7 +22,7 @@ public class LlmRouter
             _defaultProviderName = options.Name;
         }
 
-        _logger.LogInformation("[LlmRouter] Registered provider '{Name}' ({Model}), priority={Priority}, tags=[{Tags}]",
+        logger.LogInformation("[LlmRouter] Registered provider '{Name}' ({Model}), priority={Priority}, tags=[{Tags}]",
             options.Name, options.Model, options.Priority, string.Join(", ", options.Tags));
     }
 
@@ -77,14 +71,14 @@ public class LlmRouter
     {
         if (!_providers.ContainsKey(name))
         {
-            _logger.LogWarning("[LlmRouter] Cannot set default: provider '{Name}' not found", name);
+            logger.LogWarning("[LlmRouter] Cannot set default: provider '{Name}' not found", name);
             return false;
         }
 
         var oldDefault = _defaultProviderName;
         _defaultProviderName = name;
 
-        _logger.LogInformation("[LlmRouter] Default provider changed: {Old} -> {New}", oldDefault, name);
+        logger.LogInformation("[LlmRouter] Default provider changed: {Old} -> {New}", oldDefault, name);
         return true;
     }
 
@@ -111,7 +105,7 @@ public class LlmRouter
             Tags = options.Tags
         };
 
-        _logger.LogInformation("[LlmRouter] Provider '{Name}' {Action}", name, enabled ? "enabled" : "disabled");
+        logger.LogInformation("[LlmRouter] Provider '{Name}' {Action}", name, enabled ? "enabled" : "disabled");
         return true;
     }
 
@@ -137,7 +131,7 @@ public class LlmRouter
             catch (Exception ex)
             {
                 lastException = ex;
-                _logger.LogWarning(ex, "[LlmRouter] Provider '{Provider}' failed, trying next...", provider.Name);
+                logger.LogWarning(ex, "[LlmRouter] Provider '{Provider}' failed, trying next...", provider.Name);
             }
         }
 

@@ -2,13 +2,18 @@ using Microsoft.OpenApi.Models;
 using Telegram.Bot;
 using WatchmenBot.Policies;
 using WatchmenBot.Features.Admin;
+using WatchmenBot.Features.Admin.Commands;
 using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Services;
+using WatchmenBot.Services.Embeddings;
+using WatchmenBot.Services.Indexing;
 using WatchmenBot.Services.Llm;
+using WatchmenBot.Services.Memory;
+using WatchmenBot.Services.Profile;
 
 namespace WatchmenBot.Extensions;
 
@@ -17,7 +22,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddWatchmenBotServices(this IServiceCollection services, IConfiguration configuration)
     {
         // Telegram Bot Client
-        services.AddSingleton<ITelegramBotClient>(sp =>
+        services.AddSingleton<ITelegramBotClient>(_ =>
         {
             var token = configuration["Telegram:BotToken"] ?? string.Empty;
             if (string.IsNullOrWhiteSpace(token))
@@ -28,7 +33,7 @@ public static class ServiceCollectionExtensions
         });
 
         // Database
-        services.AddSingleton<IDbConnectionFactory>(sp =>
+        services.AddSingleton<IDbConnectionFactory>(_ =>
         {
             var connectionString = configuration.GetConnectionString("Default") ??
                                  configuration["Database:ConnectionString"] ??
@@ -113,7 +118,7 @@ public static class ServiceCollectionExtensions
                 var apiKey = configuration["Embeddings:ApiKey"] ?? string.Empty;
                 var baseUrl = configuration["Embeddings:BaseUrl"] ?? string.Empty;
                 var model = configuration["Embeddings:Model"] ?? string.Empty;
-                var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 0);
+                var dimensions = configuration.GetValue("Embeddings:Dimensions", 0);
                 var providerStr = configuration["Embeddings:Provider"] ?? "openai";
                 var logger = serviceProvider.GetRequiredService<ILogger<EmbeddingClient>>();
 
@@ -139,22 +144,22 @@ public static class ServiceCollectionExtensions
             });
 
         // Embedding Services (refactored architecture)
-        services.AddScoped<WatchmenBot.Services.Embeddings.EmbeddingStorageService>();
-        services.AddScoped<WatchmenBot.Services.Embeddings.PersonalSearchService>();
-        services.AddScoped<WatchmenBot.Services.Embeddings.ContextWindowService>();
+        services.AddScoped<EmbeddingStorageService>();
+        services.AddScoped<PersonalSearchService>();
+        services.AddScoped<ContextWindowService>();
         services.AddScoped<EmbeddingService>(); // Core search service (delegates to specialized services)
 
         // Context Embedding Service (sliding window embeddings for conversation context)
         services.AddScoped<ContextEmbeddingService>();
 
         // Embedding Indexing Infrastructure (refactored pipeline)
-        services.AddSingleton<WatchmenBot.Services.Indexing.IndexingMetrics>();
-        services.AddScoped<WatchmenBot.Services.Indexing.IndexingOptions>(sp =>
-            WatchmenBot.Services.Indexing.IndexingOptions.FromConfiguration(configuration));
-        services.AddScoped<WatchmenBot.Services.Indexing.BatchProcessor>();
-        services.AddScoped<WatchmenBot.Services.Indexing.IEmbeddingHandler, WatchmenBot.Services.Indexing.MessageEmbeddingHandler>();
-        services.AddScoped<WatchmenBot.Services.Indexing.IEmbeddingHandler, WatchmenBot.Services.Indexing.ContextEmbeddingHandler>();
-        services.AddScoped<WatchmenBot.Services.Indexing.EmbeddingOrchestrator>();
+        services.AddSingleton<IndexingMetrics>();
+        services.AddScoped<IndexingOptions>(_ =>
+            IndexingOptions.FromConfiguration(configuration));
+        services.AddScoped<BatchProcessor>();
+        services.AddScoped<IEmbeddingHandler, MessageEmbeddingHandler>();
+        services.AddScoped<IEmbeddingHandler, ContextEmbeddingHandler>();
+        services.AddScoped<EmbeddingOrchestrator>();
 
         // RAG Fusion Service (multi-query search with RRF)
         services.AddScoped<RagFusionService>();
@@ -162,8 +167,12 @@ public static class ServiceCollectionExtensions
         // Rerank Service (LLM-based reranking)
         services.AddScoped<RerankService>();
 
-        // LLM Memory Service (user profiles + conversation memory)
-        services.AddScoped<LlmMemoryService>();
+        // LLM Memory Services (refactored architecture)
+        services.AddScoped<ProfileManagementService>();
+        services.AddScoped<ConversationMemoryService>();
+        services.AddScoped<LlmExtractionService>();
+        services.AddScoped<MemoryContextBuilder>();
+        services.AddScoped<LlmMemoryService>(); // Facade that delegates to specialized services
 
         // Smart Summary Service (uses embeddings for topic extraction)
         services.AddScoped<SmartSummaryService>();
@@ -182,12 +191,12 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient<OpenRouterUsageService>();
 
         // Profile System Infrastructure (refactored pipeline)
-        services.AddSingleton<WatchmenBot.Services.Profile.ProfileMetrics>();
-        services.AddScoped<WatchmenBot.Services.Profile.ProfileOptions>(sp =>
-            WatchmenBot.Services.Profile.ProfileOptions.FromConfiguration(configuration));
-        services.AddScoped<WatchmenBot.Services.Profile.FactExtractionHandler>();
-        services.AddScoped<WatchmenBot.Services.Profile.ProfileGenerationHandler>();
-        services.AddScoped<WatchmenBot.Services.Profile.ProfileOrchestrator>();
+        services.AddSingleton<ProfileMetrics>();
+        services.AddScoped<ProfileOptions>(_ =>
+            ProfileOptions.FromConfiguration(configuration));
+        services.AddScoped<FactExtractionHandler>();
+        services.AddScoped<ProfileGenerationHandler>();
+        services.AddScoped<ProfileOrchestrator>();
 
         // Profile System Services
         services.AddSingleton<ProfileQueueService>();
@@ -206,88 +215,88 @@ public static class ServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<DailyLogReportService>());
 
         // Admin Command Pattern Infrastructure
-        services.AddSingleton<WatchmenBot.Features.Admin.Commands.AdminCommandRegistry>(sp =>
+        services.AddSingleton<AdminCommandRegistry>(_ =>
         {
-            var registry = new WatchmenBot.Features.Admin.Commands.AdminCommandRegistry();
+            var registry = new AdminCommandRegistry();
 
             // Monitoring commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.StatusCommand>("status");
-            registry.Register<WatchmenBot.Features.Admin.Commands.ReportCommand>("report");
-            registry.Register<WatchmenBot.Features.Admin.Commands.ChatsCommand>("chats");
-            registry.Register<WatchmenBot.Features.Admin.Commands.IndexingCommand>("indexing");
-            registry.Register<WatchmenBot.Features.Admin.Commands.HelpCommand>("help");
+            registry.Register<StatusCommand>("status");
+            registry.Register<ReportCommand>("report");
+            registry.Register<ChatsCommand>("chats");
+            registry.Register<IndexingCommand>("indexing");
+            registry.Register<HelpCommand>("help");
 
             // Debug commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.DebugCommand>("debug");
+            registry.Register<DebugCommand>("debug");
 
             // Settings commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.SetSummaryTimeCommand>("set_summary_time");
-            registry.Register<WatchmenBot.Features.Admin.Commands.SetReportTimeCommand>("set_report_time");
-            registry.Register<WatchmenBot.Features.Admin.Commands.SetTimezoneCommand>("set_timezone");
+            registry.Register<SetSummaryTimeCommand>("set_summary_time");
+            registry.Register<SetReportTimeCommand>("set_report_time");
+            registry.Register<SetTimezoneCommand>("set_timezone");
 
             // LLM commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.LlmListCommand>("llm");
-            registry.Register<WatchmenBot.Features.Admin.Commands.LlmTestCommand>("llm_test");
-            registry.Register<WatchmenBot.Features.Admin.Commands.LlmSetCommand>("llm_set");
+            registry.Register<LlmListCommand>("llm");
+            registry.Register<LlmTestCommand>("llm_test");
+            registry.Register<LlmSetCommand>("llm_set");
 
             // LLM toggle commands (llm_on/llm_off) - using custom factory for bool parameter
-            registry.Register("llm_on", sp => new WatchmenBot.Features.Admin.Commands.LlmToggleCommand(
+            registry.Register("llm_on", sp => new LlmToggleCommand(
                 sp.GetRequiredService<ITelegramBotClient>(),
-                sp.GetRequiredService<WatchmenBot.Services.Llm.LlmRouter>(),
+                sp.GetRequiredService<LlmRouter>(),
                 true,
-                sp.GetRequiredService<ILogger<WatchmenBot.Features.Admin.Commands.LlmToggleCommand>>()));
+                sp.GetRequiredService<ILogger<LlmToggleCommand>>()));
 
-            registry.Register("llm_off", sp => new WatchmenBot.Features.Admin.Commands.LlmToggleCommand(
+            registry.Register("llm_off", sp => new LlmToggleCommand(
                 sp.GetRequiredService<ITelegramBotClient>(),
-                sp.GetRequiredService<WatchmenBot.Services.Llm.LlmRouter>(),
+                sp.GetRequiredService<LlmRouter>(),
                 false,
-                sp.GetRequiredService<ILogger<WatchmenBot.Features.Admin.Commands.LlmToggleCommand>>()));
+                sp.GetRequiredService<ILogger<LlmToggleCommand>>()));
 
             // Import/Export commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.ImportCommand>("import");
+            registry.Register<ImportCommand>("import");
 
             // Prompt management commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.PromptsCommand>("prompts");
-            registry.Register<WatchmenBot.Features.Admin.Commands.PromptCommand>("prompt");
-            registry.Register<WatchmenBot.Features.Admin.Commands.PromptResetCommand>("prompt_reset");
-            registry.Register<WatchmenBot.Features.Admin.Commands.PromptTagCommand>("prompt_tag");
+            registry.Register<PromptsCommand>("prompts");
+            registry.Register<PromptCommand>("prompt");
+            registry.Register<PromptResetCommand>("prompt_reset");
+            registry.Register<PromptTagCommand>("prompt_tag");
 
             // User management commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.NamesCommand>("names");
-            registry.Register<WatchmenBot.Features.Admin.Commands.RenameCommand>("rename");
+            registry.Register<NamesCommand>("names");
+            registry.Register<RenameCommand>("rename");
 
             // Embedding management commands
-            registry.Register<WatchmenBot.Features.Admin.Commands.ReindexCommand>("reindex");
-            registry.Register<WatchmenBot.Features.Admin.Commands.ContextCommand>("context");
-            registry.Register<WatchmenBot.Features.Admin.Commands.ContextReindexCommand>("context_reindex");
+            registry.Register<ReindexCommand>("reindex");
+            registry.Register<ContextCommand>("context");
+            registry.Register<ContextReindexCommand>("context_reindex");
 
             return registry;
         });
 
         // Admin Commands (using Command Pattern)
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.StatusCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.ReportCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.ChatsCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.IndexingCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.HelpCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.DebugCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.SetSummaryTimeCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.SetReportTimeCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.SetTimezoneCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmListCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmTestCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmSetCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.LlmToggleCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.ImportCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptsCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptResetCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.PromptTagCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.NamesCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.RenameCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.ReindexCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.ContextCommand>();
-        services.AddScoped<WatchmenBot.Features.Admin.Commands.ContextReindexCommand>();
+        services.AddScoped<StatusCommand>();
+        services.AddScoped<ReportCommand>();
+        services.AddScoped<ChatsCommand>();
+        services.AddScoped<IndexingCommand>();
+        services.AddScoped<HelpCommand>();
+        services.AddScoped<DebugCommand>();
+        services.AddScoped<SetSummaryTimeCommand>();
+        services.AddScoped<SetReportTimeCommand>();
+        services.AddScoped<SetTimezoneCommand>();
+        services.AddScoped<LlmListCommand>();
+        services.AddScoped<LlmTestCommand>();
+        services.AddScoped<LlmSetCommand>();
+        services.AddScoped<LlmToggleCommand>();
+        services.AddScoped<ImportCommand>();
+        services.AddScoped<PromptsCommand>();
+        services.AddScoped<PromptCommand>();
+        services.AddScoped<PromptResetCommand>();
+        services.AddScoped<PromptTagCommand>();
+        services.AddScoped<NamesCommand>();
+        services.AddScoped<RenameCommand>();
+        services.AddScoped<ReindexCommand>();
+        services.AddScoped<ContextCommand>();
+        services.AddScoped<ContextReindexCommand>();
 
         // Feature Handlers
         services.AddScoped<ProcessTelegramUpdateHandler>();

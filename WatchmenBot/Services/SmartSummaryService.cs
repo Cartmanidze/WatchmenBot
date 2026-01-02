@@ -5,7 +5,13 @@ using WatchmenBot.Services.Llm;
 
 namespace WatchmenBot.Services;
 
-public class SmartSummaryService
+public class SmartSummaryService(
+    EmbeddingService embeddingService,
+    ContextEmbeddingService contextEmbeddingService,
+    LlmRouter llmRouter,
+    PromptSettingsStore promptSettings,
+    DebugService debugService,
+    ILogger<SmartSummaryService> logger)
 {
     // Token budget for context (roughly 4 chars per token)
     private const int ContextTokenBudget = 6000;
@@ -13,29 +19,6 @@ public class SmartSummaryService
     private const int ContextCharBudget = ContextTokenBudget * CharsPerToken; // ~24000 chars
     private const int MaxMessagesPerTopic = 12; // Reduced from 20
     private const int MaxTotalTopicMessages = 50; // Hard limit across all topics
-
-    private readonly EmbeddingService _embeddingService;
-    private readonly ContextEmbeddingService _contextEmbeddingService;
-    private readonly LlmRouter _llmRouter;
-    private readonly PromptSettingsStore _promptSettings;
-    private readonly DebugService _debugService;
-    private readonly ILogger<SmartSummaryService> _logger;
-
-    public SmartSummaryService(
-        EmbeddingService embeddingService,
-        ContextEmbeddingService contextEmbeddingService,
-        LlmRouter llmRouter,
-        PromptSettingsStore promptSettings,
-        DebugService debugService,
-        ILogger<SmartSummaryService> logger)
-    {
-        _embeddingService = embeddingService;
-        _contextEmbeddingService = contextEmbeddingService;
-        _llmRouter = llmRouter;
-        _promptSettings = promptSettings;
-        _debugService = debugService;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Generate a smart summary using embeddings for topic extraction and relevance
@@ -68,18 +51,18 @@ public class SmartSummaryService
             return "За этот период сообщений от людей не найдено.";
         }
 
-        _logger.LogInformation("[SmartSummary] Processing {Count} human messages for chat {ChatId}",
+        logger.LogInformation("[SmartSummary] Processing {Count} human messages for chat {ChatId}",
             humanMessages.Count, chatId);
 
         // Step 1: Get diverse representative messages using embeddings
-        var diverseMessages = await _embeddingService.GetDiverseMessagesAsync(
+        var diverseMessages = await embeddingService.GetDiverseMessagesAsync(
             chatId, startUtc, endUtc, limit: 100, ct);
 
         // Collect debug info for search results
         debugReport.SearchResults = diverseMessages.Select(r => new DebugSearchResult
         {
             Similarity = r.Similarity,
-            MessageIds = new[] { r.MessageId },
+            MessageIds = [r.MessageId],
             Text = r.ChunkText,
             Timestamp = ParseTimestamp(r.MetadataJson)
         }).ToList();
@@ -89,14 +72,14 @@ public class SmartSummaryService
         if (diverseMessages.Count >= 10)
         {
             // Use smart approach: topics + semantic search
-            _logger.LogInformation("[SmartSummary] Using embedding-based approach with {Count} diverse messages",
+            logger.LogInformation("[SmartSummary] Using embedding-based approach with {Count} diverse messages",
                 diverseMessages.Count);
             summaryContent = await GenerateTopicBasedSummaryWithDebugAsync(chatId, humanMessages, diverseMessages, startUtc, endUtc, debugReport, ct);
         }
         else
         {
             // Fallback to traditional approach (not enough embeddings)
-            _logger.LogInformation("[SmartSummary] Falling back to traditional approach (only {Count} embeddings)",
+            logger.LogInformation("[SmartSummary] Falling back to traditional approach (only {Count} embeddings)",
                 diverseMessages.Count);
             summaryContent = await GenerateTraditionalSummaryWithDebugAsync(humanMessages, debugReport, ct);
         }
@@ -104,10 +87,10 @@ public class SmartSummaryService
         sw.Stop();
         debugReport.LlmTimeMs = sw.ElapsedMilliseconds;
 
-        _logger.LogInformation("[SmartSummary] Generated summary in {Elapsed:F1}s", sw.Elapsed.TotalSeconds);
+        logger.LogInformation("[SmartSummary] Generated summary in {Elapsed:F1}s", sw.Elapsed.TotalSeconds);
 
         // Send debug report to admin
-        await _debugService.SendDebugReportAsync(debugReport, ct);
+        await debugService.SendDebugReportAsync(debugReport, ct);
 
         // Sanitize HTML for Telegram before returning
         var header = $"📊 <b>Отчёт {periodDescription}</b>\n\n";
@@ -125,7 +108,10 @@ public class SmartSummaryService
             if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
                 return dateEl.GetDateTimeOffset();
         }
-        catch { }
+        catch
+        {
+            // ignored
+        }
 
         return null;
     }
@@ -146,11 +132,11 @@ public class SmartSummaryService
 
         if (topics.Count == 0)
         {
-            _logger.LogWarning("[SmartSummary] No topics extracted, using fallback");
+            logger.LogWarning("[SmartSummary] No topics extracted, using fallback");
             return await GenerateTraditionalSummaryWithDebugAsync(allMessages, debugReport, ct);
         }
 
-        _logger.LogInformation("[SmartSummary] Extracted {Count} topics: {Topics}",
+        logger.LogInformation("[SmartSummary] Extracted {Count} topics: {Topics}",
             topics.Count, string.Join(", ", topics));
 
         // Step 2: For each topic, find relevant messages using hybrid approach
@@ -160,9 +146,9 @@ public class SmartSummaryService
         foreach (var topic in topics)
         {
             // Hybrid search: parallel search in both message and context embeddings
-            var messageTask = _embeddingService.SearchSimilarInRangeAsync(
+            var messageTask = embeddingService.SearchSimilarInRangeAsync(
                 chatId, topic, startUtc, endUtc, limit: 15, ct);
-            var contextTask = _contextEmbeddingService.SearchContextAsync(
+            var contextTask = contextEmbeddingService.SearchContextAsync(
                 chatId, topic, limit: 5, ct);
 
             await Task.WhenAll(messageTask, contextTask);
@@ -195,8 +181,7 @@ public class SmartSummaryService
                 .Where(m =>
                 {
                     var key = m.ChunkText.Trim().ToLowerInvariant();
-                    if (seenTexts.Contains(key)) return false;
-                    seenTexts.Add(key);
+                    if (!seenTexts.Add(key)) return false;
                     return true;
                 })
                 .OrderByDescending(m => m.Similarity) // Prioritize by relevance
@@ -205,7 +190,7 @@ public class SmartSummaryService
                 .OrderBy(m => m.Time) // Then sort chronologically for context
                 .ToList();
 
-            _logger.LogDebug("[SmartSummary] Topic '{Topic}': {Count} messages ({Context} context + {Message} individual)",
+            logger.LogDebug("[SmartSummary] Topic '{Topic}': {Count} messages ({Context} context + {Message} individual)",
                 topic, filtered.Count, contextResults.Count, messageResults.Count);
 
             topicMessages[topic] = filtered;
@@ -279,7 +264,7 @@ public class SmartSummaryService
         try
         {
             // Для извлечения топиков используем дефолтного провайдера (дешёвый)
-            var response = await _llmRouter.CompleteAsync(new LlmRequest
+            var response = await llmRouter.CompleteAsync(new LlmRequest
             {
                 SystemPrompt = systemPrompt,
                 UserPrompt = userPrompt,
@@ -294,12 +279,12 @@ public class SmartSummaryService
             }
 
             var topics = JsonSerializer.Deserialize<List<string>>(cleaned);
-            return topics ?? new List<string>();
+            return topics ?? [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[SmartSummary] Failed to extract topics");
-            return new List<string>();
+            logger.LogWarning(ex, "[SmartSummary] Failed to extract topics");
+            return [];
         }
     }
 
@@ -387,7 +372,7 @@ public class SmartSummaryService
         debugReport.ContextMessagesCount = totalMessagesIncluded;
         debugReport.ContextTokensEstimate = usedChars / CharsPerToken;
 
-        _logger.LogInformation("[SmartSummary] Context built: {Included} messages, {Chars}/{Budget} chars, {Excluded} excluded by budget",
+        logger.LogInformation("[SmartSummary] Context built: {Included} messages, {Chars}/{Budget} chars, {Excluded} excluded by budget",
             totalMessagesIncluded, usedChars, ContextCharBudget, messagesExcluded);
 
         // STAGE 1: Extract STRUCTURED facts with low temperature (prevents hallucinations)
@@ -417,7 +402,7 @@ public class SmartSummaryService
             """;
 
         var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
-        var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
+        var factsResponse = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = factsSystemPrompt,
@@ -440,10 +425,10 @@ public class SmartSummaryService
             TimeMs = stage1Sw.ElapsedMilliseconds
         });
 
-        _logger.LogDebug("[SmartSummary] Stage 1 (structured facts) complete, {Length} chars", factsResponse.Content.Length);
+        logger.LogDebug("[SmartSummary] Stage 1 (structured facts) complete, {Length} chars", factsResponse.Content.Length);
 
         // STAGE 2: Add humor based ONLY on structured facts
-        var settings = await _promptSettings.GetSettingsAsync("summary");
+        var settings = await promptSettings.GetSettingsAsync("summary");
 
         var humorSystemPrompt = $"""
             {settings.SystemPrompt}
@@ -469,7 +454,7 @@ public class SmartSummaryService
             """;
 
         var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
-        var finalResponse = await _llmRouter.CompleteWithFallbackAsync(
+        var finalResponse = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = humorSystemPrompt,
@@ -504,7 +489,7 @@ public class SmartSummaryService
         debugReport.CompletionTokens = factsResponse.CompletionTokens + finalResponse.CompletionTokens;
         debugReport.TotalTokens = factsResponse.TotalTokens + finalResponse.TotalTokens;
 
-        _logger.LogDebug("[SmartSummary] Stage 2 (humor) complete. Provider: {Provider}", finalResponse.Provider);
+        logger.LogDebug("[SmartSummary] Stage 2 (humor) complete. Provider: {Provider}", finalResponse.Provider);
 
         return finalResponse.Content;
     }
@@ -576,7 +561,7 @@ public class SmartSummaryService
         debugReport.ContextTokensEstimate = context.Length / 4;
 
         var stage1Sw = System.Diagnostics.Stopwatch.StartNew();
-        var factsResponse = await _llmRouter.CompleteWithFallbackAsync(
+        var factsResponse = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = factsSystemPrompt,
@@ -600,7 +585,7 @@ public class SmartSummaryService
         });
 
         // Stage 2: Add humor based ONLY on structured JSON facts
-        var settings = await _promptSettings.GetSettingsAsync("summary");
+        var settings = await promptSettings.GetSettingsAsync("summary");
 
         var humorSystemPrompt = $"""
             {settings.SystemPrompt}
@@ -623,7 +608,7 @@ public class SmartSummaryService
             """;
 
         var stage2Sw = System.Diagnostics.Stopwatch.StartNew();
-        var response = await _llmRouter.CompleteWithFallbackAsync(
+        var response = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = humorSystemPrompt,

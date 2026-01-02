@@ -6,15 +6,8 @@ namespace WatchmenBot.Controllers;
 
 [ApiController]
 [Route("telegram")]
-public class TelegramWebhookController : ControllerBase
+public class TelegramWebhookController(ProcessTelegramUpdateHandler handler) : ControllerBase
 {
-    private readonly ProcessTelegramUpdateHandler _handler;
-
-    public TelegramWebhookController(ProcessTelegramUpdateHandler handler)
-    {
-        _handler = handler;
-    }
-
     [HttpPost("update")]
     public async Task<IActionResult> Post([FromBody] Update update, CancellationToken cancellationToken)
     {
@@ -25,7 +18,7 @@ public class TelegramWebhookController : ControllerBase
             Headers = Request.Headers
         };
 
-        var response = await _handler.HandleAsync(request, cancellationToken);
+        var response = await handler.HandleAsync(request, cancellationToken);
 
         if (!response.IsSuccess)
         {

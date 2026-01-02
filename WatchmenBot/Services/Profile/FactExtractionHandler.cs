@@ -10,36 +10,22 @@ namespace WatchmenBot.Services.Profile;
 /// Handler for extracting facts from queued messages.
 /// Processes message queue, groups by user, extracts facts via LLM.
 /// </summary>
-public class FactExtractionHandler : IProfileHandler
+public class FactExtractionHandler(
+    ProfileQueueService queueService,
+    IDbConnectionFactory connectionFactory,
+    LlmRouter llmRouter,
+    ProfileOptions options,
+    ILogger<FactExtractionHandler> logger)
+    : IProfileHandler
 {
-    private readonly ProfileQueueService _queueService;
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly LlmRouter _llmRouter;
-    private readonly ProfileOptions _options;
-    private readonly ILogger<FactExtractionHandler> _logger;
-
     public string Name => "facts";
 
     public bool IsEnabled => true; // Always enabled for now
 
-    public FactExtractionHandler(
-        ProfileQueueService queueService,
-        IDbConnectionFactory connectionFactory,
-        LlmRouter llmRouter,
-        ProfileOptions options,
-        ILogger<FactExtractionHandler> logger)
-    {
-        _queueService = queueService;
-        _connectionFactory = connectionFactory;
-        _llmRouter = llmRouter;
-        _options = options;
-        _logger = logger;
-    }
-
     public async Task<ProfileStats> GetStatsAsync(CancellationToken ct = default)
     {
         // Get pending messages from queue (with high limit to get count)
-        var pending = await _queueService.GetPendingMessagesAsync(10000);
+        var pending = await queueService.GetPendingMessagesAsync(10000);
         var pendingCount = pending.Count;
         var totalProcessed = await GetTotalFactsCountAsync();
 
@@ -56,7 +42,7 @@ public class FactExtractionHandler : IProfileHandler
         try
         {
             // Get pending messages from queue
-            var messages = await _queueService.GetPendingMessagesAsync(_options.MaxMessagesPerBatch);
+            var messages = await queueService.GetPendingMessagesAsync(options.MaxMessagesPerBatch);
 
             if (messages.Count == 0)
             {
@@ -66,7 +52,7 @@ public class FactExtractionHandler : IProfileHandler
                     HasMoreWork: false);
             }
 
-            _logger.LogInformation("[FactHandler] Processing {Count} messages from queue", messages.Count);
+            logger.LogInformation("[FactHandler] Processing {Count} messages from queue", messages.Count);
 
             // Group by user
             var byUser = messages
@@ -83,10 +69,10 @@ public class FactExtractionHandler : IProfileHandler
                 var userMessages = userGroup.ToList();
 
                 // Skip if not enough messages
-                if (userMessages.Count < _options.MinMessagesForFactExtraction)
+                if (userMessages.Count < options.MinMessagesForFactExtraction)
                 {
-                    _logger.LogDebug("[FactHandler] User {UserId} has only {Count} messages, need {Min}",
-                        userId, userMessages.Count, _options.MinMessagesForFactExtraction);
+                    logger.LogDebug("[FactHandler] User {UserId} has only {Count} messages, need {Min}",
+                        userId, userMessages.Count, options.MinMessagesForFactExtraction);
                     continue;
                 }
 
@@ -101,7 +87,7 @@ public class FactExtractionHandler : IProfileHandler
                     {
                         await SaveFactsAsync(chatId, userId, facts, userMessages.Select(m => m.MessageId).ToArray());
                         factsExtracted += facts.Count;
-                        _logger.LogInformation("[FactHandler] Extracted {Count} facts for {User} in chat {Chat}",
+                        logger.LogInformation("[FactHandler] Extracted {Count} facts for {User} in chat {Chat}",
                             facts.Count, displayName, chatId);
                     }
 
@@ -109,28 +95,28 @@ public class FactExtractionHandler : IProfileHandler
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "[FactHandler] Failed to extract facts for user {UserId}", userId);
+                    logger.LogWarning(ex, "[FactHandler] Failed to extract facts for user {UserId}", userId);
                     // Mark as processed anyway to avoid getting stuck
                     processedIds.AddRange(userMessages.Select(m => m.Id));
                 }
 
                 // Small delay between LLM requests
-                if (_options.LlmRequestDelaySeconds > 0)
+                if (options.LlmRequestDelaySeconds > 0)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(_options.LlmRequestDelaySeconds), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(options.LlmRequestDelaySeconds), ct);
                 }
             }
 
             // Mark as processed
-            await _queueService.MarkAsProcessedAsync(processedIds);
+            await queueService.MarkAsProcessedAsync(processedIds);
 
             // Cleanup old messages periodically
-            await _queueService.CleanupOldMessagesAsync();
+            await queueService.CleanupOldMessagesAsync();
 
             sw.Stop();
 
             // Has more work if we got a full batch
-            var hasMore = messages.Count >= _options.MaxMessagesPerBatch;
+            var hasMore = messages.Count >= options.MaxMessagesPerBatch;
 
             return new ProfileResult(
                 ProcessedCount: factsExtracted,
@@ -140,7 +126,7 @@ public class FactExtractionHandler : IProfileHandler
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogError(ex, "[FactHandler] Error in ProcessAsync");
+            logger.LogError(ex, "[FactHandler] Error in ProcessAsync");
             throw;
         }
     }
@@ -171,7 +157,7 @@ public class FactExtractionHandler : IProfileHandler
             - НЕ выдумывай факты, только из текста
             """;
 
-        var llmResponse = await _llmRouter.CompleteWithFallbackAsync(
+        var llmResponse = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest { SystemPrompt = "", UserPrompt = prompt, Temperature = 0.1 },
             preferredTag: null, ct: ct);
         var response = llmResponse.Content;
@@ -184,12 +170,12 @@ public class FactExtractionHandler : IProfileHandler
                 PropertyNameCaseInsensitive = true
             });
 
-            return result?.Facts ?? new List<ExtractedFact>();
+            return result?.Facts ?? [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[FactHandler] Failed to parse facts JSON: {Response}", response);
-            return new List<ExtractedFact>();
+            logger.LogWarning(ex, "[FactHandler] Failed to parse facts JSON: {Response}", response);
+            return [];
         }
     }
 
@@ -210,7 +196,7 @@ public class FactExtractionHandler : IProfileHandler
         List<ExtractedFact> facts,
         long[] sourceMessageIds)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         foreach (var fact in facts)
         {
@@ -236,14 +222,14 @@ public class FactExtractionHandler : IProfileHandler
 
     private async Task<long> GetTotalFactsCountAsync()
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
         var count = await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM user_facts");
         return count;
     }
 
     private class FactsResponse
     {
-        public List<ExtractedFact> Facts { get; set; } = new();
+        public List<ExtractedFact> Facts { get; set; } = [];
     }
 }
 

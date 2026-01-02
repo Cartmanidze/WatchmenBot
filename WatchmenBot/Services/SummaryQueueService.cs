@@ -19,35 +19,29 @@ public class SummaryQueueItem
 /// Сервис очереди для фоновой генерации summary.
 /// Использует in-memory Channel для быстрой обработки.
 /// </summary>
-public class SummaryQueueService
+public class SummaryQueueService(ILogger<SummaryQueueService> logger)
 {
-    private readonly Channel<SummaryQueueItem> _channel;
-    private readonly ILogger<SummaryQueueService> _logger;
-
-    public SummaryQueueService(ILogger<SummaryQueueService> logger)
+    private readonly Channel<SummaryQueueItem> _channel = Channel.CreateBounded<SummaryQueueItem>(new BoundedChannelOptions(100)
     {
-        _logger = logger;
+        FullMode = BoundedChannelFullMode.DropOldest // При переполнении удаляем старые
+    });
 
-        // Bounded channel с ограничением на 100 запросов в очереди
-        _channel = Channel.CreateBounded<SummaryQueueItem>(new BoundedChannelOptions(100)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest // При переполнении удаляем старые
-        });
-    }
+    // Bounded channel с ограничением на 100 запросов в очереди
+    // При переполнении удаляем старые
 
     /// <summary>
     /// Добавить запрос на summary в очередь
     /// </summary>
-    public bool Enqueue(SummaryQueueItem item)
+    private bool Enqueue(SummaryQueueItem item)
     {
         if (_channel.Writer.TryWrite(item))
         {
-            _logger.LogInformation("[SummaryQueue] Enqueued summary request for chat {ChatId}, {Hours}h, by @{User}",
+            logger.LogInformation("[SummaryQueue] Enqueued summary request for chat {ChatId}, {Hours}h, by @{User}",
                 item.ChatId, item.Hours, item.RequestedBy);
             return true;
         }
 
-        _logger.LogWarning("[SummaryQueue] Failed to enqueue - queue is full");
+        logger.LogWarning("[SummaryQueue] Failed to enqueue - queue is full");
         return false;
     }
 

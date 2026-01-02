@@ -8,21 +8,15 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin chats - list known chats
 /// </summary>
-public class ChatsCommand : AdminCommandBase
+public class ChatsCommand(
+    ITelegramBotClient bot,
+    MessageStore messageStore,
+    ILogger<ChatsCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly MessageStore _messageStore;
-
-    public ChatsCommand(
-        ITelegramBotClient bot,
-        MessageStore messageStore,
-        ILogger<ChatsCommand> logger) : base(bot, logger)
-    {
-        _messageStore = messageStore;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
-        var chats = await _messageStore.GetKnownChatsAsync();
+        var chats = await messageStore.GetKnownChatsAsync();
 
         if (chats.Count == 0)
         {

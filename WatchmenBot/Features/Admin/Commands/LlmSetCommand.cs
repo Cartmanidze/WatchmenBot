@@ -6,18 +6,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin llm_set <name> - set default LLM provider
 /// </summary>
-public class LlmSetCommand : AdminCommandBase
+public class LlmSetCommand(
+    ITelegramBotClient bot,
+    LlmRouter llmRouter,
+    ILogger<LlmSetCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly LlmRouter _llmRouter;
-
-    public LlmSetCommand(
-        ITelegramBotClient bot,
-        LlmRouter llmRouter,
-        ILogger<LlmSetCommand> logger) : base(bot, logger)
-    {
-        _llmRouter = llmRouter;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         if (context.Args.Length == 0)
@@ -28,7 +22,7 @@ public class LlmSetCommand : AdminCommandBase
         }
 
         var providerName = context.Args[0];
-        var providers = _llmRouter.GetAllProviders();
+        var providers = llmRouter.GetAllProviders();
 
         if (!providers.ContainsKey(providerName))
         {
@@ -37,8 +31,8 @@ public class LlmSetCommand : AdminCommandBase
             return true;
         }
 
-        var oldDefault = _llmRouter.DefaultProviderName;
-        var success = _llmRouter.SetDefaultProvider(providerName);
+        var oldDefault = llmRouter.DefaultProviderName;
+        var success = llmRouter.SetDefaultProvider(providerName);
 
         if (success)
         {

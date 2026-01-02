@@ -2,27 +2,15 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.ReplyMarkups;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Search;
 
-public class RecallHandler
+public class RecallHandler(
+    ITelegramBotClient bot,
+    MessageStore messageStore,
+    ILogger<RecallHandler> logger)
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly MessageStore _messageStore;
-    private readonly ILogger<RecallHandler> _logger;
-
-    public RecallHandler(
-        ITelegramBotClient bot,
-        MessageStore messageStore,
-        ILogger<RecallHandler> logger)
-    {
-        _bot = bot;
-        _messageStore = messageStore;
-        _logger = logger;
-    }
-
     public async Task HandleAsync(Message message, CancellationToken ct)
     {
         var chatId = message.Chat.Id;
@@ -30,7 +18,7 @@ public class RecallHandler
 
         if (string.IsNullOrWhiteSpace(username))
         {
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: chatId,
                 text: "Использование: <code>/recall @username</code>\n\nПример: <code>/recall @ivan</code>",
                 parseMode: ParseMode.Html,
@@ -41,19 +29,19 @@ public class RecallHandler
 
         try
         {
-            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+            await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
-            _logger.LogInformation("[Recall] Username: {Username} in chat {ChatId}", username, chatId);
+            logger.LogInformation("[Recall] Username: {Username} in chat {ChatId}", username, chatId);
 
             // Get messages from the last 7 days
             var endUtc = DateTimeOffset.UtcNow;
             var startUtc = endUtc.AddDays(-7);
 
-            var messages = await _messageStore.GetMessagesByUsernameAsync(chatId, username, startUtc, endUtc);
+            var messages = await messageStore.GetMessagesByUsernameAsync(chatId, username, startUtc, endUtc);
 
             if (messages.Count == 0)
             {
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: chatId,
                     text: $"Не нашёл сообщений от <b>@{EscapeHtml(username)}</b> за последнюю неделю.",
                     parseMode: ParseMode.Html,
@@ -66,7 +54,7 @@ public class RecallHandler
 
             try
             {
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: chatId,
                     text: response,
                     parseMode: ParseMode.Html,
@@ -78,20 +66,20 @@ public class RecallHandler
             {
                 // Fallback to plain text
                 var plainText = System.Text.RegularExpressions.Regex.Replace(response, "<[^>]+>", "");
-                await _bot.SendMessage(
+                await bot.SendMessage(
                     chatId: chatId,
                     text: plainText,
                     replyParameters: new ReplyParameters { MessageId = message.MessageId },
                     cancellationToken: ct);
             }
 
-            _logger.LogInformation("[Recall] Found {Count} messages for @{Username}", messages.Count, username);
+            logger.LogInformation("[Recall] Found {Count} messages for @{Username}", messages.Count, username);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Recall] Failed for username: {Username}", username);
+            logger.LogError(ex, "[Recall] Failed for username: {Username}", username);
 
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: chatId,
                 text: "Произошла ошибка при поиске сообщений. Попробуйте позже.",
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },

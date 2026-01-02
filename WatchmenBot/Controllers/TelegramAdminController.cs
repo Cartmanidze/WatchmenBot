@@ -6,30 +6,18 @@ namespace WatchmenBot.Controllers;
 
 [ApiController]
 [Route("admin")]
-public class TelegramAdminController : ControllerBase
+public class TelegramAdminController(
+    SetWebhookHandler setWebhookHandler,
+    DeleteWebhookHandler deleteWebhookHandler,
+    GetWebhookInfoHandler getWebhookInfoHandler,
+    ChatImportService chatImportService)
+    : ControllerBase
 {
-    private readonly SetWebhookHandler _setWebhookHandler;
-    private readonly DeleteWebhookHandler _deleteWebhookHandler;
-    private readonly GetWebhookInfoHandler _getWebhookInfoHandler;
-    private readonly ChatImportService _chatImportService;
-
-    public TelegramAdminController(
-        SetWebhookHandler setWebhookHandler,
-        DeleteWebhookHandler deleteWebhookHandler,
-        GetWebhookInfoHandler getWebhookInfoHandler,
-        ChatImportService chatImportService)
-    {
-        _setWebhookHandler = setWebhookHandler;
-        _deleteWebhookHandler = deleteWebhookHandler;
-        _getWebhookInfoHandler = getWebhookInfoHandler;
-        _chatImportService = chatImportService;
-    }
-
     [HttpPost("set-webhook")]
     public async Task<IActionResult> SetWebhook(CancellationToken cancellationToken)
     {
         var request = new SetWebhookRequest();
-        var response = await _setWebhookHandler.HandleAsync(request, cancellationToken);
+        var response = await setWebhookHandler.HandleAsync(request, cancellationToken);
 
         if (!response.IsSuccess)
         {
@@ -43,7 +31,7 @@ public class TelegramAdminController : ControllerBase
     public async Task<IActionResult> DeleteWebhook(CancellationToken cancellationToken)
     {
         var request = new DeleteWebhookRequest();
-        var response = await _deleteWebhookHandler.HandleAsync(request, cancellationToken);
+        var response = await deleteWebhookHandler.HandleAsync(request, cancellationToken);
 
         if (!response.IsSuccess)
         {
@@ -57,7 +45,7 @@ public class TelegramAdminController : ControllerBase
     public async Task<IActionResult> GetWebhookInfo(CancellationToken cancellationToken)
     {
         var request = new GetWebhookInfoRequest();
-        var response = await _getWebhookInfoHandler.HandleAsync(request, cancellationToken);
+        var response = await getWebhookInfoHandler.HandleAsync(request, cancellationToken);
 
         if (!response.IsSuccess)
         {
@@ -86,7 +74,7 @@ public class TelegramAdminController : ControllerBase
             return BadRequest("ChatId is required");
         }
 
-        var result = await _chatImportService.ImportFromDirectoryAsync(
+        var result = await chatImportService.ImportFromDirectoryAsync(
             request.ExportPath,
             request.ChatId,
             request.SkipExisting,

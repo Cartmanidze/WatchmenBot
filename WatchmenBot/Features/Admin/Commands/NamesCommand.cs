@@ -7,18 +7,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin names <chat_id> - show unique display names in chat
 /// </summary>
-public class NamesCommand : AdminCommandBase
+public class NamesCommand(
+    ITelegramBotClient bot,
+    MessageStore messageStore,
+    ILogger<NamesCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly MessageStore _messageStore;
-
-    public NamesCommand(
-        ITelegramBotClient bot,
-        MessageStore messageStore,
-        ILogger<NamesCommand> logger) : base(bot, logger)
-    {
-        _messageStore = messageStore;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         if (context.Args.Length == 0)
@@ -33,7 +27,7 @@ public class NamesCommand : AdminCommandBase
             return true;
         }
 
-        var names = await _messageStore.GetUniqueDisplayNamesAsync(targetChatId);
+        var names = await messageStore.GetUniqueDisplayNamesAsync(targetChatId);
 
         if (names.Count == 0)
         {

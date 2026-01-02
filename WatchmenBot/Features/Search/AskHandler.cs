@@ -9,40 +9,17 @@ namespace WatchmenBot.Features.Search;
 /// Handler for /ask and /smart commands
 /// Orchestrates search, context building, and answer generation
 /// </summary>
-public class AskHandler
+public class AskHandler(
+    ITelegramBotClient bot,
+    LlmMemoryService memoryService,
+    DebugService debugService,
+    SearchStrategyService searchStrategy,
+    AnswerGeneratorService answerGenerator,
+    PersonalQuestionDetector personalDetector,
+    DebugReportCollector debugCollector,
+    ConfidenceGateService confidenceGate,
+    ILogger<AskHandler> logger)
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly LlmMemoryService _memoryService;
-    private readonly DebugService _debugService;
-    private readonly SearchStrategyService _searchStrategy;
-    private readonly AnswerGeneratorService _answerGenerator;
-    private readonly PersonalQuestionDetector _personalDetector;
-    private readonly DebugReportCollector _debugCollector;
-    private readonly ConfidenceGateService _confidenceGate;
-    private readonly ILogger<AskHandler> _logger;
-
-    public AskHandler(
-        ITelegramBotClient bot,
-        LlmMemoryService memoryService,
-        DebugService debugService,
-        SearchStrategyService searchStrategy,
-        AnswerGeneratorService answerGenerator,
-        PersonalQuestionDetector personalDetector,
-        DebugReportCollector debugCollector,
-        ConfidenceGateService confidenceGate,
-        ILogger<AskHandler> logger)
-    {
-        _bot = bot;
-        _memoryService = memoryService;
-        _debugService = debugService;
-        _searchStrategy = searchStrategy;
-        _answerGenerator = answerGenerator;
-        _personalDetector = personalDetector;
-        _debugCollector = debugCollector;
-        _confidenceGate = confidenceGate;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Handle /ask command (дерзкий ответ с подъёбкой)
     /// </summary>
@@ -76,9 +53,9 @@ public class AskHandler
 
         try
         {
-            await _bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+            await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
-            _logger.LogInformation("[{Command}] Question: {Question} in chat {ChatId}", command.ToUpper(), question, chatId);
+            logger.LogInformation("[{Command}] Question: {Question} in chat {ChatId}", command.ToUpper(), question, chatId);
 
             // Get asker's info for personal retrieval
             var askerName = AskHandlerHelpers.GetDisplayName(message.From);
@@ -86,14 +63,14 @@ public class AskHandler
             var askerId = message.From?.Id ?? 0;
 
             // Detect if this is a personal question (about self or @someone)
-            var personalTarget = _personalDetector.DetectPersonalTarget(question, askerName, askerUsername);
+            var personalTarget = personalDetector.DetectPersonalTarget(question, askerName, askerUsername);
 
             // === PARALLEL EXECUTION: Memory + Search ===
             var (memoryContext, searchResponse) = await ExecuteSearchAsync(
                 command, chatId, askerId, askerName, askerUsername, question, personalTarget, ct);
 
             // Handle confidence gate and build context
-            var (context, confidenceWarning, contextTracker, shouldContinue) = await _confidenceGate.ProcessSearchResultsAsync(
+            var (context, confidenceWarning, contextTracker, shouldContinue) = await confidenceGate.ProcessSearchResultsAsync(
                 command, chatId, message, searchResponse, debugReport, ct);
 
             if (!shouldContinue)
@@ -103,13 +80,13 @@ public class AskHandler
             }
 
             // Collect debug info for search results WITH context tracking
-            _debugCollector.CollectSearchDebugInfo(debugReport, searchResponse.Results, contextTracker, personalTarget);
+            debugCollector.CollectSearchDebugInfo(debugReport, searchResponse.Results, contextTracker, personalTarget);
 
             // Collect debug info for context
-            _debugCollector.CollectContextDebugInfo(debugReport, context, contextTracker);
+            debugCollector.CollectContextDebugInfo(debugReport, context, contextTracker);
 
             // Generate answer using LLM with command-specific prompt
-            var answer = await _answerGenerator.GenerateAnswerWithDebugAsync(command, question, context, memoryContext, askerName, debugReport, ct);
+            var answer = await answerGenerator.GenerateAnswerWithDebugAsync(command, question, context, memoryContext, askerName, debugReport, ct);
 
             // Add confidence warning if needed (context shown only in debug mode for admins)
             var rawResponse = (confidenceWarning ?? "") + answer;
@@ -117,7 +94,7 @@ public class AskHandler
             // Sanitize HTML for Telegram
             var response = TelegramHtmlSanitizer.Sanitize(rawResponse);
 
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: chatId,
                 text: response,
                 parseMode: ParseMode.Html,
@@ -125,20 +102,20 @@ public class AskHandler
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
 
-            _logger.LogInformation("[{Command}] Answered question: {Question} (confidence: {Conf})",
+            logger.LogInformation("[{Command}] Answered question: {Question} (confidence: {Conf})",
                 command.ToUpper(), question, searchResponse.Confidence);
 
             // Store memory and update profile (fire and forget)
             StoreMemoryAsync(chatId, askerId, askerName, askerUsername, question, answer);
 
             // Send debug report to admin
-            await _debugService.SendDebugReportAsync(debugReport, ct);
+            await debugService.SendDebugReportAsync(debugReport, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[{Command}] Failed for question: {Question}", command.ToUpper(), question);
+            logger.LogError(ex, "[{Command}] Failed for question: {Question}", command.ToUpper(), question);
 
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: chatId,
                 text: "Произошла ошибка при обработке вопроса. Попробуйте позже.",
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
@@ -170,7 +147,7 @@ public class AskHandler
                 <i>Ищет в истории сообщений</i>
                 """;
 
-        await _bot.SendMessage(
+        await bot.SendMessage(
             chatId: chatId,
             text: helpText,
             parseMode: ParseMode.Html,
@@ -186,11 +163,11 @@ public class AskHandler
         Task<string?>? memoryTask = null;
         if (command == "ask" && askerId != 0)
         {
-            memoryTask = _memoryService.BuildEnhancedContextAsync(chatId, askerId, askerName, question, ct);
+            memoryTask = memoryService.BuildEnhancedContextAsync(chatId, askerId, askerName, question, ct);
         }
         else if (command != "smart" && askerId != 0)
         {
-            memoryTask = _memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
+            memoryTask = memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
         }
 
         // Start search task (runs in parallel with memory loading)
@@ -199,7 +176,7 @@ public class AskHandler
         if (command == "smart")
         {
             // /smart — no RAG search needed
-            _logger.LogInformation("[SMART] Direct query to Perplexity (no RAG)");
+            logger.LogInformation("[SMART] Direct query to Perplexity (no RAG)");
             searchTask = Task.FromResult(new SearchResponse
             {
                 Confidence = SearchConfidence.None,
@@ -208,21 +185,21 @@ public class AskHandler
         }
         else if (personalTarget == "self")
         {
-            _logger.LogInformation("[ASK] Personal question detected: self ({Name}/{Username})", askerName, askerUsername);
-            searchTask = _searchStrategy.SearchPersonalWithHybridAsync(
+            logger.LogInformation("[ASK] Personal question detected: self ({Name}/{Username})", askerName, askerUsername);
+            searchTask = searchStrategy.SearchPersonalWithHybridAsync(
                 chatId, askerUsername ?? askerName, askerName, question, days: 7, ct);
         }
         else if (personalTarget != null && personalTarget.StartsWith("@"))
         {
             var targetUsername = personalTarget.TrimStart('@');
-            _logger.LogInformation("[ASK] Personal question detected: @{Target}", targetUsername);
-            searchTask = _searchStrategy.SearchPersonalWithHybridAsync(
+            logger.LogInformation("[ASK] Personal question detected: @{Target}", targetUsername);
+            searchTask = searchStrategy.SearchPersonalWithHybridAsync(
                 chatId, targetUsername, null, question, days: 7, ct);
         }
         else
         {
             // Context-only search: use sliding window embeddings (10 messages each)
-            searchTask = _searchStrategy.SearchContextOnlyAsync(chatId, question, ct);
+            searchTask = searchStrategy.SearchContextOnlyAsync(chatId, question, ct);
         }
 
         // Await both tasks in parallel
@@ -237,7 +214,7 @@ public class AskHandler
 
             if (memoryContext != null)
             {
-                _logger.LogDebug("[{Command}] Loaded memory for user {User}", command.ToUpper(), askerName);
+                logger.LogDebug("[{Command}] Loaded memory for user {User}", command.ToUpper(), askerName);
             }
         }
         else
@@ -257,13 +234,13 @@ public class AskHandler
         {
             try
             {
-                await _memoryService.StoreMemoryAsync(chatId, askerId, question, answer, CancellationToken.None);
-                await _memoryService.UpdateProfileFromInteractionAsync(
+                await memoryService.StoreMemoryAsync(chatId, askerId, question, answer, CancellationToken.None);
+                await memoryService.UpdateProfileFromInteractionAsync(
                     chatId, askerId, askerName, askerUsername, question, answer, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[Memory] Failed to store memory for user {UserId}", askerId);
+                logger.LogWarning(ex, "[Memory] Failed to store memory for user {UserId}", askerId);
             }
         });
     }

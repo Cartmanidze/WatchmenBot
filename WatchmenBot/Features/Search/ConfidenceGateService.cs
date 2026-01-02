@@ -7,25 +7,12 @@ namespace WatchmenBot.Features.Search;
 /// <summary>
 /// Service for handling confidence gates and context building with early returns
 /// </summary>
-public class ConfidenceGateService
+public class ConfidenceGateService(
+    ITelegramBotClient bot,
+    ContextBuilderService contextBuilder,
+    DebugReportCollector debugCollector,
+    DebugService debugService)
 {
-    private readonly ITelegramBotClient _bot;
-    private readonly ContextBuilderService _contextBuilder;
-    private readonly DebugReportCollector _debugCollector;
-    private readonly DebugService _debugService;
-
-    public ConfidenceGateService(
-        ITelegramBotClient bot,
-        ContextBuilderService contextBuilder,
-        DebugReportCollector debugCollector,
-        DebugService debugService)
-    {
-        _bot = bot;
-        _contextBuilder = contextBuilder;
-        _debugCollector = debugCollector;
-        _debugService = debugService;
-    }
-
     /// <summary>
     /// Process search results: check confidence, build context, handle early returns
     /// Returns: (context, confidenceWarning, contextTracker, shouldContinue)
@@ -41,12 +28,12 @@ public class ConfidenceGateService
             CancellationToken ct)
     {
         var results = searchResponse.Results;
-        string? context = null;
+        string? context;
         string? confidenceWarning = null;
         var contextTracker = new Dictionary<long, (bool included, string reason)>();
 
         // Collect debug info for search response
-        _debugCollector.CollectSearchResponseDebugInfo(debugReport, searchResponse);
+        debugCollector.CollectSearchResponseDebugInfo(debugReport, searchResponse);
 
         if (command == "smart")
         {
@@ -65,15 +52,15 @@ public class ConfidenceGateService
                 contextTracker[r.MessageId] = (false, "confidence_none");
 
             // Collect debug info before early return
-            _debugCollector.CollectSearchDebugInfo(debugReport, results, contextTracker, personalTarget: null);
+            debugCollector.CollectSearchDebugInfo(debugReport, results, contextTracker, personalTarget: null);
 
-            await _bot.SendMessage(
+            await bot.SendMessage(
                 chatId: chatId,
                 text: "🤷 В истории чата про это не нашёл. Попробуй уточнить вопрос или период.",
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
 
-            await _debugService.SendDebugReportAsync(debugReport, ct);
+            await debugService.SendDebugReportAsync(debugReport, ct);
 
             // Signal early return
             return (null, null, contextTracker, false);
@@ -84,7 +71,7 @@ public class ConfidenceGateService
             confidenceWarning = "⚠️ <i>Контекст слабый, ответ может быть неточным</i>\n\n";
         }
 
-        (context, contextTracker) = await _contextBuilder.BuildContextWithWindowsAsync(chatId, results, ct);
+        (context, contextTracker) = await contextBuilder.BuildContextWithWindowsAsync(chatId, results, ct);
 
         return (context, confidenceWarning, contextTracker, true);
     }

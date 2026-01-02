@@ -6,12 +6,12 @@ public class LogCollector
 {
     private readonly ConcurrentQueue<LogEntry> _errors = new();
     private readonly ConcurrentQueue<LogEntry> _warnings = new();
-    private readonly object _statsLock = new();
+    private readonly Lock _statsLock = new();
 
     private int _messagesProcessed;
     private int _summariesGenerated;
     private int _embeddingsCreated;
-    private DateTimeOffset _startTime = DateTimeOffset.UtcNow;
+    private readonly DateTimeOffset _startTime = DateTimeOffset.UtcNow;
     private DateTimeOffset _lastReportTime = DateTimeOffset.UtcNow;
 
     private const int MaxEntriesPerCategory = 100;
@@ -148,8 +148,8 @@ public class LogReport
     public DateTimeOffset PeriodStart { get; set; }
     public DateTimeOffset PeriodEnd { get; set; }
     public TimeSpan UptimeSinceStart { get; set; }
-    public List<LogEntry> Errors { get; set; } = new();
-    public List<LogEntry> Warnings { get; set; } = new();
+    public List<LogEntry> Errors { get; set; } = [];
+    public List<LogEntry> Warnings { get; set; } = [];
     public int MessagesProcessed { get; set; }
     public int SummariesGenerated { get; set; }
     public int EmbeddingsCreated { get; set; }

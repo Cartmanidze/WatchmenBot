@@ -1,6 +1,5 @@
 using System.Text;
 using Telegram.Bot;
-using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Services;
 
@@ -10,18 +9,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// /admin prompt <command> - show prompt for command
 /// Also handles file upload to update prompt
 /// </summary>
-public class PromptCommand : AdminCommandBase
+public class PromptCommand(
+    ITelegramBotClient bot,
+    PromptSettingsStore promptSettings,
+    ILogger<PromptCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly PromptSettingsStore _promptSettings;
-
-    public PromptCommand(
-        ITelegramBotClient bot,
-        PromptSettingsStore promptSettings,
-        ILogger<PromptCommand> logger) : base(bot, logger)
-    {
-        _promptSettings = promptSettings;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         // Check if this is a file upload
@@ -38,7 +31,7 @@ public class PromptCommand : AdminCommandBase
         }
 
         var command = context.Args[0];
-        var defaults = _promptSettings.GetDefaults();
+        var defaults = promptSettings.GetDefaults();
 
         if (!defaults.ContainsKey(command))
         {
@@ -47,8 +40,8 @@ public class PromptCommand : AdminCommandBase
             return true;
         }
 
-        var currentPrompt = await _promptSettings.GetPromptAsync(command);
-        var prompts = await _promptSettings.GetAllPromptsAsync();
+        var currentPrompt = await promptSettings.GetPromptAsync(command);
+        var prompts = await promptSettings.GetAllPromptsAsync();
         var promptInfo = prompts.FirstOrDefault(p => p.Command == command);
         var isCustom = promptInfo?.IsCustom ?? false;
 
@@ -88,7 +81,7 @@ public class PromptCommand : AdminCommandBase
         }
 
         var command = parts[2].ToLowerInvariant();
-        var defaults = _promptSettings.GetDefaults();
+        var defaults = promptSettings.GetDefaults();
 
         if (!defaults.ContainsKey(command))
         {
@@ -119,7 +112,7 @@ public class PromptCommand : AdminCommandBase
             using var stream = new MemoryStream();
             await Bot.DownloadFile(file.FilePath!, stream, ct);
 
-            var promptText = System.Text.Encoding.UTF8.GetString(stream.ToArray()).Trim();
+            var promptText = Encoding.UTF8.GetString(stream.ToArray()).Trim();
 
             if (string.IsNullOrWhiteSpace(promptText))
             {
@@ -128,7 +121,7 @@ public class PromptCommand : AdminCommandBase
             }
 
             // Save prompt
-            await _promptSettings.SetPromptAsync(command, promptText);
+            await promptSettings.SetPromptAsync(command, promptText);
 
             await SendMessageAsync(chatId,
                 $"✅ Промпт для <b>/{command}</b> обновлён!\n\n📝 Размер: {promptText.Length} символов", ct);

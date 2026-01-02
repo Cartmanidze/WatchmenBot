@@ -5,17 +5,8 @@ using WatchmenBot.Models;
 
 namespace WatchmenBot.Services;
 
-public class MessageStore
+public class MessageStore(IDbConnectionFactory connectionFactory, ILogger<MessageStore> logger)
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<MessageStore> _logger;
-
-    public MessageStore(IDbConnectionFactory connectionFactory, ILogger<MessageStore> logger)
-    {
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-    }
-
     public async Task SaveAsync(MessageRecord record)
     {
         const string sql = """
@@ -33,12 +24,12 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             await connection.ExecuteAsync(sql, record);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to save message {MessageId} for chat {ChatId}", record.Id, record.ChatId);
+            logger.LogError(ex, "Failed to save message {MessageId} for chat {ChatId}", record.Id, record.ChatId);
             throw;
         }
     }
@@ -56,12 +47,12 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             await connection.ExecuteAsync(sql, new { Id = chatId, Title = title, Type = chatType });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to save chat {ChatId}", chatId);
+            logger.LogError(ex, "Failed to save chat {ChatId}", chatId);
         }
     }
 
@@ -88,13 +79,13 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var results = await connection.QueryAsync<MessageRecord>(sql, new { ChatId = chatId, StartUtc = startUtc, EndUtc = endUtc });
             return results.ToList();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get messages for chat {ChatId} between {StartUtc} and {EndUtc}", chatId, startUtc, endUtc);
+            logger.LogError(ex, "Failed to get messages for chat {ChatId} between {StartUtc} and {EndUtc}", chatId, startUtc, endUtc);
             throw;
         }
     }
@@ -129,13 +120,13 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var results = await connection.QueryAsync<MessageRecord>(sql, new { ChatId = chatId, Limit = limit });
             return results.Reverse().ToList(); // Return in chronological order
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get latest messages for chat {ChatId}", chatId);
+            logger.LogError(ex, "Failed to get latest messages for chat {ChatId}", chatId);
             throw;
         }
     }
@@ -146,13 +137,13 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var results = await connection.QueryAsync<long>(sql);
             return results.ToList();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get distinct chat IDs");
+            logger.LogError(ex, "Failed to get distinct chat IDs");
             throw;
         }
     }
@@ -183,7 +174,7 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var results = await connection.QueryAsync<MessageRecord>(sql, new
             {
                 ChatId = chatId,
@@ -196,7 +187,7 @@ public class MessageStore
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get messages for username {Username} in chat {ChatId}", username, chatId);
+            logger.LogError(ex, "Failed to get messages for username {Username} in chat {ChatId}", username, chatId);
             throw;
         }
     }
@@ -204,7 +195,7 @@ public class MessageStore
     public static bool DetectLinks(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
-        var pattern = @"https?://\S+";
+        const string pattern = @"https?://\S+";
         return Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase);
     }
 
@@ -238,13 +229,13 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var results = await connection.QueryAsync<MessageRecord>(sql, new { Limit = limit });
             return results.ToList();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get messages without embeddings");
+            logger.LogError(ex, "Failed to get messages without embeddings");
             throw;
         }
     }
@@ -262,13 +253,13 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var result = await connection.QuerySingleAsync<(long total, long indexed)>(sql);
             return (result.total, result.indexed, result.total - result.indexed);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get embedding stats");
+            logger.LogError(ex, "Failed to get embedding stats");
             return (0, 0, 0);
         }
     }
@@ -294,14 +285,14 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var result = await connection.QueryAsync<ChatInfo>(sql);
             return result.ToList();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get known chats");
-            return new List<ChatInfo>();
+            logger.LogError(ex, "Failed to get known chats");
+            return [];
         }
     }
 
@@ -324,15 +315,15 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var affected = await connection.ExecuteAsync(sql, new { ChatId = chatId, OldName = oldName, NewName = newName });
-            _logger.LogInformation("Renamed '{OldName}' to '{NewName}' in {Count} messages (chatId: {ChatId})",
+            logger.LogInformation("Renamed '{OldName}' to '{NewName}' in {Count} messages (chatId: {ChatId})",
                 oldName, newName, affected, chatId?.ToString() ?? "all");
             return affected;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to rename '{OldName}' to '{NewName}'", oldName, newName);
+            logger.LogError(ex, "Failed to rename '{OldName}' to '{NewName}'", oldName, newName);
             throw;
         }
     }
@@ -352,13 +343,13 @@ public class MessageStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var results = await connection.QueryAsync<(string DisplayName, int cnt)>(sql, new { ChatId = chatId });
             return results.Select(r => (r.DisplayName, r.cnt)).ToList();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get unique display names for chat {ChatId}", chatId);
+            logger.LogError(ex, "Failed to get unique display names for chat {ChatId}", chatId);
             throw;
         }
     }

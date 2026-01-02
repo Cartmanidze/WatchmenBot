@@ -8,46 +8,34 @@ namespace WatchmenBot.Services.Indexing;
 /// </summary>
 public class IndexingMetrics
 {
-    private static readonly Meter _meter = new("WatchmenBot.Embeddings", "1.0");
+    private static readonly Meter Meter = new("WatchmenBot.Embeddings", "1.0");
 
-    private readonly Counter<int> _itemsProcessed;
-    private readonly Counter<int> _batchesProcessed;
-    private readonly Counter<int> _errorsCount;
-    private readonly Histogram<double> _batchProcessingTime;
-    private readonly Histogram<int> _batchSize;
+    private readonly Counter<int> _itemsProcessed = Meter.CreateCounter<int>(
+        name: "embeddings.items.processed",
+        unit: "items",
+        description: "Total embedding items processed");
+    private readonly Counter<int> _batchesProcessed = Meter.CreateCounter<int>(
+        name: "embeddings.batches.processed",
+        unit: "batches",
+        description: "Total batches processed");
+    private readonly Counter<int> _errorsCount = Meter.CreateCounter<int>(
+        name: "embeddings.errors.total",
+        unit: "errors",
+        description: "Total errors during embedding processing");
+    private readonly Histogram<double> _batchProcessingTime = Meter.CreateHistogram<double>(
+        name: "embeddings.batch.duration",
+        unit: "ms",
+        description: "Batch processing duration in milliseconds");
+    private readonly Histogram<int> _batchSize = Meter.CreateHistogram<int>(
+        name: "embeddings.batch.size",
+        unit: "items",
+        description: "Number of items per batch");
 
-    public IndexingMetrics()
-    {
-        // Counter: Total items processed by handler
-        _itemsProcessed = _meter.CreateCounter<int>(
-            name: "embeddings.items.processed",
-            unit: "items",
-            description: "Total embedding items processed");
-
-        // Counter: Total batches processed
-        _batchesProcessed = _meter.CreateCounter<int>(
-            name: "embeddings.batches.processed",
-            unit: "batches",
-            description: "Total batches processed");
-
-        // Counter: Total errors encountered
-        _errorsCount = _meter.CreateCounter<int>(
-            name: "embeddings.errors.total",
-            unit: "errors",
-            description: "Total errors during embedding processing");
-
-        // Histogram: Batch processing time distribution
-        _batchProcessingTime = _meter.CreateHistogram<double>(
-            name: "embeddings.batch.duration",
-            unit: "ms",
-            description: "Batch processing duration in milliseconds");
-
-        // Histogram: Batch size distribution
-        _batchSize = _meter.CreateHistogram<int>(
-            name: "embeddings.batch.size",
-            unit: "items",
-            description: "Number of items per batch");
-    }
+    // Counter: Total items processed by handler
+    // Counter: Total batches processed
+    // Counter: Total errors encountered
+    // Histogram: Batch processing time distribution
+    // Histogram: Batch size distribution
 
     /// <summary>
     /// Record a batch processing operation

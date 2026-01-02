@@ -1,4 +1,3 @@
-using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
 
@@ -7,16 +6,10 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// Base class for admin commands with common dependencies and utility methods
 /// </summary>
-public abstract class AdminCommandBase : IAdminCommand
+public abstract class AdminCommandBase(ITelegramBotClient bot, ILogger logger) : IAdminCommand
 {
-    protected readonly ITelegramBotClient Bot;
-    protected readonly ILogger Logger;
-
-    protected AdminCommandBase(ITelegramBotClient bot, ILogger logger)
-    {
-        Bot = bot;
-        Logger = logger;
-    }
+    protected readonly ITelegramBotClient Bot = bot;
+    protected readonly ILogger Logger = logger;
 
     public abstract Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct);
 

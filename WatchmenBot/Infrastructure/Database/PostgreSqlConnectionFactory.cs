@@ -3,14 +3,9 @@ using Npgsql;
 
 namespace WatchmenBot.Infrastructure.Database;
 
-public class PostgreSqlConnectionFactory : IDbConnectionFactory
+public class PostgreSqlConnectionFactory(string connectionString) : IDbConnectionFactory
 {
-    private readonly string _connectionString;
-
-    public PostgreSqlConnectionFactory(string connectionString)
-    {
-        _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
-    }
+    private readonly string _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
 
     public async Task<IDbConnection> CreateConnectionAsync()
     {

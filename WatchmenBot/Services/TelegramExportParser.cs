@@ -6,10 +6,8 @@ namespace WatchmenBot.Services;
 /// <summary>
 /// Parses Telegram Desktop HTML export files
 /// </summary>
-public class TelegramExportParser
+public class TelegramExportParser(ILogger<TelegramExportParser> logger)
 {
-    private readonly ILogger<TelegramExportParser> _logger;
-
     // Regex to extract message ID from id attribute (e.g., "message41123")
     private static readonly Regex MessageIdRegex = new(@"message(\d+)", RegexOptions.Compiled);
 
@@ -17,11 +15,6 @@ public class TelegramExportParser
     private static readonly Regex DateTimeRegex = new(
         @"(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+UTC([+-]\d{2}:\d{2})",
         RegexOptions.Compiled);
-
-    public TelegramExportParser(ILogger<TelegramExportParser> logger)
-    {
-        _logger = logger;
-    }
 
     /// <summary>
     /// Get chat title from export
@@ -60,13 +53,13 @@ public class TelegramExportParser
             throw new DirectoryNotFoundException($"Export directory not found: {directoryPath}");
 
         var htmlFiles = Directory.GetFiles(directoryPath, "messages*.html")
-            .OrderBy(f => GetFileOrder(f))
+            .OrderBy(GetFileOrder)
             .ToList();
 
         if (htmlFiles.Count == 0)
             throw new FileNotFoundException("No messages*.html files found in export directory");
 
-        _logger.LogInformation("[Import] Found {Count} HTML files to parse", htmlFiles.Count);
+        logger.LogInformation("[Import] Found {Count} HTML files to parse", htmlFiles.Count);
 
         var allMessages = new List<ImportedMessage>();
         string? lastFromName = null;
@@ -83,11 +76,11 @@ public class TelegramExportParser
                 allMessages.AddRange(messages);
             }
 
-            _logger.LogInformation("[Import] Parsed {File}: {Count} messages",
+            logger.LogInformation("[Import] Parsed {File}: {Count} messages",
                 Path.GetFileName(file), messages.Count);
         }
 
-        _logger.LogInformation("[Import] Total parsed: {Count} messages", allMessages.Count);
+        logger.LogInformation("[Import] Total parsed: {Count} messages", allMessages.Count);
         return allMessages;
     }
 
@@ -109,19 +102,19 @@ public class TelegramExportParser
 
         if (messageNodes == null)
         {
-            _logger.LogWarning("[Import] No message nodes found in {File}. Trying alternative selector...", Path.GetFileName(filePath));
+            logger.LogWarning("[Import] No message nodes found in {File}. Trying alternative selector...", Path.GetFileName(filePath));
 
             // Fallback: try finding any div with id starting with "message"
             messageNodes = doc.DocumentNode.SelectNodes("//div[starts-with(@id, 'message') and not(contains(@class, 'service'))]");
 
             if (messageNodes == null)
             {
-                _logger.LogWarning("[Import] Alternative selector also found no messages in {File}", Path.GetFileName(filePath));
+                logger.LogWarning("[Import] Alternative selector also found no messages in {File}", Path.GetFileName(filePath));
                 return messages;
             }
         }
 
-        _logger.LogInformation("[Import] Found {Count} message nodes in {File}", messageNodes.Count, Path.GetFileName(filePath));
+        logger.LogInformation("[Import] Found {Count} message nodes in {File}", messageNodes.Count, Path.GetFileName(filePath));
 
         foreach (var node in messageNodes)
         {
@@ -135,7 +128,7 @@ public class TelegramExportParser
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[Import] Failed to parse message node");
+                logger.LogWarning(ex, "[Import] Failed to parse message node");
             }
         }
 
@@ -149,7 +142,7 @@ public class TelegramExportParser
         var idMatch = MessageIdRegex.Match(idAttr);
         if (!idMatch.Success)
         {
-            _logger.LogWarning("[Import] No message ID found in node: {Id}", idAttr);
+            logger.LogWarning("[Import] No message ID found in node: {Id}", idAttr);
             return null;
         }
 
@@ -164,7 +157,7 @@ public class TelegramExportParser
 
         if (string.IsNullOrWhiteSpace(currentFromName))
         {
-            _logger.LogWarning("[Import] No from_name for message {Id}", messageId);
+            logger.LogWarning("[Import] No from_name for message {Id}", messageId);
             return null;
         }
 
@@ -177,7 +170,7 @@ public class TelegramExportParser
 
         if (dateUtc == null)
         {
-            _logger.LogWarning("[Import] Failed to parse date for message {Id}: '{DateTitle}'", messageId, dateTitle);
+            logger.LogWarning("[Import] Failed to parse date for message {Id}: '{DateTitle}'", messageId, dateTitle);
             return null;
         }
 

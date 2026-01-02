@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2025-12-31]
 
 ### Added
+
+- **End-to-End Tests for /ask Command** — полноценные интеграционные тесты с Testcontainers:
+  - `AskHandlerE2ETests` — 4 сценария тестирования полного цикла работы /ask команды
+  - Testcontainers PostgreSQL с pgvector для тестовой базы данных
+  - DatabaseFixture с автоматической инициализацией схемы БД
+  - Тесты покрывают: персональные вопросы, общие вопросы, пустой запрос, отсутствие результатов
+  - Поддержка тестирования как с реальными API ключами (LLM/Embeddings), так и с моками
+  - Пакеты: Moq 4.20.72, Testcontainers.PostgreSql 4.2.0
+
+
 - **/admin indexing Command** — новая команда для мониторинга статуса индексации:
   - Показывает прогресс индексации для каждого типа эмбеддингов (message/context)
   - Визуальные progress bar для каждого handler'а
@@ -102,6 +112,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Стандартная регистрация через `registry.Register<T>(name)`
     - Кастомная factory для `LlmToggleCommand` (разные bool параметры для llm_on/llm_off)
   - Убраны неиспользуемые зависимости из конструктора `AdminCommandHandler`
+
+- **LlmMemoryService Refactoring** — разделение монолитного сервиса памяти на специализированные компоненты:
+  - `LlmMemoryService` сокращён с 734 до 116 строк (**сокращение на 84%**, -618 строк!)
+  - Извлечены специализированные сервисы в `Services/Memory/`:
+    - **`ProfileManagementService`** (~250 строк) — управление профилями пользователей:
+      - GetProfileAsync, GetEnhancedProfileAsync, GetUserFactsAsync
+      - UpdateProfileAsync, IncrementInteractionCountAsync
+      - Работа с таблицами user_profiles и user_facts
+    - **`ConversationMemoryService`** (~110 строк) — хранение истории разговоров:
+      - GetRecentMemoriesAsync, StoreMemoryAsync
+      - Автоматическая очистка старых записей (keep last 20)
+      - Работа с таблицей conversation_memory
+    - **`LlmExtractionService`** (~160 строк) — LLM-извлечение информации:
+      - ExtractProfileUpdatesAsync — извлечение фактов, черт, интересов из диалога
+      - GenerateMemorySummaryAsync — генерация резюме разговора
+      - Очистка JSON-ответов от markdown code blocks
+    - **`MemoryContextBuilder`** (~150 строк) — построение контекста для LLM:
+      - BuildMemoryContextAsync — базовый контекст (facts, traits, recent questions)
+      - BuildEnhancedContextAsync — расширенный контекст (summary, communication style, user_facts)
+      - FilterRelevantFacts — фильтрация фактов по релевантности к вопросу
+    - **`MemoryHelpers`** (static) — утилиты для работы с памятью:
+      - ParseJsonArray, GetJsonStringArray, MergeLists
+      - TruncateText, GetTimeAgo
+  - **Models.cs** — все модели данных вынесены в отдельный файл:
+    - Public models: UserProfile, EnhancedProfile, UserFact, ConversationMemory
+    - Extraction models: ProfileExtraction, MemorySummary
+    - Dapper records: UserProfileRecord, ConversationMemoryRecord, EnhancedProfileRecord, UserFactRecord
+  - `LlmMemoryService` теперь — тонкий facade (116 строк):
+    - Делегирует все вызовы специализированным сервисам
+    - Сохранён публичный API для обратной совместимости
+    - Координирует взаимодействие между сервисами (extraction + storage)
+  - Улучшена тестируемость: каждый компонент изолирован и mock-friendly
+  - Упрощена поддержка: изменения в логике не затрагивают другие компоненты
+  - Сохранена вся функциональность: profile management, conversation memory, context building, LLM extraction
 
 - **AskHandler Service Extraction Refactoring** — двухэтапный рефакторинг обработчика `/ask` и `/smart` команд:
   - **Этап 1**: `AskHandler` сокращён с 893 до 440 строк (**-51%**, -453 строки)

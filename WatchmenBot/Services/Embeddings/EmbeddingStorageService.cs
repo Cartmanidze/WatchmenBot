@@ -10,22 +10,11 @@ namespace WatchmenBot.Services.Embeddings;
 /// Service for storing and managing embeddings in the database.
 /// Handles all CRUD operations for message_embeddings table.
 /// </summary>
-public class EmbeddingStorageService
+public class EmbeddingStorageService(
+    EmbeddingClient embeddingClient,
+    IDbConnectionFactory connectionFactory,
+    ILogger<EmbeddingStorageService> logger)
 {
-    private readonly EmbeddingClient _embeddingClient;
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<EmbeddingStorageService> _logger;
-
-    public EmbeddingStorageService(
-        EmbeddingClient embeddingClient,
-        IDbConnectionFactory connectionFactory,
-        ILogger<EmbeddingStorageService> logger)
-    {
-        _embeddingClient = embeddingClient;
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Stores embedding for a single message
     /// </summary>
@@ -37,11 +26,11 @@ public class EmbeddingStorageService
         try
         {
             var text = FormatMessageForEmbedding(message);
-            var embedding = await _embeddingClient.GetEmbeddingAsync(text, ct);
+            var embedding = await embeddingClient.GetEmbeddingAsync(text, ct);
 
             if (embedding.Length == 0)
             {
-                _logger.LogWarning("Empty embedding returned for message {MessageId}", message.Id);
+                logger.LogWarning("Empty embedding returned for message {MessageId}", message.Id);
                 return;
             }
 
@@ -54,11 +43,11 @@ public class EmbeddingStorageService
                 new { message.FromUserId, message.Username, message.DisplayName, message.DateUtc },
                 ct);
 
-            _logger.LogDebug("Stored embedding for message {MessageId} in chat {ChatId}", message.Id, message.ChatId);
+            logger.LogDebug("Stored embedding for message {MessageId} in chat {ChatId}", message.Id, message.ChatId);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to store embedding for message {MessageId}", message.Id);
+            logger.LogWarning(ex, "Failed to store embedding for message {MessageId}", message.Id);
         }
     }
 
@@ -81,11 +70,11 @@ public class EmbeddingStorageService
             // Group consecutive messages from the same author
             var groups = GroupConsecutiveMessages(messageList);
 
-            _logger.LogDebug("[Embeddings] Grouped {Original} messages into {Grouped} chunks",
+            logger.LogDebug("[Embeddings] Grouped {Original} messages into {Grouped} chunks",
                 messageList.Count, groups.Count);
 
             var texts = groups.Select(g => FormatGroupForEmbedding(g)).ToList();
-            var embeddings = await _embeddingClient.GetEmbeddingsAsync(texts, ct);
+            var embeddings = await embeddingClient.GetEmbeddingsAsync(texts, ct);
 
             // Prepare batch data
             var batchData = new List<(long ChatId, long MessageId, int ChunkIndex, string ChunkText, float[] Embedding, string MetadataJson)>();
@@ -121,12 +110,12 @@ public class EmbeddingStorageService
                 await StoreBatchEmbeddingsAsync(batchData, ct);
             }
 
-            _logger.LogDebug("[Embeddings] Stored {Stored} embeddings from {Original} messages",
+            logger.LogDebug("[Embeddings] Stored {Stored} embeddings from {Original} messages",
                 batchData.Count, messageList.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Embeddings] Failed to store batch of {Count} messages", messageList.Count);
+            logger.LogWarning(ex, "[Embeddings] Failed to store batch of {Count} messages", messageList.Count);
             throw;
         }
     }
@@ -136,13 +125,13 @@ public class EmbeddingStorageService
     /// </summary>
     public async Task DeleteChatEmbeddingsAsync(long chatId, CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var deleted = await connection.ExecuteAsync(
             "DELETE FROM message_embeddings WHERE chat_id = @ChatId",
             new { ChatId = chatId });
 
-        _logger.LogInformation("Deleted {Count} embeddings for chat {ChatId}", deleted, chatId);
+        logger.LogInformation("Deleted {Count} embeddings for chat {ChatId}", deleted, chatId);
     }
 
     /// <summary>
@@ -150,11 +139,11 @@ public class EmbeddingStorageService
     /// </summary>
     public async Task DeleteAllEmbeddingsAsync(CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
-        var deleted = await connection.ExecuteAsync("TRUNCATE message_embeddings");
+        await connection.ExecuteAsync("TRUNCATE message_embeddings");
 
-        _logger.LogInformation("Deleted ALL embeddings (TRUNCATE)");
+        logger.LogInformation("Deleted ALL embeddings (TRUNCATE)");
     }
 
     /// <summary>
@@ -163,7 +152,7 @@ public class EmbeddingStorageService
     /// </summary>
     public async Task<int> RenameInEmbeddingsAsync(long? chatId, string oldName, string newName, CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         // Handle both new format "Name: " and legacy format "] Name: "
         var sql = chatId.HasValue
@@ -204,7 +193,7 @@ public class EmbeddingStorageService
             LikePatternLegacy = $"%] {oldName}: %"
         });
 
-        _logger.LogInformation("Renamed '{OldName}' to '{NewName}' in {Count} embeddings (chatId: {ChatId})",
+        logger.LogInformation("Renamed '{OldName}' to '{NewName}' in {Count} embeddings (chatId: {ChatId})",
             oldName, newName, affected, chatId?.ToString() ?? "all");
 
         return affected;
@@ -215,7 +204,7 @@ public class EmbeddingStorageService
     /// </summary>
     public async Task<EmbeddingStats> GetStatsAsync(long chatId, CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var stats = await connection.QuerySingleOrDefaultAsync<EmbeddingStats>(
             """
@@ -245,7 +234,7 @@ public class EmbeddingStorageService
         object metadata,
         CancellationToken ct)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var embeddingString = "[" + string.Join(",", embedding) + "]";
         var metadataJson = JsonSerializer.Serialize(metadata);
@@ -279,7 +268,7 @@ public class EmbeddingStorageService
         List<(long ChatId, long MessageId, int ChunkIndex, string ChunkText, float[] Embedding, string MetadataJson)> batch,
         CancellationToken ct)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         // Build batch insert SQL with VALUES
         var sb = new StringBuilder();
@@ -316,11 +305,11 @@ public class EmbeddingStorageService
         try
         {
             var affected = await connection.ExecuteAsync(sb.ToString(), parameters);
-            _logger.LogDebug("[Embeddings] Batch INSERT: {Affected} rows affected", affected);
+            logger.LogDebug("[Embeddings] Batch INSERT: {Affected} rows affected", affected);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Embeddings] Batch INSERT failed for {Count} items", batch.Count);
+            logger.LogError(ex, "[Embeddings] Batch INSERT failed for {Count} items", batch.Count);
             throw;
         }
     }
@@ -352,7 +341,7 @@ public class EmbeddingStorageService
             else
             {
                 groups.Add(currentGroup);
-                currentGroup = new List<MessageRecord> { curr };
+                currentGroup = [curr];
             }
         }
 

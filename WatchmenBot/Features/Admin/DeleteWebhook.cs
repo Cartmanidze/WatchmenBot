@@ -26,29 +26,20 @@ public class DeleteWebhookResponse
     };
 }
 
-public class DeleteWebhookHandler
+public class DeleteWebhookHandler(ITelegramBotClient botClient, ILogger<DeleteWebhookHandler> logger)
 {
-    private readonly ITelegramBotClient _botClient;
-    private readonly ILogger<DeleteWebhookHandler> _logger;
-
-    public DeleteWebhookHandler(ITelegramBotClient botClient, ILogger<DeleteWebhookHandler> logger)
-    {
-        _botClient = botClient;
-        _logger = logger;
-    }
-
     public async Task<DeleteWebhookResponse> HandleAsync(DeleteWebhookRequest request, CancellationToken cancellationToken)
     {
         try
         {
-            await _botClient.DeleteWebhook(cancellationToken: cancellationToken);
-            _logger.LogInformation("Webhook deleted successfully");
+            await botClient.DeleteWebhook(cancellationToken: cancellationToken);
+            logger.LogInformation("Webhook deleted successfully");
             
             return DeleteWebhookResponse.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to delete webhook");
+            logger.LogError(ex, "Failed to delete webhook");
             return DeleteWebhookResponse.Error($"Failed to delete webhook: {ex.Message}");
         }
     }

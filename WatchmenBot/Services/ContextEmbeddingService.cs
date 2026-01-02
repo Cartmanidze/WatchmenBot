@@ -9,27 +9,16 @@ namespace WatchmenBot.Services;
 /// Instead of embedding isolated messages, embeds conversation windows (10 messages).
 /// This preserves conversational context like "Да, согласен" → meaningful in context.
 /// </summary>
-public class ContextEmbeddingService
+public class ContextEmbeddingService(
+    EmbeddingClient embeddingClient,
+    IDbConnectionFactory connectionFactory,
+    ILogger<ContextEmbeddingService> logger)
 {
-    private readonly EmbeddingClient _embeddingClient;
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<ContextEmbeddingService> _logger;
-
     // Window configuration
     private const int MinWindowSize = 5;   // Minimum messages per window
     private const int MaxWindowSize = 15;  // Maximum messages per window
     private const int WindowStep = 3;      // Step between windows within large dialogs
     private const int DialogGapMinutes = 30; // Time gap to consider new dialog
-
-    public ContextEmbeddingService(
-        EmbeddingClient embeddingClient,
-        IDbConnectionFactory connectionFactory,
-        ILogger<ContextEmbeddingService> logger)
-    {
-        _embeddingClient = embeddingClient;
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Build and store context embeddings for a chat.
@@ -42,14 +31,14 @@ public class ContextEmbeddingService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Get the last processed center message ID to continue from there
             var lastProcessedId = await connection.ExecuteScalarAsync<long?>(
                 "SELECT MAX(center_message_id) FROM context_embeddings WHERE chat_id = @ChatId",
                 new { ChatId = chatId });
 
-            _logger.LogInformation("[ContextEmb] Building for chat {ChatId}, starting after message {LastId}",
+            logger.LogInformation("[ContextEmb] Building for chat {ChatId}, starting after message {LastId}",
                 chatId, lastProcessedId ?? 0);
 
             // Get messages that haven't been processed as centers yet
@@ -57,13 +46,13 @@ public class ContextEmbeddingService
 
             if (messages.Count < MinWindowSize)
             {
-                _logger.LogInformation("[ContextEmb] Not enough messages ({Count}) for a window in chat {ChatId}",
+                logger.LogInformation("[ContextEmb] Not enough messages ({Count}) for a window in chat {ChatId}",
                     messages.Count, chatId);
                 return;
             }
 
             var windows = BuildSlidingWindows(messages);
-            _logger.LogInformation("[ContextEmb] Built {Count} windows from {Messages} messages",
+            logger.LogInformation("[ContextEmb] Built {Count} windows from {Messages} messages",
                 windows.Count, messages.Count);
 
             var processedCount = 0;
@@ -83,10 +72,10 @@ public class ContextEmbeddingService
                 var contextText = FormatWindowForEmbedding(window);
 
                 // Get embedding
-                var embedding = await _embeddingClient.GetEmbeddingAsync(contextText, ct);
+                var embedding = await embeddingClient.GetEmbeddingAsync(contextText, ct);
                 if (embedding.Length == 0)
                 {
-                    _logger.LogWarning("[ContextEmb] Empty embedding for window centered at {CenterId}", window.CenterMessageId);
+                    logger.LogWarning("[ContextEmb] Empty embedding for window centered at {CenterId}", window.CenterMessageId);
                     continue;
                 }
 
@@ -96,16 +85,16 @@ public class ContextEmbeddingService
 
                 if (processedCount % 10 == 0)
                 {
-                    _logger.LogDebug("[ContextEmb] Processed {Count} windows", processedCount);
+                    logger.LogDebug("[ContextEmb] Processed {Count} windows", processedCount);
                 }
             }
 
-            _logger.LogInformation("[ContextEmb] Completed: stored {Count} new context embeddings for chat {ChatId}",
+            logger.LogInformation("[ContextEmb] Completed: stored {Count} new context embeddings for chat {ChatId}",
                 processedCount, chatId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[ContextEmb] Failed to build context embeddings for chat {ChatId}", chatId);
+            logger.LogError(ex, "[ContextEmb] Failed to build context embeddings for chat {ChatId}", chatId);
             throw;
         }
     }
@@ -122,7 +111,7 @@ public class ContextEmbeddingService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Check if we have any context embeddings
             var count = await connection.ExecuteScalarAsync<long>(
@@ -131,16 +120,16 @@ public class ContextEmbeddingService
 
             if (count == 0)
             {
-                _logger.LogWarning("[ContextEmb] No context embeddings for chat {ChatId}", chatId);
-                return new List<ContextSearchResult>();
+                logger.LogWarning("[ContextEmb] No context embeddings for chat {ChatId}", chatId);
+                return [];
             }
 
             // Get query embedding
-            var queryEmbedding = await _embeddingClient.GetEmbeddingAsync(query, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
-                _logger.LogWarning("[ContextEmb] Failed to get embedding for query: {Query}", query);
-                return new List<ContextSearchResult>();
+                logger.LogWarning("[ContextEmb] Failed to get embedding for query: {Query}", query);
+                return [];
             }
 
             var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
@@ -166,7 +155,7 @@ public class ContextEmbeddingService
 
             var resultList = results.ToList();
 
-            _logger.LogInformation("[ContextEmb] Search '{Query}' in chat {ChatId}: {Count} results, best sim={Best:F3}",
+            logger.LogInformation("[ContextEmb] Search '{Query}' in chat {ChatId}: {Count} results, best sim={Best:F3}",
                 TruncateForLog(query, 30), chatId, resultList.Count,
                 resultList.Count > 0 ? resultList[0].Similarity : 0);
 
@@ -174,8 +163,8 @@ public class ContextEmbeddingService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[ContextEmb] Search failed for query: {Query}", query);
-            return new List<ContextSearchResult>();
+            logger.LogWarning(ex, "[ContextEmb] Search failed for query: {Query}", query);
+            return [];
         }
     }
 
@@ -247,7 +236,7 @@ public class ContextEmbeddingService
         // Segment messages into dialogs by time gaps
         var dialogs = SegmentIntoDialogs(messages);
 
-        _logger.LogDebug("[ContextEmb] Segmented {Messages} messages into {Dialogs} dialogs",
+        logger.LogDebug("[ContextEmb] Segmented {Messages} messages into {Dialogs} dialogs",
             messages.Count, dialogs.Count);
 
         foreach (var dialog in dialogs)
@@ -338,7 +327,7 @@ public class ContextEmbeddingService
                 if (currentDialog.Count > 0)
                     dialogs.Add(currentDialog);
 
-                currentDialog = new List<WindowMessage> { msg };
+                currentDialog = [msg];
             }
             else
             {
@@ -416,7 +405,7 @@ public class ContextEmbeddingService
     /// </summary>
     public async Task<ContextEmbeddingStats> GetStatsAsync(long chatId, CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var stats = await connection.QuerySingleOrDefaultAsync<ContextEmbeddingStats>(
             """
@@ -438,13 +427,13 @@ public class ContextEmbeddingService
     /// </summary>
     public async Task DeleteChatContextEmbeddingsAsync(long chatId, CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var deleted = await connection.ExecuteAsync(
             "DELETE FROM context_embeddings WHERE chat_id = @ChatId",
             new { ChatId = chatId });
 
-        _logger.LogInformation("[ContextEmb] Deleted {Count} context embeddings for chat {ChatId}", deleted, chatId);
+        logger.LogInformation("[ContextEmb] Deleted {Count} context embeddings for chat {ChatId}", deleted, chatId);
     }
 
     /// <summary>
@@ -452,11 +441,11 @@ public class ContextEmbeddingService
     /// </summary>
     public async Task DeleteAllContextEmbeddingsAsync(CancellationToken ct = default)
     {
-        using var connection = await _connectionFactory.CreateConnectionAsync();
+        using var connection = await connectionFactory.CreateConnectionAsync();
 
         var deleted = await connection.ExecuteAsync("DELETE FROM context_embeddings");
 
-        _logger.LogInformation("[ContextEmb] Deleted ALL {Count} context embeddings", deleted);
+        logger.LogInformation("[ContextEmb] Deleted ALL {Count} context embeddings", deleted);
     }
 
     /// <summary>
@@ -469,11 +458,11 @@ public class ContextEmbeddingService
         CancellationToken ct = default)
     {
         if (messageIds.Count == 0)
-            return new List<ContextSearchResult>();
+            return [];
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Find windows that contain any of the target message IDs
             var results = await connection.QueryAsync<ContextSearchResult>(
@@ -498,7 +487,7 @@ public class ContextEmbeddingService
 
             var resultsList = results.ToList();
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "[ContextEmb] Found {Count} context windows containing {MessageCount} target messages in chat {ChatId}",
                 resultsList.Count, messageIds.Count, chatId);
 
@@ -506,8 +495,8 @@ public class ContextEmbeddingService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[ContextEmb] Failed to get context windows for message IDs in chat {ChatId}", chatId);
-            return new List<ContextSearchResult>();
+            logger.LogError(ex, "[ContextEmb] Failed to get context windows for message IDs in chat {ChatId}", chatId);
+            return [];
         }
     }
 
@@ -540,7 +529,7 @@ public class MessageWindow
     public long CenterMessageId { get; set; }
     public long WindowStartId { get; set; }
     public long WindowEndId { get; set; }
-    public List<WindowMessage> Messages { get; set; } = new();
+    public List<WindowMessage> Messages { get; set; } = [];
 }
 
 /// <summary>
@@ -553,7 +542,7 @@ public class ContextSearchResult
     public long CenterMessageId { get; set; }
     public long WindowStartId { get; set; }
     public long WindowEndId { get; set; }
-    public long[] MessageIds { get; set; } = Array.Empty<long>();
+    public long[] MessageIds { get; set; } = [];
     public string ContextText { get; set; } = string.Empty;
     public double Similarity { get; set; }
     public double Distance { get; set; }

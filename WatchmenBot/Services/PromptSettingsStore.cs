@@ -3,11 +3,8 @@ using WatchmenBot.Infrastructure.Database;
 
 namespace WatchmenBot.Services;
 
-public class PromptSettingsStore
+public class PromptSettingsStore(IDbConnectionFactory connectionFactory, ILogger<PromptSettingsStore> logger)
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<PromptSettingsStore> _logger;
-
     // Default prompts for each command
     private static readonly Dictionary<string, PromptConfig> DefaultPrompts = new()
     {
@@ -143,12 +140,6 @@ public class PromptSettingsStore
         }
     };
 
-    public PromptSettingsStore(IDbConnectionFactory connectionFactory, ILogger<PromptSettingsStore> logger)
-    {
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-    }
-
     public async Task<string> GetPromptAsync(string command)
     {
         var settings = await GetSettingsAsync(command);
@@ -162,7 +153,7 @@ public class PromptSettingsStore
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var result = await connection.QuerySingleOrDefaultAsync<(string SystemPrompt, string? LlmTag)>(
                 "SELECT system_prompt, llm_tag FROM prompt_settings WHERE command = @Command",
                 new { Command = command });
@@ -178,7 +169,7 @@ public class PromptSettingsStore
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get settings for {Command}, using default", command);
+            logger.LogWarning(ex, "Failed to get settings for {Command}, using default", command);
         }
 
         // Return default if not found in DB
@@ -202,7 +193,7 @@ public class PromptSettingsStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             await connection.ExecuteAsync(
                 """
                 INSERT INTO prompt_settings (command, description, system_prompt, updated_at)
@@ -213,11 +204,11 @@ public class PromptSettingsStore
                 """,
                 new { Command = command, Description = description, SystemPrompt = systemPrompt });
 
-            _logger.LogInformation("Updated prompt for {Command}", command);
+            logger.LogInformation("Updated prompt for {Command}", command);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to set prompt for {Command}", command);
+            logger.LogError(ex, "Failed to set prompt for {Command}", command);
             throw;
         }
     }
@@ -235,7 +226,7 @@ public class PromptSettingsStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             await connection.ExecuteAsync(
                 """
                 INSERT INTO prompt_settings (command, description, system_prompt, llm_tag, updated_at)
@@ -246,11 +237,11 @@ public class PromptSettingsStore
                 """,
                 new { Command = command, Description = description, SystemPrompt = defaultPrompt, LlmTag = llmTag });
 
-            _logger.LogInformation("Updated LLM tag for {Command}: {Tag}", command, llmTag ?? "(null)");
+            logger.LogInformation("Updated LLM tag for {Command}: {Tag}", command, llmTag ?? "(null)");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to set LLM tag for {Command}", command);
+            logger.LogError(ex, "Failed to set LLM tag for {Command}", command);
             throw;
         }
     }
@@ -259,16 +250,16 @@ public class PromptSettingsStore
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             await connection.ExecuteAsync(
                 "DELETE FROM prompt_settings WHERE command = @Command",
                 new { Command = command });
 
-            _logger.LogInformation("Reset prompt for {Command} to default", command);
+            logger.LogInformation("Reset prompt for {Command} to default", command);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to reset prompt for {Command}", command);
+            logger.LogError(ex, "Failed to reset prompt for {Command}", command);
             throw;
         }
     }
@@ -282,7 +273,7 @@ public class PromptSettingsStore
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var dbPrompts = await connection.QueryAsync<(string Command, string Description, string SystemPrompt, string? LlmTag, DateTimeOffset UpdatedAt)>(
                 "SELECT command, description, system_prompt, llm_tag, updated_at FROM prompt_settings");
 
@@ -293,7 +284,7 @@ public class PromptSettingsStore
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get custom prompts from DB");
+            logger.LogWarning(ex, "Failed to get custom prompts from DB");
         }
 
         // Merge with defaults

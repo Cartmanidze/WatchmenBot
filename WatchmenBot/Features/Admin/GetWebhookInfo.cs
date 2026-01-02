@@ -14,7 +14,7 @@ public class GetWebhookInfoResponse
     public bool HasCustomCertificate { get; init; }
     public int PendingUpdateCount { get; init; }
     public int MaxConnections { get; init; }
-    public IEnumerable<string> AllowedUpdates { get; init; } = Array.Empty<string>();
+    public IEnumerable<string> AllowedUpdates { get; init; } = [];
     public DateTime? LastErrorDate { get; init; }
     public string? LastErrorMessage { get; init; }
     public string? ErrorMessage { get; init; }
@@ -45,24 +45,15 @@ public class GetWebhookInfoResponse
     };
 }
 
-public class GetWebhookInfoHandler
+public class GetWebhookInfoHandler(ITelegramBotClient botClient, ILogger<GetWebhookInfoHandler> logger)
 {
-    private readonly ITelegramBotClient _botClient;
-    private readonly ILogger<GetWebhookInfoHandler> _logger;
-
-    public GetWebhookInfoHandler(ITelegramBotClient botClient, ILogger<GetWebhookInfoHandler> logger)
-    {
-        _botClient = botClient;
-        _logger = logger;
-    }
-
     public async Task<GetWebhookInfoResponse> HandleAsync(GetWebhookInfoRequest request, CancellationToken cancellationToken)
     {
         try
         {
-            var info = await _botClient.GetWebhookInfo(cancellationToken);
+            var info = await botClient.GetWebhookInfo(cancellationToken);
             
-            _logger.LogInformation("Retrieved webhook info: URL={Url}, PendingUpdates={PendingUpdates}", 
+            logger.LogInformation("Retrieved webhook info: URL={Url}, PendingUpdates={PendingUpdates}", 
                 info.Url, info.PendingUpdateCount);
             
             return GetWebhookInfoResponse.Success(
@@ -70,13 +61,13 @@ public class GetWebhookInfoHandler
                 info.HasCustomCertificate,
                 info.PendingUpdateCount,
                 info.MaxConnections,
-                info.AllowedUpdates?.Select(u => u.ToString()) ?? Array.Empty<string>(),
+                info.AllowedUpdates?.Select(u => u.ToString()) ?? [],
                 info.LastErrorDate,
                 info.LastErrorMessage);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get webhook info");
+            logger.LogError(ex, "Failed to get webhook info");
             return GetWebhookInfoResponse.Error($"Failed to get webhook info: {ex.Message}");
         }
     }

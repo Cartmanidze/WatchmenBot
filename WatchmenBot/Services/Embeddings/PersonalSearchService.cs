@@ -8,25 +8,14 @@ namespace WatchmenBot.Services.Embeddings;
 /// Service for personal/user-specific search queries.
 /// Handles questions like "когда Я говорил..." or "@username когда..."
 /// </summary>
-public class PersonalSearchService
+public class PersonalSearchService(
+    IDbConnectionFactory connectionFactory,
+    EmbeddingClient embeddingClient,
+    ILogger<PersonalSearchService> logger)
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly EmbeddingClient _embeddingClient;
-    private readonly ILogger<PersonalSearchService> _logger;
-
     // Hybrid search weights
     private const double DenseWeight = 0.7;  // 70% semantic
     private const double SparseWeight = 0.3;  // 30% keyword
-
-    public PersonalSearchService(
-        IDbConnectionFactory connectionFactory,
-        EmbeddingClient embeddingClient,
-        ILogger<PersonalSearchService> logger)
-    {
-        _connectionFactory = connectionFactory;
-        _embeddingClient = embeddingClient;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Get messages from a specific user (for personal questions like "я гондон?" or "что за тип @Вася?")
@@ -40,7 +29,7 @@ public class PersonalSearchService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Remove @ prefix if present
             var cleanName = usernameOrName.TrimStart('@');
@@ -79,15 +68,17 @@ public class PersonalSearchService
                     Limit = limit
                 });
 
-            _logger.LogInformation("[Search] Found {Count} messages from user '{User}' in chat {ChatId}",
-                results.Count(), cleanName, chatId);
+            var searchResults = results as SearchResult[] ?? results.ToArray();
+            
+            logger.LogInformation("[Search] Found {Count} messages from user '{User}' in chat {ChatId}",
+                searchResults.Length, cleanName, chatId);
 
-            return results.ToList();
+            return searchResults.ToList();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get messages for user: {User}", usernameOrName);
-            return new List<SearchResult>();
+            logger.LogWarning(ex, "Failed to get messages for user: {User}", usernameOrName);
+            return [];
         }
     }
 
@@ -103,7 +94,7 @@ public class PersonalSearchService
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             var cleanName = usernameOrName.TrimStart('@');
             var startDate = DateTime.UtcNow.AddDays(-days);
@@ -140,15 +131,17 @@ public class PersonalSearchService
                     Limit = limit
                 });
 
-            _logger.LogInformation("[Search] Found {Count} mentions of user '{User}' in chat {ChatId}",
-                results.Count(), cleanName, chatId);
+            var searchResults = results as SearchResult[] ?? results.ToArray();
+            
+            logger.LogInformation("[Search] Found {Count} mentions of user '{User}' in chat {ChatId}",
+                searchResults.Length, cleanName, chatId);
 
-            return results.ToList();
+            return searchResults.ToList();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get mentions for user: {User}", usernameOrName);
-            return new List<SearchResult>();
+            logger.LogWarning(ex, "Failed to get mentions for user: {User}", usernameOrName);
+            return [];
         }
     }
 
@@ -183,7 +176,7 @@ public class PersonalSearchService
             // OPTIMIZED: Single query instead of 2N queries (4x faster for 2 names)
             var poolMessageIds = await GetPersonalMessagePoolAsync(chatId, searchNames, days, ct);
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "[Personal] User: {Names} | Pool size: {Count} messages (optimized single query)",
                 string.Join("/", searchNames), poolMessageIds.Count);
 
@@ -246,7 +239,7 @@ public class PersonalSearchService
             (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, false);
             response.ConfidenceReason = $"[Персональный пул: {poolMessageIds.Count}] " + response.ConfidenceReason;
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "[Personal] User: {Names} | Pool: {Pool} | Best: {Best:F3} | Gap: {Gap:F3} | Confidence: {Conf}",
                 string.Join("/", searchNames), poolMessageIds.Count, best, gap, response.Confidence);
 
@@ -254,7 +247,7 @@ public class PersonalSearchService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get personal context for: {User}", usernameOrName);
+            logger.LogWarning(ex, "Failed to get personal context for: {User}", usernameOrName);
             response.Confidence = SearchConfidence.None;
             response.ConfidenceReason = "Ошибка поиска";
             return response;
@@ -272,11 +265,11 @@ public class PersonalSearchService
         CancellationToken ct = default)
     {
         if (searchNames.Count == 0)
-            return new List<long>();
+            return [];
 
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             var startDate = DateTime.UtcNow.AddDays(-days);
             var cleanNames = searchNames.Select(n => n.TrimStart('@')).ToArray();
@@ -321,16 +314,18 @@ public class PersonalSearchService
                     MentionPatterns = cleanNames.Select(n => $"%{n}%").ToArray() // Mentions in text
                 });
 
-            _logger.LogDebug("[Personal] Found {Count} message IDs for names: {Names}",
-                messageIds.Count(), string.Join(", ", cleanNames));
+            var enumerable = messageIds as long[] ?? messageIds.ToArray();
+            
+            logger.LogDebug("[Personal] Found {Count} message IDs for names: {Names}",
+                enumerable.Length, string.Join(", ", cleanNames));
 
-            return messageIds.Distinct().ToList(); // Distinct to deduplicate UNION results
+            return enumerable.Distinct().ToList(); // Distinct to deduplicate UNION results
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get personal message pool for: {Names}",
+            logger.LogWarning(ex, "Failed to get personal message pool for: {Names}",
                 string.Join(", ", searchNames));
-            return new List<long>();
+            return [];
         }
     }
 
@@ -345,18 +340,18 @@ public class PersonalSearchService
         CancellationToken ct = default)
     {
         if (messageIds.Count == 0)
-            return new List<SearchResult>();
+            return [];
 
         try
         {
-            var queryEmbedding = await _embeddingClient.GetEmbeddingAsync(query, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
-                _logger.LogWarning("[Personal] Failed to get embedding for query: {Query}", query);
-                return new List<SearchResult>();
+                logger.LogWarning("[Personal] Failed to get embedding for query: {Query}", query);
+                return [];
             }
 
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
             var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
             // Extract search terms for hybrid scoring
@@ -416,8 +411,8 @@ public class PersonalSearchService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to search in pool for query: {Query}", query);
-            return new List<SearchResult>();
+            logger.LogWarning(ex, "Failed to search in pool for query: {Query}", query);
+            return [];
         }
     }
 
@@ -441,7 +436,7 @@ public class PersonalSearchService
 
         var words = query
             .ToLowerInvariant()
-            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries)
+            .Split([' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\''], StringSplitOptions.RemoveEmptyEntries)
             .Where(w => w.Length > 2 && !stopWords.Contains(w))
             .Distinct()
             .ToList();

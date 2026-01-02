@@ -7,21 +7,13 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin prompt_tag <command> [tag] - set LLM tag for prompt
 /// </summary>
-public class PromptTagCommand : AdminCommandBase
+public class PromptTagCommand(
+    ITelegramBotClient bot,
+    PromptSettingsStore promptSettings,
+    LlmRouter llmRouter,
+    ILogger<PromptTagCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly PromptSettingsStore _promptSettings;
-    private readonly LlmRouter _llmRouter;
-
-    public PromptTagCommand(
-        ITelegramBotClient bot,
-        PromptSettingsStore promptSettings,
-        LlmRouter llmRouter,
-        ILogger<PromptTagCommand> logger) : base(bot, logger)
-    {
-        _promptSettings = promptSettings;
-        _llmRouter = llmRouter;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         if (context.Args.Length == 0)
@@ -32,7 +24,7 @@ public class PromptTagCommand : AdminCommandBase
         }
 
         var command = context.Args[0];
-        var defaults = _promptSettings.GetDefaults();
+        var defaults = promptSettings.GetDefaults();
 
         if (!defaults.ContainsKey(command))
         {
@@ -47,9 +39,9 @@ public class PromptTagCommand : AdminCommandBase
         // Если тег не указан — сбросить на null
         var tagToSet = string.IsNullOrWhiteSpace(tag) || tag == "null" || tag == "default" ? null : tag;
 
-        await _promptSettings.SetLlmTagAsync(command, tagToSet);
+        await promptSettings.SetLlmTagAsync(command, tagToSet);
 
-        var providers = _llmRouter.GetAllProviders();
+        var providers = llmRouter.GetAllProviders();
         var availableTags = providers.Values.SelectMany(p => p.Tags).Distinct().ToList();
 
         if (tagToSet == null)

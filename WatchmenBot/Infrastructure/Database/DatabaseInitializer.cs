@@ -2,27 +2,17 @@ using Dapper;
 
 namespace WatchmenBot.Infrastructure.Database;
 
-public class DatabaseInitializer : IHostedService
+public class DatabaseInitializer(
+    IDbConnectionFactory connectionFactory,
+    ILogger<DatabaseInitializer> logger,
+    IConfiguration configuration)
+    : IHostedService
 {
-    private readonly IDbConnectionFactory _connectionFactory;
-    private readonly ILogger<DatabaseInitializer> _logger;
-    private readonly IConfiguration _configuration;
-
-    public DatabaseInitializer(
-        IDbConnectionFactory connectionFactory,
-        ILogger<DatabaseInitializer> logger,
-        IConfiguration configuration)
-    {
-        _connectionFactory = connectionFactory;
-        _logger = logger;
-        _configuration = configuration;
-    }
-
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         try
         {
-            using var connection = await _connectionFactory.CreateConnectionAsync();
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
             // Enable pgvector extension
             await EnablePgVectorAsync(connection);
@@ -42,11 +32,11 @@ public class DatabaseInitializer : IHostedService
             // Create indexes
             await CreateIndexesAsync(connection);
 
-            _logger.LogInformation("Database initialized successfully with pgvector support");
+            logger.LogInformation("Database initialized successfully with pgvector support");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to initialize database");
+            logger.LogError(ex, "Failed to initialize database");
             throw;
         }
     }
@@ -58,11 +48,11 @@ public class DatabaseInitializer : IHostedService
         try
         {
             await connection.ExecuteAsync("CREATE EXTENSION IF NOT EXISTS vector;");
-            _logger.LogInformation("pgvector extension enabled");
+            logger.LogInformation("pgvector extension enabled");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not enable pgvector extension. RAG features will be disabled. " +
+            logger.LogWarning(ex, "Could not enable pgvector extension. RAG features will be disabled. " +
                                    "Install pgvector: https://github.com/pgvector/pgvector");
         }
     }
@@ -107,7 +97,7 @@ public class DatabaseInitializer : IHostedService
 
     private async Task CreateEmbeddingsTableAsync(System.Data.IDbConnection connection)
     {
-        var dimensions = _configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+        var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 1536);
 
         try
         {
@@ -125,13 +115,13 @@ public class DatabaseInitializer : IHostedService
 
             if (currentDimensions.HasValue && currentDimensions.Value != dimensions)
             {
-                _logger.LogWarning(
+                logger.LogWarning(
                     "Embedding dimensions changed from {OldDim} to {NewDim}. Recreating table (all embeddings will be lost!)",
                     currentDimensions.Value, dimensions);
 
                 // Drop old table and indexes
                 await connection.ExecuteAsync("DROP TABLE IF EXISTS message_embeddings CASCADE;");
-                _logger.LogInformation("Old message_embeddings table dropped");
+                logger.LogInformation("Old message_embeddings table dropped");
             }
 
             var createTableSql = $"""
@@ -149,11 +139,11 @@ public class DatabaseInitializer : IHostedService
                 """;
 
             await connection.ExecuteAsync(createTableSql);
-            _logger.LogInformation("Embeddings table ready with {Dimensions} dimensions", dimensions);
+            logger.LogInformation("Embeddings table ready with {Dimensions} dimensions", dimensions);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not create embeddings table. pgvector may not be installed");
+            logger.LogWarning(ex, "Could not create embeddings table. pgvector may not be installed");
         }
     }
 
@@ -299,7 +289,7 @@ public class DatabaseInitializer : IHostedService
 
     private async Task CreateContextEmbeddingsTableAsync(System.Data.IDbConnection connection)
     {
-        var dimensions = _configuration.GetValue<int>("Embeddings:Dimensions", 1536);
+        var dimensions = configuration.GetValue<int>("Embeddings:Dimensions", 1536);
 
         try
         {
@@ -317,7 +307,7 @@ public class DatabaseInitializer : IHostedService
 
             if (currentDimensions.HasValue && currentDimensions.Value != dimensions)
             {
-                _logger.LogWarning(
+                logger.LogWarning(
                     "Context embedding dimensions changed from {OldDim} to {NewDim}. Recreating table.",
                     currentDimensions.Value, dimensions);
 
@@ -341,11 +331,11 @@ public class DatabaseInitializer : IHostedService
                 """;
 
             await connection.ExecuteAsync(createTableSql);
-            _logger.LogInformation("Context embeddings table ready with {Dimensions} dimensions", dimensions);
+            logger.LogInformation("Context embeddings table ready with {Dimensions} dimensions", dimensions);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not create context_embeddings table");
+            logger.LogWarning(ex, "Could not create context_embeddings table");
         }
     }
 
@@ -399,11 +389,11 @@ public class DatabaseInitializer : IHostedService
                 await connection.ExecuteAsync(indexSql);
             }
 
-            _logger.LogInformation("Embeddings indexes created");
+            logger.LogInformation("Embeddings indexes created");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not create embeddings indexes. pgvector may not be installed");
+            logger.LogWarning(ex, "Could not create embeddings indexes. pgvector may not be installed");
         }
 
         // Context embeddings indexes
@@ -427,11 +417,11 @@ public class DatabaseInitializer : IHostedService
                 await connection.ExecuteAsync(indexSql);
             }
 
-            _logger.LogInformation("Context embeddings indexes created");
+            logger.LogInformation("Context embeddings indexes created");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not create context embeddings indexes");
+            logger.LogWarning(ex, "Could not create context embeddings indexes");
         }
     }
 }

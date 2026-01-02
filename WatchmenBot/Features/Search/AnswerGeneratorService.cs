@@ -7,26 +7,15 @@ namespace WatchmenBot.Features.Search;
 /// Service for generating LLM answers for /ask and /smart commands
 /// Handles prompt building and LLM interaction with debug support
 /// </summary>
-public class AnswerGeneratorService
+public class AnswerGeneratorService(
+    LlmRouter llmRouter,
+    PromptSettingsStore promptSettings,
+    ILogger<AnswerGeneratorService> logger)
 {
-    private readonly LlmRouter _llmRouter;
-    private readonly PromptSettingsStore _promptSettings;
-    private readonly ILogger<AnswerGeneratorService> _logger;
-
-    public AnswerGeneratorService(
-        LlmRouter llmRouter,
-        PromptSettingsStore promptSettings,
-        ILogger<AnswerGeneratorService> logger)
-    {
-        _llmRouter = llmRouter;
-        _promptSettings = promptSettings;
-        _logger = logger;
-    }
-
     public async Task<string> GenerateAnswerWithDebugAsync(
         string command, string question, string? context, string? memoryContext, string askerName, DebugReport debugReport, CancellationToken ct)
     {
-        var settings = await _promptSettings.GetSettingsAsync(command);
+        var settings = await promptSettings.GetSettingsAsync(command);
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // For /ask with context - use one-stage generation (faster than two-stage)
@@ -58,7 +47,7 @@ public class AnswerGeneratorService
                 Вопрос: {question}
                 """;
 
-        var response = await _llmRouter.CompleteWithFallbackAsync(
+        var response = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = settings.SystemPrompt,
@@ -83,7 +72,7 @@ public class AnswerGeneratorService
         debugReport.TotalTokens = response.TotalTokens;
         debugReport.LlmTimeMs = sw.ElapsedMilliseconds;
 
-        _logger.LogInformation("[{Command}] LLM: provider={Provider}, model={Model}, tag={Tag}",
+        logger.LogInformation("[{Command}] LLM: provider={Provider}, model={Model}, tag={Tag}",
             command.ToUpper(), response.Provider, response.Model, settings.LlmTag ?? "default");
 
         return response.Content;
@@ -133,7 +122,7 @@ public class AnswerGeneratorService
             Формат: 2-4 предложения, HTML для <b> и <i>.
             """;
 
-        var response = await _llmRouter.CompleteWithFallbackAsync(
+        var response = await llmRouter.CompleteWithFallbackAsync(
             new LlmRequest
             {
                 SystemPrompt = settings.SystemPrompt,
@@ -170,7 +159,7 @@ public class AnswerGeneratorService
             TimeMs = sw.ElapsedMilliseconds
         });
 
-        _logger.LogInformation("[ASK] OneStage: provider={Provider}, model={Model}, {Tokens} tokens in {Ms}ms",
+        logger.LogInformation("[ASK] OneStage: provider={Provider}, model={Model}, {Tokens} tokens in {Ms}ms",
             response.Provider, response.Model, response.TotalTokens, sw.ElapsedMilliseconds);
 
         return response.Content;

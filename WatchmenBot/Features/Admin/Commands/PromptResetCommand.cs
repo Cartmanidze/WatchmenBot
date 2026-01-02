@@ -6,18 +6,12 @@ namespace WatchmenBot.Features.Admin.Commands;
 /// <summary>
 /// /admin prompt_reset <command> - reset prompt to default
 /// </summary>
-public class PromptResetCommand : AdminCommandBase
+public class PromptResetCommand(
+    ITelegramBotClient bot,
+    PromptSettingsStore promptSettings,
+    ILogger<PromptResetCommand> logger)
+    : AdminCommandBase(bot, logger)
 {
-    private readonly PromptSettingsStore _promptSettings;
-
-    public PromptResetCommand(
-        ITelegramBotClient bot,
-        PromptSettingsStore promptSettings,
-        ILogger<PromptResetCommand> logger) : base(bot, logger)
-    {
-        _promptSettings = promptSettings;
-    }
-
     public override async Task<bool> ExecuteAsync(AdminCommandContext context, CancellationToken ct)
     {
         if (context.Args.Length == 0)
@@ -27,7 +21,7 @@ public class PromptResetCommand : AdminCommandBase
         }
 
         var command = context.Args[0];
-        var defaults = _promptSettings.GetDefaults();
+        var defaults = promptSettings.GetDefaults();
 
         if (!defaults.ContainsKey(command))
         {
@@ -36,7 +30,7 @@ public class PromptResetCommand : AdminCommandBase
             return true;
         }
 
-        await _promptSettings.ResetPromptAsync(command);
+        await promptSettings.ResetPromptAsync(command);
 
         await SendMessageAsync(context.ChatId, $"✅ Промпт для <b>/{command}</b> сброшен на дефолтный", ct);
 

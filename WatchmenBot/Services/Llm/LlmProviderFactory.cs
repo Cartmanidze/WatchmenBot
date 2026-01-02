@@ -3,21 +3,12 @@ namespace WatchmenBot.Services.Llm;
 /// <summary>
 /// Фабрика для создания LLM провайдеров
 /// </summary>
-public class LlmProviderFactory
+public class LlmProviderFactory(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory)
 {
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly ILoggerFactory _loggerFactory;
-
-    public LlmProviderFactory(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory)
-    {
-        _httpClientFactory = httpClientFactory;
-        _loggerFactory = loggerFactory;
-    }
-
     public ILlmProvider CreateOpenAiCompatible(OpenAiProviderConfig config)
     {
-        var httpClient = _httpClientFactory.CreateClient($"llm-{config.Name}");
-        var logger = _loggerFactory.CreateLogger<OpenAiCompatibleProvider>();
+        var httpClient = httpClientFactory.CreateClient($"llm-{config.Name}");
+        var logger = loggerFactory.CreateLogger<OpenAiCompatibleProvider>();
         return new OpenAiCompatibleProvider(httpClient, config, logger);
     }
 
