@@ -271,9 +271,15 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             NullLogger<ContextEmbeddingService>.Instance);
 
         // Search services
+        var ragFusionService = new RagFusionService(
+            llmRouter,
+            embeddingService,
+            NullLogger<RagFusionService>.Instance);
+
         var searchStrategy = new SearchStrategyService(
             embeddingService,
             contextEmbeddingService,
+            ragFusionService,
             NullLogger<SearchStrategyService>.Instance);
 
         var contextBuilder = new ContextBuilderService(

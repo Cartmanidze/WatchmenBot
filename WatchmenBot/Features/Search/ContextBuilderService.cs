@@ -81,11 +81,24 @@ public class ContextBuilderService(
         }
 
         // Add expanded message windows
+        var expandedMessageIds = new HashSet<long>(expandedWindows.Select(w => w.CenterMessageId));
         foreach (var window in expandedWindows)
         {
             var matchingResult = messageResults.FirstOrDefault(r => r.MessageId == window.CenterMessageId);
             var similarity = matchingResult?.Similarity ?? 0.0;
             allWindowData.Add((similarity, window.CenterMessageId, window.ToFormattedText(), false));
+        }
+
+        // FALLBACK: Add messages that couldn't be expanded (e.g., not in messages table)
+        // Use their ChunkText directly instead of expanded window
+        foreach (var msg in messageResults)
+        {
+            if (!expandedMessageIds.Contains(msg.MessageId))
+            {
+                logger.LogDebug("[BuildContext] Message {Id} expansion failed, using ChunkText fallback (sim={Sim:F3})",
+                    msg.MessageId, msg.Similarity);
+                allWindowData.Add((msg.Similarity, msg.MessageId, msg.ChunkText, true));
+            }
         }
 
         // Sort by similarity and process

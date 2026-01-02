@@ -6,10 +6,12 @@ namespace WatchmenBot.Features.Search;
 /// <summary>
 /// Search strategy service for /ask command
 /// Handles personal (hybrid) and context-only search strategies
+/// Enhanced with RAG Fusion for better recall on ambiguous queries
 /// </summary>
 public class SearchStrategyService(
     EmbeddingService embeddingService,
     ContextEmbeddingService contextEmbeddingService,
+    RagFusionService ragFusionService,
     ILogger<SearchStrategyService> logger)
 {
     /// <summary>
@@ -400,29 +402,42 @@ public class SearchStrategyService(
     }
 
     /// <summary>
-    /// Hybrid search for general questions:
-    /// 1. Search in context_embeddings for full dialog context (primary)
-    /// 2. Search in message_embeddings for precise message matches (secondary)
-    /// 3. Merge and deduplicate results
+    /// RAG Fusion search for general questions:
+    /// 1. Generate query variations using LLM ("кто гондон?" → "я гондон", "гондон в чате", etc.)
+    /// 2. Search with all variations in parallel
+    /// 3. Merge results using Reciprocal Rank Fusion (RRF)
+    /// 4. Also search context_embeddings for dialog context
     /// </summary>
     public async Task<SearchResponse> SearchContextOnlyAsync(
         long chatId, string query, CancellationToken ct)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        // Parallel search in both embedding types
+        // Step 1: RAG Fusion search (generates variations + RRF merge)
+        var fusionTask = ragFusionService.SearchWithFusionAsync(
+            chatId, query,
+            participantNames: null, // Could pass chat participants for better name variation
+            variationCount: 3,
+            resultsPerQuery: 15,
+            ct);
+
+        // Step 2: Parallel search in context embeddings (for dialog context)
         var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
-        var messageTask = embeddingService.SearchSimilarAsync(chatId, query, limit: 10, ct);
 
-        await Task.WhenAll(contextTask, messageTask);
+        await Task.WhenAll(fusionTask, contextTask);
 
+        var fusionResponse = await fusionTask;
         var contextResults = await contextTask;
-        var messageResults = await messageTask;
 
         sw.Stop();
+
         logger.LogInformation(
-            "[HybridSearch] Found {ContextCount} context windows + {MessageCount} messages in {Ms}ms",
-            contextResults.Count, messageResults.Count, sw.ElapsedMilliseconds);
+            "[RAG+Context] Query: '{Query}' | Variations: [{Vars}] | Fusion: {FusionCount} | Context: {ContextCount} | {Ms}ms",
+            query.Length > 30 ? query[..30] + "..." : query,
+            string.Join(", ", fusionResponse.QueryVariations.Take(3).Select(v => v.Length > 20 ? v[..20] + "..." : v)),
+            fusionResponse.Results.Count,
+            contextResults.Count,
+            sw.ElapsedMilliseconds);
 
         // Convert context results (priority: 1.0x similarity)
         var contextSearchResults = contextResults.Select(cr => new SearchResult
@@ -430,72 +445,72 @@ public class SearchStrategyService(
             ChatId = cr.ChatId,
             MessageId = cr.CenterMessageId,
             ChunkIndex = 0,
-            ChunkText = cr.ContextText, // Full window with context
+            ChunkText = cr.ContextText,
             MetadataJson = null,
-            Similarity = cr.Similarity, // Keep original similarity (priority)
+            Similarity = cr.Similarity,
             Distance = cr.Distance,
             IsNewsDump = false,
-            IsContextWindow = true // Already has full context, no need to expand
+            IsContextWindow = true
         }).ToList();
 
-        // Convert message results (priority: 0.85x similarity - slightly lower than context)
-        var messageSearchResults = messageResults.Select(mr => new SearchResult
+        // Convert fusion results (keep original similarity, they're already ranked by RRF)
+        var fusionSearchResults = fusionResponse.Results.Select(fr => new SearchResult
         {
-            ChatId = mr.ChatId,
-            MessageId = mr.MessageId,
-            ChunkIndex = mr.ChunkIndex,
-            ChunkText = mr.ChunkText,
-            MetadataJson = mr.MetadataJson,
-            Similarity = mr.Similarity * 0.85, // Lower priority than full context
-            Distance = mr.Distance,
-            IsNewsDump = mr.IsNewsDump
+            ChatId = fr.ChatId,
+            MessageId = fr.MessageId,
+            ChunkIndex = fr.ChunkIndex,
+            ChunkText = fr.ChunkText,
+            MetadataJson = fr.MetadataJson,
+            Similarity = fr.Similarity,
+            Distance = fr.Distance,
+            IsNewsDump = fr.IsNewsDump
         }).ToList();
 
-        // Merge and deduplicate by message_id (keep best similarity)
+        // Merge: context windows + fusion results, deduplicate by message_id
         var allResults = contextSearchResults
-            .Concat(messageSearchResults)
+            .Concat(fusionSearchResults)
             .GroupBy(r => r.MessageId)
             .Select(g => g.OrderByDescending(r => r.Similarity).First())
             .OrderByDescending(r => r.Similarity)
             .ToList();
 
         logger.LogInformation(
-            "[HybridSearch] Merged {Total} results ({Context} context + {Message} messages)",
-            allResults.Count, contextResults.Count, messageResults.Count);
+            "[RAG+Context] Merged {Total} results ({Fusion} fusion + {Context} context)",
+            allResults.Count, fusionResponse.Results.Count, contextResults.Count);
 
         if (allResults.Count == 0)
         {
             return new SearchResponse
             {
                 Confidence = SearchConfidence.None,
-                ConfidenceReason = "No embeddings found"
+                ConfidenceReason = "No embeddings found (RAG Fusion + context search)"
             };
         }
 
-        // Determine confidence based on best similarity
+        // Use fusion confidence if available, otherwise calculate from similarity
         var bestSim = allResults[0].Similarity;
-        var confidence = bestSim switch
-        {
-            > 0.5 => SearchConfidence.High,
-            > 0.35 => SearchConfidence.Medium,
-            > 0.25 => SearchConfidence.Low,
-            _ => SearchConfidence.None
-        };
+        var confidence = fusionResponse.Confidence != SearchConfidence.None
+            ? fusionResponse.Confidence
+            : bestSim switch
+            {
+                > 0.5 => SearchConfidence.High,
+                > 0.35 => SearchConfidence.Medium,
+                > 0.25 => SearchConfidence.Low,
+                _ => SearchConfidence.None
+            };
 
-        var confidenceReason = confidence switch
-        {
-            SearchConfidence.High => $"[Hybrid: {contextResults.Count}+{messageResults.Count}] Strong match (sim={bestSim:F3})",
-            SearchConfidence.Medium => $"[Hybrid: {contextResults.Count}+{messageResults.Count}] Moderate match (sim={bestSim:F3})",
-            SearchConfidence.Low => $"[Hybrid: {contextResults.Count}+{messageResults.Count}] Weak match (sim={bestSim:F3})",
-            _ => $"[Hybrid: {contextResults.Count}+{messageResults.Count}] Very weak match (sim={bestSim:F3})"
-        };
+        var varSummary = fusionResponse.QueryVariations.Count > 0
+            ? $"vars=[{string.Join(", ", fusionResponse.QueryVariations.Take(2))}]"
+            : "no vars";
 
         return new SearchResponse
         {
             Results = allResults,
             Confidence = confidence,
-            ConfidenceReason = confidenceReason,
-            BestScore = bestSim
+            ConfidenceReason = $"[RAG Fusion: {fusionResponse.Results.Count} + Context: {contextResults.Count}] " +
+                             $"(sim={bestSim:F3}, {varSummary})",
+            BestScore = bestSim,
+            ScoreGap = fusionResponse.ScoreGap
         };
     }
 }

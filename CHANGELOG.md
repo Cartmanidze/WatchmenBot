@@ -13,7 +13,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Updated `SmartSummaryService.GatherTopicMessagesAsync` to use time-filtered context search
   - Both message embeddings and context embeddings now properly filter by `startUtc`/`endUtc`
 
+- **/ask context building bug** — high-similarity results were excluded when context window expansion failed:
+  - Messages exist in `message_embeddings` but not in `messages` table (e.g., from import)
+  - `GetMergedContextWindowsAsync` returned empty, causing relevant results to be dropped
+  - Added fallback in `ContextBuilderService`: use `ChunkText` directly when expansion fails
+  - Results no longer incorrectly marked as "budget_exceeded"
+
 ### Added
+
+- **RAG Fusion for /ask command** — improved search recall for ambiguous queries:
+  - Integrated `RagFusionService` into `SearchStrategyService.SearchContextOnlyAsync`
+  - For query "кто гондон?" generates variations: "я гондон", "гондон в чате", etc.
+  - Uses LLM to generate 3 query variations
+  - Searches with original + variations in parallel (4 searches total)
+  - Merges results using Reciprocal Rank Fusion (RRF) algorithm
+  - Results appearing in multiple query variations get boosted ranking
+  - Combined with context embeddings search for best coverage
 
 - **Intent Classification for /ask** — LLM-based intent classification replacing simple pattern matching:
 
