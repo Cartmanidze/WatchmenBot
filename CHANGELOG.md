@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-01-02]
 
+### Fixed
+
+- **Summary time filtering bug** — context embeddings search was not filtering by date, allowing old messages to leak into daily summaries:
+  - Added `SearchContextInRangeAsync` method to `ContextEmbeddingService` with time range filter
+  - Updated `SmartSummaryService.GatherTopicMessagesAsync` to use time-filtered context search
+  - Both message embeddings and context embeddings now properly filter by `startUtc`/`endUtc`
+
 ### Added
 
 - **Intent Classification for /ask** — LLM-based intent classification replacing simple pattern matching:

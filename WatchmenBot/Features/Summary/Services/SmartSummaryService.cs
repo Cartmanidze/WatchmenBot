@@ -280,10 +280,11 @@ public class SmartSummaryService(
         foreach (var topic in topics)
         {
             // Hybrid search: parallel search in both message and context embeddings
+            // IMPORTANT: Both searches MUST filter by time range to prevent old messages leaking in
             var messageTask = embeddingService.SearchSimilarInRangeAsync(
                 chatId, topic, startUtc, endUtc, limit: 15, ct);
-            var contextTask = contextEmbeddingService.SearchContextAsync(
-                chatId, topic, limit: 5, ct);
+            var contextTask = contextEmbeddingService.SearchContextInRangeAsync(
+                chatId, topic, startUtc, endUtc, limit: 5, ct);
 
             await Task.WhenAll(messageTask, contextTask);
 

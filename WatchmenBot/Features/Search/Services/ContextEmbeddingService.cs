@@ -162,6 +162,69 @@ public class ContextEmbeddingService(
     }
 
     /// <summary>
+    /// Search in context embeddings within a specific time range.
+    /// Used for /summary to ensure only messages from the target period are included.
+    /// </summary>
+    public async Task<List<ContextSearchResult>> SearchContextInRangeAsync(
+        long chatId,
+        string query,
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        int limit = 10,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
+            if (queryEmbedding.Length == 0)
+            {
+                logger.LogWarning("[ContextEmb] Failed to get embedding for query: {Query}", query);
+                return [];
+            }
+
+            var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
+
+            // Join with messages table to filter by date
+            var results = await connection.QueryAsync<ContextSearchResult>(
+                """
+                SELECT
+                    ce.id as Id,
+                    ce.chat_id as ChatId,
+                    ce.center_message_id as CenterMessageId,
+                    ce.window_start_id as WindowStartId,
+                    ce.window_end_id as WindowEndId,
+                    ce.message_ids as MessageIds,
+                    ce.context_text as ContextText,
+                    ce.embedding <=> @Embedding::vector as Distance,
+                    1 - (ce.embedding <=> @Embedding::vector) as Similarity
+                FROM context_embeddings ce
+                JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
+                WHERE ce.chat_id = @ChatId
+                  AND m.date_utc >= @StartUtc
+                  AND m.date_utc < @EndUtc
+                ORDER BY ce.embedding <=> @Embedding::vector
+                LIMIT @Limit
+                """,
+                new { ChatId = chatId, Embedding = embeddingString, StartUtc = startUtc.UtcDateTime, EndUtc = endUtc.UtcDateTime, Limit = limit });
+
+            var resultList = results.ToList();
+
+            logger.LogInformation("[ContextEmb] SearchInRange '{Query}' in chat {ChatId}: {Count} results, best sim={Best:F3}",
+                TruncateForLog(query, 30), chatId, resultList.Count,
+                resultList.Count > 0 ? resultList[0].Similarity : 0);
+
+            return resultList;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[ContextEmb] SearchInRange failed for query: {Query}", query);
+            return [];
+        }
+    }
+
+    /// <summary>
     /// Get statistics about context embeddings
     /// </summary>
     public async Task<ContextEmbeddingStats> GetStatsAsync(long chatId, CancellationToken ct = default)
