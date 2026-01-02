@@ -2,9 +2,6 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Infrastructure.Settings;
-using WatchmenBot.Features.Messages.Services;
-using WatchmenBot.Features.Admin.Services;
-using WatchmenBot.Features.Webhook.Services;
 
 namespace WatchmenBot.Features.Admin.Commands;
 

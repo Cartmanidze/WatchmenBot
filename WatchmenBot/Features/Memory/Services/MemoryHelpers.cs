@@ -1,5 +1,4 @@
 using System.Text.Json;
-using WatchmenBot.Features.Memory.Models;
 
 namespace WatchmenBot.Features.Memory.Services;
 

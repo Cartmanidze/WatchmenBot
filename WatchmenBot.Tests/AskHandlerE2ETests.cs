@@ -7,7 +7,6 @@ using Telegram.Bot.Types;
 using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Llm.Services;
-using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Memory.Services;

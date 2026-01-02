@@ -4,11 +4,6 @@ using Dapper;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Features.Llm.Services;
 
-using WatchmenBot.Infrastructure.Settings;
-using WatchmenBot.Features.Messages.Services;
-using WatchmenBot.Features.Admin.Services;
-using WatchmenBot.Features.Webhook.Services;
-
 namespace WatchmenBot.Features.Profile.Services;
 
 /// <summary>

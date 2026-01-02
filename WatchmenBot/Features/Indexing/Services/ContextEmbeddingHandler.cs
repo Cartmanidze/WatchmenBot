@@ -1,9 +1,6 @@
 using System.Diagnostics;
 using WatchmenBot.Features.Search.Services;
-using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Messages.Services;
-using WatchmenBot.Features.Admin.Services;
-using WatchmenBot.Features.Webhook.Services;
 
 namespace WatchmenBot.Features.Indexing.Services;
 

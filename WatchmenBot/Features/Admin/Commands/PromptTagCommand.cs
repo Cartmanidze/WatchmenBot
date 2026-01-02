@@ -1,8 +1,5 @@
 using Telegram.Bot;
 using WatchmenBot.Infrastructure.Settings;
-using WatchmenBot.Features.Messages.Services;
-using WatchmenBot.Features.Admin.Services;
-using WatchmenBot.Features.Webhook.Services;
 using WatchmenBot.Features.Llm.Services;
 
 namespace WatchmenBot.Features.Admin.Commands;

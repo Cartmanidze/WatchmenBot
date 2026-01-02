@@ -3,8 +3,6 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Memory.Services;
 using WatchmenBot.Features.Search.Models;
-using WatchmenBot.Infrastructure.Settings;
-using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Webhook.Services;
 

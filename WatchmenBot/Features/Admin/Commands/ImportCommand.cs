@@ -2,9 +2,6 @@ using System.IO.Compression;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Messages.Services;
-using WatchmenBot.Infrastructure.Settings;
-using WatchmenBot.Features.Admin.Services;
-using WatchmenBot.Features.Webhook.Services;
 
 namespace WatchmenBot.Features.Admin.Commands;
 

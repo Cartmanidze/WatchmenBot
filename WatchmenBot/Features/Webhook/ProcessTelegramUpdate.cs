@@ -8,10 +8,7 @@ using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
-using WatchmenBot.Infrastructure.Settings;
-using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Admin.Services;
-using WatchmenBot.Features.Webhook.Services;
 
 namespace WatchmenBot.Features.Webhook;
 
