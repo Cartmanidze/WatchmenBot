@@ -1,3 +1,4 @@
+using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Search;

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Dapper;
+using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Models;
 

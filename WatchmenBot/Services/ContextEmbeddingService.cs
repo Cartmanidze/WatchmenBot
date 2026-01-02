@@ -1,5 +1,6 @@
 using System.Text;
 using Dapper;
+using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Infrastructure.Database;
 
 namespace WatchmenBot.Services;
@@ -15,10 +16,10 @@ public class ContextEmbeddingService(
     ILogger<ContextEmbeddingService> logger)
 {
     // Window configuration
-    private const int MinWindowSize = 5;   // Minimum messages per window
-    private const int MaxWindowSize = 15;  // Maximum messages per window
-    private const int WindowStep = 3;      // Step between windows within large dialogs
-    private const int DialogGapMinutes = 30; // Time gap to consider new dialog
+    private const int MinWindowSize = 5;
+    private const int MaxWindowSize = 15;
+    private const int WindowStep = 3;
+    private const int DialogGapMinutes = 30;
 
     /// <summary>
     /// Build and store context embeddings for a chat.
@@ -33,7 +34,6 @@ public class ContextEmbeddingService(
         {
             using var connection = await connectionFactory.CreateConnectionAsync();
 
-            // Get the last processed center message ID to continue from there
             var lastProcessedId = await connection.ExecuteScalarAsync<long?>(
                 "SELECT MAX(center_message_id) FROM context_embeddings WHERE chat_id = @ChatId",
                 new { ChatId = chatId });
@@ -41,7 +41,6 @@ public class ContextEmbeddingService(
             logger.LogInformation("[ContextEmb] Building for chat {ChatId}, starting after message {LastId}",
                 chatId, lastProcessedId ?? 0);
 
-            // Get messages that haven't been processed as centers yet
             var messages = await GetMessagesForWindowsAsync(connection, chatId, lastProcessedId, batchSize * WindowStep, ct);
 
             if (messages.Count < MinWindowSize)
@@ -60,7 +59,6 @@ public class ContextEmbeddingService(
             {
                 ct.ThrowIfCancellationRequested();
 
-                // Check if already exists
                 var exists = await connection.ExecuteScalarAsync<bool>(
                     "SELECT EXISTS(SELECT 1 FROM context_embeddings WHERE chat_id = @ChatId AND center_message_id = @CenterId)",
                     new { ChatId = chatId, CenterId = window.CenterMessageId });
@@ -68,10 +66,8 @@ public class ContextEmbeddingService(
                 if (exists)
                     continue;
 
-                // Build context text
                 var contextText = FormatWindowForEmbedding(window);
 
-                // Get embedding
                 var embedding = await embeddingClient.GetEmbeddingAsync(contextText, ct);
                 if (embedding.Length == 0)
                 {
@@ -79,7 +75,6 @@ public class ContextEmbeddingService(
                     continue;
                 }
 
-                // Store
                 await StoreContextEmbeddingAsync(connection, chatId, window, contextText, embedding, ct);
                 processedCount++;
 
@@ -113,7 +108,6 @@ public class ContextEmbeddingService(
         {
             using var connection = await connectionFactory.CreateConnectionAsync();
 
-            // Check if we have any context embeddings
             var count = await connection.ExecuteScalarAsync<long>(
                 "SELECT COUNT(*) FROM context_embeddings WHERE chat_id = @ChatId",
                 new { ChatId = chatId });
@@ -124,7 +118,6 @@ public class ContextEmbeddingService(
                 return [];
             }
 
-            // Get query embedding
             var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
@@ -166,238 +159,6 @@ public class ContextEmbeddingService(
             logger.LogWarning(ex, "[ContextEmb] Search failed for query: {Query}", query);
             return [];
         }
-    }
-
-    /// <summary>
-    /// Get messages for building windows, ordered by date
-    /// </summary>
-    private async Task<List<WindowMessage>> GetMessagesForWindowsAsync(
-        System.Data.IDbConnection connection,
-        long chatId,
-        long? afterMessageId,
-        int limit,
-        CancellationToken ct)
-    {
-        var sql = afterMessageId.HasValue
-            ? """
-                SELECT
-                    id as MessageId,
-                    chat_id as ChatId,
-                    from_user_id as FromUserId,
-                    COALESCE(display_name, username, from_user_id::text) as Author,
-                    text as Text,
-                    date_utc as DateUtc
-                FROM messages
-                WHERE chat_id = @ChatId
-                  AND id > @AfterId
-                  AND text IS NOT NULL
-                  AND LENGTH(text) > 5
-                ORDER BY date_utc ASC
-                LIMIT @Limit
-                """
-            : """
-                SELECT
-                    id as MessageId,
-                    chat_id as ChatId,
-                    from_user_id as FromUserId,
-                    COALESCE(display_name, username, from_user_id::text) as Author,
-                    text as Text,
-                    date_utc as DateUtc
-                FROM messages
-                WHERE chat_id = @ChatId
-                  AND text IS NOT NULL
-                  AND LENGTH(text) > 5
-                ORDER BY date_utc ASC
-                LIMIT @Limit
-                """;
-
-        var messages = await connection.QueryAsync<WindowMessage>(sql, new
-        {
-            ChatId = chatId,
-            AfterId = afterMessageId ?? 0,
-            Limit = limit
-        });
-
-        return messages.ToList();
-    }
-
-    /// <summary>
-    /// Build dialog-aware windows from messages.
-    /// Detects dialog boundaries by time gaps (>30 min = new dialog).
-    /// Small dialogs become single windows, large ones use sliding windows.
-    /// </summary>
-    private List<MessageWindow> BuildSlidingWindows(List<WindowMessage> messages)
-    {
-        var windows = new List<MessageWindow>();
-
-        if (messages.Count < MinWindowSize)
-            return windows;
-
-        // Segment messages into dialogs by time gaps
-        var dialogs = SegmentIntoDialogs(messages);
-
-        logger.LogDebug("[ContextEmb] Segmented {Messages} messages into {Dialogs} dialogs",
-            messages.Count, dialogs.Count);
-
-        foreach (var dialog in dialogs)
-        {
-            if (dialog.Count < MinWindowSize)
-            {
-                // Dialog too small, skip (will be included in adjacent windows)
-                continue;
-            }
-
-            if (dialog.Count <= MaxWindowSize)
-            {
-                // Small dialog: create single window with all messages
-                var centerIndex = dialog.Count / 2;
-                var centerMessage = dialog[centerIndex];
-
-                windows.Add(new MessageWindow
-                {
-                    CenterMessageId = centerMessage.MessageId,
-                    WindowStartId = dialog.First().MessageId,
-                    WindowEndId = dialog.Last().MessageId,
-                    Messages = dialog
-                });
-            }
-            else
-            {
-                // Large dialog: use sliding windows within it
-                for (var i = 0; i + MaxWindowSize <= dialog.Count; i += WindowStep)
-                {
-                    var windowMessages = dialog.Skip(i).Take(MaxWindowSize).ToList();
-                    var centerIndex = MaxWindowSize / 2;
-                    var centerMessage = windowMessages[centerIndex];
-
-                    windows.Add(new MessageWindow
-                    {
-                        CenterMessageId = centerMessage.MessageId,
-                        WindowStartId = windowMessages.First().MessageId,
-                        WindowEndId = windowMessages.Last().MessageId,
-                        Messages = windowMessages
-                    });
-                }
-
-                // Handle remaining messages at the end of large dialog
-                var remaining = dialog.Count % WindowStep;
-                if (remaining >= MinWindowSize)
-                {
-                    var windowMessages = dialog.TakeLast(MaxWindowSize).ToList();
-                    var centerIndex = windowMessages.Count / 2;
-                    var centerMessage = windowMessages[centerIndex];
-
-                    windows.Add(new MessageWindow
-                    {
-                        CenterMessageId = centerMessage.MessageId,
-                        WindowStartId = windowMessages.First().MessageId,
-                        WindowEndId = windowMessages.Last().MessageId,
-                        Messages = windowMessages
-                    });
-                }
-            }
-        }
-
-        return windows;
-    }
-
-    /// <summary>
-    /// Segment messages into dialogs by time gaps.
-    /// A gap of >30 minutes indicates a new dialog.
-    /// </summary>
-    private List<List<WindowMessage>> SegmentIntoDialogs(List<WindowMessage> messages)
-    {
-        var dialogs = new List<List<WindowMessage>>();
-        var currentDialog = new List<WindowMessage>();
-
-        foreach (var msg in messages)
-        {
-            if (currentDialog.Count == 0)
-            {
-                currentDialog.Add(msg);
-                continue;
-            }
-
-            var lastMsg = currentDialog.Last();
-            var gap = msg.DateUtc - lastMsg.DateUtc;
-
-            if (gap.TotalMinutes > DialogGapMinutes)
-            {
-                // Time gap detected, start new dialog
-                if (currentDialog.Count > 0)
-                    dialogs.Add(currentDialog);
-
-                currentDialog = [msg];
-            }
-            else
-            {
-                currentDialog.Add(msg);
-            }
-        }
-
-        // Don't forget the last dialog
-        if (currentDialog.Count > 0)
-            dialogs.Add(currentDialog);
-
-        return dialogs;
-    }
-
-    /// <summary>
-    /// Format a window for embedding - preserves conversation flow
-    /// </summary>
-    private static string FormatWindowForEmbedding(MessageWindow window)
-    {
-        var sb = new StringBuilder();
-
-        foreach (var msg in window.Messages)
-        {
-            // Format: "Author: message text"
-            // No timestamps - they add noise to semantic meaning
-            sb.AppendLine($"{msg.Author}: {msg.Text}");
-        }
-
-        return sb.ToString().Trim();
-    }
-
-    /// <summary>
-    /// Store a context embedding
-    /// </summary>
-    private async Task StoreContextEmbeddingAsync(
-        System.Data.IDbConnection connection,
-        long chatId,
-        MessageWindow window,
-        string contextText,
-        float[] embedding,
-        CancellationToken ct)
-    {
-        var embeddingString = "[" + string.Join(",", embedding) + "]";
-        var messageIds = window.Messages.Select(m => m.MessageId).ToArray();
-
-        await connection.ExecuteAsync(
-            """
-            INSERT INTO context_embeddings
-                (chat_id, center_message_id, window_start_id, window_end_id, message_ids, context_text, embedding, window_size)
-            VALUES
-                (@ChatId, @CenterId, @StartId, @EndId, @MessageIds, @ContextText, @Embedding::vector, @WindowSize)
-            ON CONFLICT (chat_id, center_message_id) DO UPDATE SET
-                window_start_id = EXCLUDED.window_start_id,
-                window_end_id = EXCLUDED.window_end_id,
-                message_ids = EXCLUDED.message_ids,
-                context_text = EXCLUDED.context_text,
-                embedding = EXCLUDED.embedding,
-                created_at = NOW()
-            """,
-            new
-            {
-                ChatId = chatId,
-                CenterId = window.CenterMessageId,
-                StartId = window.WindowStartId,
-                EndId = window.WindowEndId,
-                MessageIds = messageIds,
-                ContextText = contextText,
-                Embedding = embeddingString,
-                WindowSize = window.Messages.Count // Dynamic window size
-            });
     }
 
     /// <summary>
@@ -464,7 +225,6 @@ public class ContextEmbeddingService(
         {
             using var connection = await connectionFactory.CreateConnectionAsync();
 
-            // Find windows that contain any of the target message IDs
             var results = await connection.QueryAsync<ContextSearchResult>(
                 """
                 SELECT
@@ -500,61 +260,217 @@ public class ContextEmbeddingService(
         }
     }
 
+    #region Private Helpers
+
+    private async Task<List<WindowMessage>> GetMessagesForWindowsAsync(
+        System.Data.IDbConnection connection,
+        long chatId,
+        long? afterMessageId,
+        int limit,
+        CancellationToken ct)
+    {
+        var sql = afterMessageId.HasValue
+            ? """
+                SELECT
+                    id as MessageId,
+                    chat_id as ChatId,
+                    from_user_id as FromUserId,
+                    COALESCE(display_name, username, from_user_id::text) as Author,
+                    text as Text,
+                    date_utc as DateUtc
+                FROM messages
+                WHERE chat_id = @ChatId
+                  AND id > @AfterId
+                  AND text IS NOT NULL
+                  AND LENGTH(text) > 5
+                ORDER BY date_utc ASC
+                LIMIT @Limit
+                """
+            : """
+                SELECT
+                    id as MessageId,
+                    chat_id as ChatId,
+                    from_user_id as FromUserId,
+                    COALESCE(display_name, username, from_user_id::text) as Author,
+                    text as Text,
+                    date_utc as DateUtc
+                FROM messages
+                WHERE chat_id = @ChatId
+                  AND text IS NOT NULL
+                  AND LENGTH(text) > 5
+                ORDER BY date_utc ASC
+                LIMIT @Limit
+                """;
+
+        var messages = await connection.QueryAsync<WindowMessage>(sql, new
+        {
+            ChatId = chatId,
+            AfterId = afterMessageId ?? 0,
+            Limit = limit
+        });
+
+        return messages.ToList();
+    }
+
+    private List<MessageWindow> BuildSlidingWindows(List<WindowMessage> messages)
+    {
+        var windows = new List<MessageWindow>();
+
+        if (messages.Count < MinWindowSize)
+            return windows;
+
+        var dialogs = SegmentIntoDialogs(messages);
+
+        logger.LogDebug("[ContextEmb] Segmented {Messages} messages into {Dialogs} dialogs",
+            messages.Count, dialogs.Count);
+
+        foreach (var dialog in dialogs)
+        {
+            if (dialog.Count < MinWindowSize)
+                continue;
+
+            if (dialog.Count <= MaxWindowSize)
+            {
+                var centerIndex = dialog.Count / 2;
+                var centerMessage = dialog[centerIndex];
+
+                windows.Add(new MessageWindow
+                {
+                    CenterMessageId = centerMessage.MessageId,
+                    WindowStartId = dialog.First().MessageId,
+                    WindowEndId = dialog.Last().MessageId,
+                    Messages = dialog
+                });
+            }
+            else
+            {
+                for (var i = 0; i + MaxWindowSize <= dialog.Count; i += WindowStep)
+                {
+                    var windowMessages = dialog.Skip(i).Take(MaxWindowSize).ToList();
+                    var centerIndex = MaxWindowSize / 2;
+                    var centerMessage = windowMessages[centerIndex];
+
+                    windows.Add(new MessageWindow
+                    {
+                        CenterMessageId = centerMessage.MessageId,
+                        WindowStartId = windowMessages.First().MessageId,
+                        WindowEndId = windowMessages.Last().MessageId,
+                        Messages = windowMessages
+                    });
+                }
+
+                var remaining = dialog.Count % WindowStep;
+                if (remaining >= MinWindowSize)
+                {
+                    var windowMessages = dialog.TakeLast(MaxWindowSize).ToList();
+                    var centerIndex = windowMessages.Count / 2;
+                    var centerMessage = windowMessages[centerIndex];
+
+                    windows.Add(new MessageWindow
+                    {
+                        CenterMessageId = centerMessage.MessageId,
+                        WindowStartId = windowMessages.First().MessageId,
+                        WindowEndId = windowMessages.Last().MessageId,
+                        Messages = windowMessages
+                    });
+                }
+            }
+        }
+
+        return windows;
+    }
+
+    private List<List<WindowMessage>> SegmentIntoDialogs(List<WindowMessage> messages)
+    {
+        var dialogs = new List<List<WindowMessage>>();
+        var currentDialog = new List<WindowMessage>();
+
+        foreach (var msg in messages)
+        {
+            if (currentDialog.Count == 0)
+            {
+                currentDialog.Add(msg);
+                continue;
+            }
+
+            var lastMsg = currentDialog.Last();
+            var gap = msg.DateUtc - lastMsg.DateUtc;
+
+            if (gap.TotalMinutes > DialogGapMinutes)
+            {
+                if (currentDialog.Count > 0)
+                    dialogs.Add(currentDialog);
+
+                currentDialog = [msg];
+            }
+            else
+            {
+                currentDialog.Add(msg);
+            }
+        }
+
+        if (currentDialog.Count > 0)
+            dialogs.Add(currentDialog);
+
+        return dialogs;
+    }
+
+    private static string FormatWindowForEmbedding(MessageWindow window)
+    {
+        var sb = new StringBuilder();
+
+        foreach (var msg in window.Messages)
+        {
+            sb.AppendLine($"{msg.Author}: {msg.Text}");
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    private async Task StoreContextEmbeddingAsync(
+        System.Data.IDbConnection connection,
+        long chatId,
+        MessageWindow window,
+        string contextText,
+        float[] embedding,
+        CancellationToken ct)
+    {
+        var embeddingString = "[" + string.Join(",", embedding) + "]";
+        var messageIds = window.Messages.Select(m => m.MessageId).ToArray();
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO context_embeddings
+                (chat_id, center_message_id, window_start_id, window_end_id, message_ids, context_text, embedding, window_size)
+            VALUES
+                (@ChatId, @CenterId, @StartId, @EndId, @MessageIds, @ContextText, @Embedding::vector, @WindowSize)
+            ON CONFLICT (chat_id, center_message_id) DO UPDATE SET
+                window_start_id = EXCLUDED.window_start_id,
+                window_end_id = EXCLUDED.window_end_id,
+                message_ids = EXCLUDED.message_ids,
+                context_text = EXCLUDED.context_text,
+                embedding = EXCLUDED.embedding,
+                created_at = NOW()
+            """,
+            new
+            {
+                ChatId = chatId,
+                CenterId = window.CenterMessageId,
+                StartId = window.WindowStartId,
+                EndId = window.WindowEndId,
+                MessageIds = messageIds,
+                ContextText = contextText,
+                Embedding = embeddingString,
+                WindowSize = window.Messages.Count
+            });
+    }
+
     private static string TruncateForLog(string text, int maxLength)
     {
         if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
             return text;
         return text[..(maxLength - 3)] + "...";
     }
-}
 
-/// <summary>
-/// Internal model for building windows
-/// </summary>
-public class WindowMessage
-{
-    public long MessageId { get; set; }
-    public long ChatId { get; set; }
-    public long FromUserId { get; set; }
-    public string Author { get; set; } = string.Empty;
-    public string Text { get; set; } = string.Empty;
-    public DateTime DateUtc { get; set; }
-}
-
-/// <summary>
-/// A sliding window of messages
-/// </summary>
-public class MessageWindow
-{
-    public long CenterMessageId { get; set; }
-    public long WindowStartId { get; set; }
-    public long WindowEndId { get; set; }
-    public List<WindowMessage> Messages { get; set; } = [];
-}
-
-/// <summary>
-/// Search result from context embeddings
-/// </summary>
-public class ContextSearchResult
-{
-    public long Id { get; set; }
-    public long ChatId { get; set; }
-    public long CenterMessageId { get; set; }
-    public long WindowStartId { get; set; }
-    public long WindowEndId { get; set; }
-    public long[] MessageIds { get; set; } = [];
-    public string ContextText { get; set; } = string.Empty;
-    public double Similarity { get; set; }
-    public double Distance { get; set; }
-}
-
-/// <summary>
-/// Statistics about context embeddings
-/// </summary>
-public class ContextEmbeddingStats
-{
-    public int TotalWindows { get; set; }
-    public DateTimeOffset? OldestWindow { get; set; }
-    public DateTimeOffset? NewestWindow { get; set; }
-    public double AvgWindowSize { get; set; }
+    #endregion
 }

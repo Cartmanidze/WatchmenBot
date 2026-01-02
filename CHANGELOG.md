@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2026-01-02]
+
+### Changed
+
+- **Vertical Slices Architecture Refactoring** — реорганизация крупных сервисов в вертикальные слайсы:
+
+  **Search Domain (`Features/Search/`):**
+  - Модели вынесены в `Features/Search/Models/`:
+    - `SearchResult`, `SearchResponse`, `SearchConfidence` — результаты поиска
+    - `EmbeddingStats` — статистика эмбеддингов
+    - `ContextMessage`, `ContextWindow`, `WindowMessage` — контекстные окна
+    - `MessageWindow`, `ContextSearchResult`, `ContextEmbeddingStats` — модели для context embeddings
+  - Хелперы вынесены в `Features/Search/Services/`:
+    - `SearchConfidenceEvaluator` — оценка confidence (High/Medium/Low/None) с расчётом gap
+    - `TextSearchHelpers` (static) — ExtractSearchTerms, GetRussianStem, ExpandWithStems, ExtractIlikeWords
+    - `NewsDumpDetector` (static) — определение "новостных дампов" (длинные сообщения с URL и эмодзи)
+    - `MetadataParser` (static) — парсинг timestamp/username/displayName из JSON metadata
+  - `EmbeddingService` теперь использует `SearchConfidenceEvaluator` через DI
+
+  **Summary Domain (`Features/Summary/`):**
+  - Модели вынесены в `Features/Summary/Models/`:
+    - `ChatStats` — статистика чата (сообщения, участники, активность)
+    - `MessageWithTime` — сообщение с временной меткой и similarity
+    - `ExtractedFacts` — структурированные факты из Stage 1 LLM
+  - Сервисы вынесены в `Features/Summary/Services/`:
+    - `TopicExtractor` — извлечение тем из сообщений через LLM (с sampling)
+    - `SummaryContextBuilder` — построение контекста: BuildStats, GetTopActiveUsers, BuildTopicContext
+    - `SummaryStageExecutor` — двухэтапная LLM генерация: факты (T=0.1) → юмор (T=0.6)
+  - `SmartSummaryService` сокращён: теперь оркестрирует TopicExtractor, SummaryContextBuilder, SummaryStageExecutor
+
+### Technical
+
+- Улучшена модульность: каждый домен имеет свои Models и Services
+- Улучшена тестируемость: сервисы изолированы и легко мокаются
+- DI регистрация всех новых сервисов в `ServiceCollectionExtensions.cs`
+- Сохранена обратная совместимость: публичные API не изменены
+
 ## [2025-12-31]
 
 ### Added

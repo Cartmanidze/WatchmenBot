@@ -5,7 +5,9 @@ using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Admin.Commands;
 using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Search;
+using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Summary;
+using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Services;
@@ -147,6 +149,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<EmbeddingStorageService>();
         services.AddScoped<PersonalSearchService>();
         services.AddScoped<ContextWindowService>();
+        services.AddScoped<SearchConfidenceEvaluator>(); // Extracted from EmbeddingService
         services.AddScoped<EmbeddingService>(); // Core search service (delegates to specialized services)
 
         // Context Embedding Service (sliding window embeddings for conversation context)
@@ -174,8 +177,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<MemoryContextBuilder>();
         services.AddScoped<LlmMemoryService>(); // Facade that delegates to specialized services
 
-        // Smart Summary Service (uses embeddings for topic extraction)
-        services.AddScoped<SmartSummaryService>();
+        // Smart Summary Services (refactored architecture)
+        services.AddScoped<TopicExtractor>(); // Extracted from SmartSummaryService
+        services.AddScoped<SummaryContextBuilder>(); // Extracted from SmartSummaryService
+        services.AddScoped<SummaryStageExecutor>(); // Extracted from SmartSummaryService
+        services.AddScoped<SmartSummaryService>(); // Orchestrator (delegates to specialized services)
 
         // Chat Import Services
         services.AddScoped<TelegramExportParser>();

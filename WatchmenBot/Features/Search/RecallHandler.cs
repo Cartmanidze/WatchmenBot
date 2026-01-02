@@ -105,7 +105,7 @@ public class RecallHandler(
         return username;
     }
 
-    private static string FormatResponse(string username, List<Models.MessageRecord> messages)
+    private static string FormatResponse(string username, List<WatchmenBot.Models.MessageRecord> messages)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"<b>📝 Сообщения @{EscapeHtml(username)} за неделю:</b>");

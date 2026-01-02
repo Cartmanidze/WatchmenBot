@@ -252,13 +252,16 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             connectionFactory,
             NullLogger<WatchmenBot.Services.Embeddings.ContextWindowService>.Instance);
 
+        var confidenceEvaluator = new WatchmenBot.Features.Search.Services.SearchConfidenceEvaluator();
+
         var embeddingService = new EmbeddingService(
             embeddingClient,
             connectionFactory,
             NullLogger<EmbeddingService>.Instance,
             embeddingStorage,
             personalSearch,
-            contextWindowService);
+            contextWindowService,
+            confidenceEvaluator);
 
         var contextEmbeddingService = new ContextEmbeddingService(
             embeddingClient,

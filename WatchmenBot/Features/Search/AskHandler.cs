@@ -1,6 +1,7 @@
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Services;
 
 namespace WatchmenBot.Features.Search;

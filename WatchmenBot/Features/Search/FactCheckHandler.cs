@@ -3,6 +3,7 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Services;
 using WatchmenBot.Services.Llm;
 
@@ -150,7 +151,7 @@ public class FactCheckHandler(
         return defaultCount;
     }
 
-    private static string BuildContext(List<Models.MessageRecord> messages)
+    private static string BuildContext(List<WatchmenBot.Models.MessageRecord> messages)
     {
         var sb = new StringBuilder();
         foreach (var m in messages)

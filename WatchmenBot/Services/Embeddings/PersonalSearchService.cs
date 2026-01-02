@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Infrastructure.Database;
 
 namespace WatchmenBot.Services.Embeddings;
