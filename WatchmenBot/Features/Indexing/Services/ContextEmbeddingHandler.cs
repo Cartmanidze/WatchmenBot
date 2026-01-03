@@ -67,7 +67,7 @@ public class ContextEmbeddingHandler(
 
             // Process current chat
             var chatId = _chatIds[_currentChatIndex];
-            var contextBatchSize = configuration.GetValue("Embeddings:ContextEmbeddings:BatchSize", 100);
+            var contextBatchSize = configuration.GetValue("Embeddings:ContextEmbeddings:BatchSize", 500);
 
             try
             {

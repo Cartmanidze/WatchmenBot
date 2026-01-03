@@ -54,21 +54,43 @@ public class ContextEmbeddingService(
             logger.LogInformation("[ContextEmb] Built {Count} windows from {Messages} messages",
                 windows.Count, messages.Count);
 
+            // Filter out windows that already exist
+            var existingCenterIds = await connection.QueryAsync<long>(
+                "SELECT center_message_id FROM context_embeddings WHERE chat_id = @ChatId",
+                new { ChatId = chatId });
+
+            var existingSet = existingCenterIds.ToHashSet();
+            var newWindows = windows.Where(w => !existingSet.Contains(w.CenterMessageId)).ToList();
+
+            if (newWindows.Count == 0)
+            {
+                logger.LogInformation("[ContextEmb] No new windows to process for chat {ChatId}", chatId);
+                return;
+            }
+
+            logger.LogInformation("[ContextEmb] Processing {NewCount} new windows (skipping {ExistingCount} existing)",
+                newWindows.Count, windows.Count - newWindows.Count);
+
+            // Batch processing with late chunking for better context preservation
+            var windowTexts = newWindows.Select(FormatWindowForEmbedding).ToList();
+
+            // Use late chunking to preserve cross-window context (Jina AI feature)
+            var embeddings = await embeddingClient.GetEmbeddingsAsync(
+                windowTexts,
+                EmbeddingTask.RetrievalPassage,
+                lateChunking: true,
+                ct);
+
+            // Store all embeddings
             var processedCount = 0;
-            foreach (var window in windows)
+            for (var i = 0; i < newWindows.Count && i < embeddings.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
 
-                var exists = await connection.ExecuteScalarAsync<bool>(
-                    "SELECT EXISTS(SELECT 1 FROM context_embeddings WHERE chat_id = @ChatId AND center_message_id = @CenterId)",
-                    new { ChatId = chatId, CenterId = window.CenterMessageId });
+                var window = newWindows[i];
+                var embedding = embeddings[i];
+                var contextText = windowTexts[i];
 
-                if (exists)
-                    continue;
-
-                var contextText = FormatWindowForEmbedding(window);
-
-                var embedding = await embeddingClient.GetEmbeddingAsync(contextText, EmbeddingTask.RetrievalPassage, ct);
                 if (embedding.Length == 0)
                 {
                     logger.LogWarning("[ContextEmb] Empty embedding for window centered at {CenterId}", window.CenterMessageId);
@@ -77,11 +99,6 @@ public class ContextEmbeddingService(
 
                 await StoreContextEmbeddingAsync(connection, chatId, window, contextText, embedding, ct);
                 processedCount++;
-
-                if (processedCount % 10 == 0)
-                {
-                    logger.LogDebug("[ContextEmb] Processed {Count} windows", processedCount);
-                }
             }
 
             logger.LogInformation("[ContextEmb] Completed: stored {Count} new context embeddings for chat {ChatId}",
@@ -94,9 +111,13 @@ public class ContextEmbeddingService(
         }
     }
 
+    // Hybrid search weights: 70% semantic, 30% keyword
+    private const double DenseWeight = 0.7;
+    private const double SparseWeight = 0.3;
+
     /// <summary>
-    /// Search in context embeddings for a query.
-    /// Returns windows that match the query semantically.
+    /// Search in context embeddings for a query using hybrid BM25 + vector search.
+    /// Returns windows that match the query semantically and by keywords.
     /// </summary>
     public async Task<List<ContextSearchResult>> SearchContextAsync(
         long chatId,
@@ -127,24 +148,58 @@ public class ContextEmbeddingService(
 
             var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
+            // Extract search terms for BM25 component
+            var searchTerms = ExtractSearchTerms(query);
+            var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+
+            // Hybrid search: combine vector similarity (70%) + BM25 text ranking (30%)
+            var sql = useHybrid
+                ? $"""
+                    SELECT
+                        id as Id,
+                        chat_id as ChatId,
+                        center_message_id as CenterMessageId,
+                        window_start_id as WindowStartId,
+                        window_end_id as WindowEndId,
+                        message_ids as MessageIds,
+                        context_text as ContextText,
+                        embedding <=> @Embedding::vector as Distance,
+                        {DenseWeight} * (1 - (embedding <=> @Embedding::vector))
+                        + {SparseWeight} * COALESCE(
+                            ts_rank_cd(
+                                to_tsvector('russian', context_text),
+                                websearch_to_tsquery('russian', @SearchTerms),
+                                32
+                            ),
+                            0
+                        ) as Similarity
+                    FROM context_embeddings
+                    WHERE chat_id = @ChatId
+                    ORDER BY Similarity DESC
+                    LIMIT @Limit
+                    """
+                : """
+                    SELECT
+                        id as Id,
+                        chat_id as ChatId,
+                        center_message_id as CenterMessageId,
+                        window_start_id as WindowStartId,
+                        window_end_id as WindowEndId,
+                        message_ids as MessageIds,
+                        context_text as ContextText,
+                        embedding <=> @Embedding::vector as Distance,
+                        1 - (embedding <=> @Embedding::vector) as Similarity
+                    FROM context_embeddings
+                    WHERE chat_id = @ChatId
+                    ORDER BY embedding <=> @Embedding::vector
+                    LIMIT @Limit
+                    """;
+
             var results = await connection.QueryAsync<ContextSearchResult>(
-                """
-                SELECT
-                    id as Id,
-                    chat_id as ChatId,
-                    center_message_id as CenterMessageId,
-                    window_start_id as WindowStartId,
-                    window_end_id as WindowEndId,
-                    message_ids as MessageIds,
-                    context_text as ContextText,
-                    embedding <=> @Embedding::vector as Distance,
-                    1 - (embedding <=> @Embedding::vector) as Similarity
-                FROM context_embeddings
-                WHERE chat_id = @ChatId
-                ORDER BY embedding <=> @Embedding::vector
-                LIMIT @Limit
-                """,
-                new { ChatId = chatId, Embedding = embeddingString, Limit = limit });
+                sql,
+                new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, Limit = limit });
+
+            logger.LogDebug("[ContextEmb] Hybrid={Hybrid}, Terms='{Terms}'", useHybrid, searchTerms ?? "none");
 
             var resultList = results.ToList();
 
@@ -162,7 +217,7 @@ public class ContextEmbeddingService(
     }
 
     /// <summary>
-    /// Search in context embeddings within a specific time range.
+    /// Search in context embeddings within a specific time range using hybrid BM25 + vector.
     /// Used for /summary to ensure only messages from the target period are included.
     /// </summary>
     public async Task<List<ContextSearchResult>> SearchContextInRangeAsync(
@@ -186,34 +241,68 @@ public class ContextEmbeddingService(
 
             var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
-            // Join with messages table to filter by date
+            // Extract search terms for BM25 component
+            var searchTerms = ExtractSearchTerms(query);
+            var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+
+            // Hybrid search: combine vector similarity (70%) + BM25 text ranking (30%)
+            var sql = useHybrid
+                ? $"""
+                    SELECT
+                        ce.id as Id,
+                        ce.chat_id as ChatId,
+                        ce.center_message_id as CenterMessageId,
+                        ce.window_start_id as WindowStartId,
+                        ce.window_end_id as WindowEndId,
+                        ce.message_ids as MessageIds,
+                        ce.context_text as ContextText,
+                        ce.embedding <=> @Embedding::vector as Distance,
+                        {DenseWeight} * (1 - (ce.embedding <=> @Embedding::vector))
+                        + {SparseWeight} * COALESCE(
+                            ts_rank_cd(
+                                to_tsvector('russian', ce.context_text),
+                                websearch_to_tsquery('russian', @SearchTerms),
+                                32
+                            ),
+                            0
+                        ) as Similarity
+                    FROM context_embeddings ce
+                    JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
+                    WHERE ce.chat_id = @ChatId
+                      AND m.date_utc >= @StartUtc
+                      AND m.date_utc < @EndUtc
+                    ORDER BY Similarity DESC
+                    LIMIT @Limit
+                    """
+                : """
+                    SELECT
+                        ce.id as Id,
+                        ce.chat_id as ChatId,
+                        ce.center_message_id as CenterMessageId,
+                        ce.window_start_id as WindowStartId,
+                        ce.window_end_id as WindowEndId,
+                        ce.message_ids as MessageIds,
+                        ce.context_text as ContextText,
+                        ce.embedding <=> @Embedding::vector as Distance,
+                        1 - (ce.embedding <=> @Embedding::vector) as Similarity
+                    FROM context_embeddings ce
+                    JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
+                    WHERE ce.chat_id = @ChatId
+                      AND m.date_utc >= @StartUtc
+                      AND m.date_utc < @EndUtc
+                    ORDER BY ce.embedding <=> @Embedding::vector
+                    LIMIT @Limit
+                    """;
+
             var results = await connection.QueryAsync<ContextSearchResult>(
-                """
-                SELECT
-                    ce.id as Id,
-                    ce.chat_id as ChatId,
-                    ce.center_message_id as CenterMessageId,
-                    ce.window_start_id as WindowStartId,
-                    ce.window_end_id as WindowEndId,
-                    ce.message_ids as MessageIds,
-                    ce.context_text as ContextText,
-                    ce.embedding <=> @Embedding::vector as Distance,
-                    1 - (ce.embedding <=> @Embedding::vector) as Similarity
-                FROM context_embeddings ce
-                JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
-                WHERE ce.chat_id = @ChatId
-                  AND m.date_utc >= @StartUtc
-                  AND m.date_utc < @EndUtc
-                ORDER BY ce.embedding <=> @Embedding::vector
-                LIMIT @Limit
-                """,
-                new { ChatId = chatId, Embedding = embeddingString, StartUtc = startUtc.UtcDateTime, EndUtc = endUtc.UtcDateTime, Limit = limit });
+                sql,
+                new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, StartUtc = startUtc.UtcDateTime, EndUtc = endUtc.UtcDateTime, Limit = limit });
 
             var resultList = results.ToList();
 
-            logger.LogInformation("[ContextEmb] SearchInRange '{Query}' in chat {ChatId}: {Count} results, best sim={Best:F3}",
+            logger.LogInformation("[ContextEmb] SearchInRange '{Query}' in chat {ChatId}: {Count} results, best sim={Best:F3}, hybrid={Hybrid}",
                 TruncateForLog(query, 30), chatId, resultList.Count,
-                resultList.Count > 0 ? resultList[0].Similarity : 0);
+                resultList.Count > 0 ? resultList[0].Similarity : 0, useHybrid);
 
             return resultList;
         }
@@ -443,6 +532,20 @@ public class ContextEmbeddingService(
         return windows;
     }
 
+    // Topic shift markers - words that often indicate a new topic
+    private static readonly HashSet<string> TopicShiftMarkers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "кстати", "а вообще", "кста", "другая тема", "сменим тему", "кстате",
+        "btw", "anyway", "by the way", "а ещё", "а еще", "ну и ещё",
+        "совсем другое", "вопрос", "вопросик", "хотел спросить"
+    };
+
+    /// <summary>
+    /// Segment messages into dialogs using topic-aware boundaries:
+    /// 1. Time gaps > 30 min (strong boundary)
+    /// 2. Topic shift markers in text (soft boundary, requires 5+ messages)
+    /// 3. Participant pattern changes (monologue → group shift)
+    /// </summary>
     private List<List<WindowMessage>> SegmentIntoDialogs(List<WindowMessage> messages)
     {
         var dialogs = new List<List<WindowMessage>>();
@@ -459,23 +562,88 @@ public class ContextEmbeddingService(
             var lastMsg = currentDialog.Last();
             var gap = msg.DateUtc - lastMsg.DateUtc;
 
+            // Strong boundary: time gap > 30 minutes
             if (gap.TotalMinutes > DialogGapMinutes)
             {
                 if (currentDialog.Count > 0)
                     dialogs.Add(currentDialog);
 
                 currentDialog = [msg];
+                continue;
             }
-            else
+
+            // Soft boundary: topic shift marker (only if dialog is substantial)
+            if (currentDialog.Count >= 5 && HasTopicShiftMarker(msg.Text))
             {
-                currentDialog.Add(msg);
+                dialogs.Add(currentDialog);
+                currentDialog = [msg];
+                continue;
             }
+
+            // Soft boundary: participant pattern shift (monologue → group discussion)
+            if (currentDialog.Count >= 8 && IsParticipantPatternShift(currentDialog, msg))
+            {
+                dialogs.Add(currentDialog);
+                currentDialog = [msg];
+                continue;
+            }
+
+            currentDialog.Add(msg);
         }
 
         if (currentDialog.Count > 0)
             dialogs.Add(currentDialog);
 
         return dialogs;
+    }
+
+    /// <summary>
+    /// Check if message starts with a topic shift marker
+    /// </summary>
+    private static bool HasTopicShiftMarker(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var lowerText = text.ToLowerInvariant().Trim();
+
+        foreach (var marker in TopicShiftMarkers)
+        {
+            if (lowerText.StartsWith(marker) ||
+                lowerText.Contains($" {marker}") ||
+                lowerText.Contains($"{marker},"))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Detect participant pattern shift: from monologue to group discussion or vice versa.
+    /// Returns true if the pattern shifts significantly.
+    /// </summary>
+    private static bool IsParticipantPatternShift(List<WindowMessage> dialog, WindowMessage newMsg)
+    {
+        // Look at last 5 messages
+        var recentMessages = dialog.TakeLast(5).ToList();
+        if (recentMessages.Count < 5)
+            return false;
+
+        var recentParticipants = recentMessages.Select(m => m.FromUserId).Distinct().Count();
+        var newAuthorInRecent = recentMessages.Any(m => m.FromUserId == newMsg.FromUserId);
+
+        // Monologue pattern: 1 person speaking last 5 messages
+        var isMonologue = recentParticipants == 1;
+
+        // If it was a monologue and a new person joins → potential topic shift
+        if (isMonologue && !newAuthorInRecent)
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string FormatWindowForEmbedding(MessageWindow window)
@@ -534,6 +702,12 @@ public class ContextEmbeddingService(
             return text;
         return text[..(maxLength - 3)] + "...";
     }
+
+    /// <summary>
+    /// Extract meaningful search terms from a query for BM25 component
+    /// </summary>
+    private static string ExtractSearchTerms(string query)
+        => TextSearchHelpers.ExtractSearchTerms(query);
 
     #endregion
 }

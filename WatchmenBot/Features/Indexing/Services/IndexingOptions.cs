@@ -8,12 +8,12 @@ public class IndexingOptions
     /// <summary>
     /// Number of items to process in a single batch
     /// </summary>
-    public int BatchSize { get; set; } = 100;
+    public int BatchSize { get; set; } = 500;
 
     /// <summary>
     /// Delay between batches in seconds (for rate limiting)
     /// </summary>
-    public int DelayBetweenBatchesSeconds { get; set; } = 2;
+    public int DelayBetweenBatchesSeconds { get; set; } = 1;
 
     /// <summary>
     /// Maximum batches to process in a single run

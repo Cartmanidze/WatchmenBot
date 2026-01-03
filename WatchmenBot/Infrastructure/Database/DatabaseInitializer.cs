@@ -404,6 +404,11 @@ public class DatabaseInitializer(
                 "CREATE INDEX IF NOT EXISTS idx_context_embeddings_chat_id ON context_embeddings (chat_id);",
                 "CREATE INDEX IF NOT EXISTS idx_context_embeddings_center ON context_embeddings (chat_id, center_message_id);",
                 "CREATE INDEX IF NOT EXISTS idx_context_embeddings_range ON context_embeddings (chat_id, window_start_id, window_end_id);",
+
+                // Full-text search index for Russian text (for hybrid BM25 + vector search)
+                "CREATE INDEX IF NOT EXISTS idx_context_embeddings_text_search ON context_embeddings USING GIN (to_tsvector('russian', context_text));",
+
+                // Vector similarity search index (IVFFlat)
                 """
                 CREATE INDEX IF NOT EXISTS idx_context_embeddings_vector
                 ON context_embeddings

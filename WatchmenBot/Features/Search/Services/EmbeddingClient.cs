@@ -125,6 +125,23 @@ public class EmbeddingClient
         EmbeddingTask task = EmbeddingTask.RetrievalPassage,
         CancellationToken ct = default)
     {
+        return await GetEmbeddingsAsync(texts, task, lateChunking: false, ct);
+    }
+
+    /// <summary>
+    /// Get embeddings for multiple texts with optional late chunking.
+    /// Late chunking preserves cross-chunk context by embedding all texts together first.
+    /// </summary>
+    /// <param name="texts">Texts to embed</param>
+    /// <param name="task">Task type (for Jina: retrieval.query or retrieval.passage)</param>
+    /// <param name="lateChunking">Enable late chunking (Jina only) - improves context preservation</param>
+    /// <param name="ct">Cancellation token</param>
+    public async Task<List<float[]>> GetEmbeddingsAsync(
+        IEnumerable<string> texts,
+        EmbeddingTask task,
+        bool lateChunking,
+        CancellationToken ct = default)
+    {
         var textList = texts.ToList();
         if (textList.Count == 0)
             return [];
@@ -137,7 +154,7 @@ public class EmbeddingClient
 
         return _provider switch
         {
-            EmbeddingProvider.Jina => await GetEmbeddingsJinaAsync(textList, task, ct),
+            EmbeddingProvider.Jina => await GetEmbeddingsJinaAsync(textList, task, lateChunking, ct),
             EmbeddingProvider.HuggingFace => await GetEmbeddingsHuggingFaceAsync(textList, ct),
             _ => await GetEmbeddingsOpenAiAsync(textList, ct)
         };
@@ -275,6 +292,7 @@ public class EmbeddingClient
     private async Task<List<float[]>> GetEmbeddingsJinaAsync(
         List<string> textList,
         EmbeddingTask task,
+        bool lateChunking,
         CancellationToken ct)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/embeddings");
@@ -288,13 +306,23 @@ public class EmbeddingClient
             _ => "retrieval.passage"
         };
 
-        var body = new
-        {
-            model = _model,
-            task = taskString,
-            dimensions = _dimensions,
-            input = textList
-        };
+        // Build request body - include late_chunking only when true
+        object body = lateChunking
+            ? new
+            {
+                model = _model,
+                task = taskString,
+                dimensions = _dimensions,
+                input = textList,
+                late_chunking = true
+            }
+            : new
+            {
+                model = _model,
+                task = taskString,
+                dimensions = _dimensions,
+                input = textList
+            };
 
         request.Content = new StringContent(
             JsonSerializer.Serialize(body, JsonOptions),
@@ -345,8 +373,8 @@ public class EmbeddingClient
             }
         }
 
-        _logger.LogDebug("[Jina] Embeddings: {Count} texts, {Tokens} tokens, {Ms}ms, task={Task}",
-            textList.Count, tokens, sw.ElapsedMilliseconds, taskString);
+        _logger.LogDebug("[Jina] Embeddings: {Count} texts, {Tokens} tokens, {Ms}ms, task={Task}, lateChunking={LateChunking}",
+            textList.Count, tokens, sw.ElapsedMilliseconds, taskString, lateChunking);
 
         return result;
     }
