@@ -16,6 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Cost: ~$0.02 per 1M tokens (very cheap)
   - Performance: /ask response time improved from 90-133s to ~47s
 
+### Added
+
+- **Nickname resolution for /ask** — LLM-based resolution of nicknames to actual usernames:
+  - When user asks about "бек", LLM resolves it to "Бексултан" from chat users list
+  - Works with any nickname/diminutive (глеб→Gleb, женя→Женя, стас→Стасик)
+  - Expands search query with resolved names for better RAG results
+  - Shows resolved names in debug report
+  - New service: `NicknameResolverService` with 30-min user list cache
+
 ### Fixed
 
 - **Name transliteration bug in LLM answers** — LLM was incorrectly transliterating names (e.g., `Gleb Bezrukov` → `Глеб Безуров`):

@@ -319,6 +319,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ContextBuilderService>();
         services.AddScoped<AnswerGeneratorService>();
         services.AddScoped<IntentClassifier>(); // LLM-based intent classification (replaces PersonalQuestionDetector)
+        services.AddScoped<NicknameResolverService>(); // Resolves nicknames to actual usernames
         services.AddScoped<DebugReportCollector>();
         services.AddScoped<ConfidenceGateService>();
 

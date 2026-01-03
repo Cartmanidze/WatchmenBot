@@ -96,6 +96,49 @@ public partial class BackgroundAskWorker(
         // Wait for intent classification
         var classified = await intentTask;
 
+        // Resolve nicknames to actual usernames (if personal question or people mentioned)
+        var nicknameResolver = scope.ServiceProvider.GetRequiredService<NicknameResolverService>();
+        var resolvedPeople = new List<string>();
+        string? expandedQuestion = null;
+
+        if (classified.MentionedPeople.Count > 0 || classified.IsPersonal)
+        {
+            var resolutionTasks = classified.MentionedPeople
+                .Select(nick => nicknameResolver.ResolveNicknameAsync(item.ChatId, nick, ct))
+                .ToList();
+
+            var resolutions = await Task.WhenAll(resolutionTasks);
+
+            foreach (var resolution in resolutions)
+            {
+                if (resolution.ResolvedName != null && resolution.Confidence > 0.5)
+                {
+                    resolvedPeople.Add(resolution.ResolvedName);
+                    logger.LogInformation("[BackgroundAsk] Resolved nickname '{Nick}' → '{Name}' (conf: {Conf:F2})",
+                        resolution.OriginalNick, resolution.ResolvedName, resolution.Confidence);
+
+                    // Expand the question for better search
+                    if (expandedQuestion == null)
+                        expandedQuestion = item.Question;
+                    expandedQuestion = expandedQuestion.Replace(
+                        resolution.OriginalNick,
+                        resolution.ResolvedName,
+                        StringComparison.OrdinalIgnoreCase);
+                }
+                else
+                {
+                    // Keep original if not resolved
+                    resolvedPeople.Add(resolution.OriginalNick);
+                }
+            }
+
+            // Update classified with resolved names
+            if (resolvedPeople.Count > 0)
+            {
+                classified.MentionedPeople = resolvedPeople;
+            }
+        }
+
         debugReport.IntentClassification = new IntentClassificationDebug
         {
             Intent = classified.Intent.ToString(),
@@ -104,13 +147,17 @@ public partial class BackgroundAskWorker(
             MentionedPeople = classified.MentionedPeople,
             TemporalText = classified.TemporalRef?.Text,
             TemporalDays = classified.TemporalRef?.RelativeDays,
-            Reasoning = classified.Reasoning
+            Reasoning = classified.Reasoning + (expandedQuestion != null ? $" [Expanded: {expandedQuestion}]" : "")
         };
 
+        // Use expanded question for search if nicknames were resolved
+        var searchQuestion = expandedQuestion ?? item.Question;
+
         // Execute search (uses precomputed default search or specialized search based on intent)
+        // Note: pass searchQuestion for specialized search, but use precomputed for default
         var (memoryContext, searchResponse) = await ExecuteSearchWithPrecomputedAsync(
             item.Command, item.ChatId, item.AskerId, item.AskerName, item.AskerUsername,
-            item.Question, classified, defaultSearchTask, memoryService, searchStrategy, ct);
+            searchQuestion, classified, defaultSearchTask, memoryService, searchStrategy, ct);
 
         // Handle confidence gate
         var (context, confidenceWarning, contextTracker, shouldContinue) = await confidenceGate.ProcessSearchResultsAsync(
