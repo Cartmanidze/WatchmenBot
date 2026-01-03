@@ -31,6 +31,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Two-stage Answer Verification has time to complete
   - User sees typing indicator while processing continues in background
 
+- **Parallel Intent + RAG Fusion optimization** — run intent classification and default search in parallel:
+
+  **How it works:**
+  - Start Intent Classification AND RAG Fusion search concurrently
+  - For most queries (default case), use precomputed search results
+  - For specialized queries (personal, temporal), run specialized search after intent is known
+
+  **Performance:**
+  - Saves ~20 seconds on default queries (max of Intent OR Search, not sum)
+  - Specialized queries still work correctly (personal, temporal, comparison)
+
+- **Conditional Two-Stage mode** — skip fact extraction for simple questions:
+
+  **Criteria for "simple" questions:**
+  - Search confidence = High (good match, low hallucination risk)
+  - Context < 2000 chars (few results, focused answer)
+
+  **Performance:**
+  - Simple questions: one-stage (saves ~15 seconds)
+  - Complex questions: two-stage (anti-hallucination)
+
 ### Added
 
 - **Two-stage Answer Verification for /ask** — anti-hallucination improvement using fact extraction:

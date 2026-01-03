@@ -81,9 +81,20 @@ public partial class BackgroundAskWorker(
         // Send typing action
         await bot.SendChatAction(item.ChatId, ChatAction.Typing, cancellationToken: ct);
 
-        // Classify intent
-        var classified = await intentClassifier.ClassifyAsync(
+        // OPTIMIZATION: Run Intent Classification and default RAG Fusion in parallel
+        // Most queries use default search, so we precompute it while classifying intent
+        var intentTask = intentClassifier.ClassifyAsync(
             item.Question, item.AskerName, item.AskerUsername, ct);
+
+        // Start default RAG Fusion search in parallel (will be used for most queries)
+        Task<SearchResponse>? defaultSearchTask = null;
+        if (item.Command != "smart")
+        {
+            defaultSearchTask = searchStrategy.SearchContextOnlyAsync(item.ChatId, item.Question, ct);
+        }
+
+        // Wait for intent classification
+        var classified = await intentTask;
 
         debugReport.IntentClassification = new IntentClassificationDebug
         {
@@ -96,10 +107,10 @@ public partial class BackgroundAskWorker(
             Reasoning = classified.Reasoning
         };
 
-        // Execute search
-        var (memoryContext, searchResponse) = await ExecuteSearchAsync(
+        // Execute search (uses precomputed default search or specialized search based on intent)
+        var (memoryContext, searchResponse) = await ExecuteSearchWithPrecomputedAsync(
             item.Command, item.ChatId, item.AskerId, item.AskerName, item.AskerUsername,
-            item.Question, classified, memoryService, searchStrategy, ct);
+            item.Question, classified, defaultSearchTask, memoryService, searchStrategy, ct);
 
         // Handle confidence gate
         var (context, confidenceWarning, contextTracker, shouldContinue) = await confidenceGate.ProcessSearchResultsAsync(
@@ -164,12 +175,13 @@ public partial class BackgroundAskWorker(
         await debugService.SendDebugReportAsync(debugReport, ct);
     }
 
-    private async Task<(string? memoryContext, SearchResponse searchResponse)> ExecuteSearchAsync(
+    private async Task<(string? memoryContext, SearchResponse searchResponse)> ExecuteSearchWithPrecomputedAsync(
         string command, long chatId, long askerId, string askerName, string? askerUsername,
-        string question, ClassifiedQuery classified,
+        string question, ClassifiedQuery classified, Task<SearchResponse>? precomputedDefaultSearch,
         LlmMemoryService memoryService, SearchStrategyService searchStrategy,
         CancellationToken ct)
     {
+        // Start memory context building in parallel
         Task<string?>? memoryTask = null;
         if (command == "ask" && askerId != 0)
         {
@@ -180,6 +192,7 @@ public partial class BackgroundAskWorker(
             memoryTask = memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
         }
 
+        // Determine search strategy based on intent
         Task<SearchResponse> searchTask;
         if (command == "smart")
         {
@@ -189,10 +202,19 @@ public partial class BackgroundAskWorker(
                 ConfidenceReason = "Direct query to Perplexity (no RAG)"
             });
         }
-        else
+        else if (NeedsSpecializedSearch(classified))
         {
+            // Personal, temporal, comparison queries need specialized search
+            // The precomputed default search will be discarded (but ran in parallel with intent)
+            logger.LogInformation("[BackgroundAsk] Intent requires specialized search: {Intent}", classified.Intent);
             searchTask = searchStrategy.SearchWithIntentAsync(
                 chatId, classified, askerUsername ?? askerName, askerName, ct);
+        }
+        else
+        {
+            // Default case: use precomputed RAG Fusion search (saves ~20s)
+            logger.LogInformation("[BackgroundAsk] Using precomputed default search (parallel optimization)");
+            searchTask = precomputedDefaultSearch ?? searchStrategy.SearchContextOnlyAsync(chatId, question, ct);
         }
 
         string? memoryContext = null;
@@ -210,6 +232,22 @@ public partial class BackgroundAskWorker(
         }
 
         return (memoryContext, searchResponse);
+    }
+
+    /// <summary>
+    /// Check if intent requires specialized search (not default RAG Fusion)
+    /// </summary>
+    private static bool NeedsSpecializedSearch(ClassifiedQuery classified)
+    {
+        return classified.Intent switch
+        {
+            QueryIntent.PersonalSelf => true,
+            QueryIntent.PersonalOther when classified.MentionedPeople.Count > 0 => true,
+            QueryIntent.Temporal when classified.HasTemporal => true,
+            QueryIntent.Comparison when classified.Entities.Count >= 2 => true,
+            QueryIntent.MultiEntity when classified.MentionedPeople.Count >= 2 => true,
+            _ => false
+        };
     }
 
     private void StoreMemoryAsync(long chatId, long askerId, string askerName, string? askerUsername,

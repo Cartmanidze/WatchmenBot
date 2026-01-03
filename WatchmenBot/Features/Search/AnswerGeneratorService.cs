@@ -20,11 +20,10 @@ public class AnswerGeneratorService(
     ILogger<AnswerGeneratorService> logger)
 {
     /// <summary>
-    /// Enable two-stage anti-hallucination mode.
-    /// Stage 1: Extract facts from context (T=0.1)
-    /// Stage 2: Generate answer from facts only (T=0.5)
+    /// Maximum context length (chars) for "simple" questions that skip two-stage.
+    /// If context is small AND confidence is high → one-stage (faster).
     /// </summary>
-    private const bool UseTwoStageMode = true;
+    private const int SimpleContextThreshold = 2000;
 
     private const string FactExtractionPrompt = """
         Извлеки ТОЛЬКО факты из контекста чата для ответа на вопрос.
@@ -51,7 +50,16 @@ public class AnswerGeneratorService(
         // For /ask with context - choose between one-stage (fast) or two-stage (anti-hallucination)
         if (command == "ask" && !string.IsNullOrWhiteSpace(context))
         {
-            if (UseTwoStageMode)
+            // OPTIMIZATION: Skip two-stage for "simple" questions
+            // Simple = high confidence + small context → one LLM call saves ~15s
+            var isSimpleQuestion = IsSimpleQuestion(context, debugReport);
+
+            if (isSimpleQuestion)
+            {
+                logger.LogInformation("[ASK] Simple question detected (high confidence + small context) → using one-stage");
+                return await GenerateOneStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, debugReport, ct);
+            }
+            else
             {
                 return await GenerateTwoStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, debugReport, ct);
             }
@@ -463,5 +471,30 @@ public class AnswerGeneratorService(
             .Replace("\n", "\\n")
             .Replace("\r", "\\r")
             .Replace("\t", "\\t");
+    }
+
+    /// <summary>
+    /// Determine if this is a "simple" question that doesn't need two-stage.
+    /// Simple = high confidence search + small context → one LLM call is enough.
+    /// Saves ~15 seconds by skipping fact extraction stage.
+    /// </summary>
+    private bool IsSimpleQuestion(string context, DebugReport debugReport)
+    {
+        // Check 1: Context must be small (few search results = focused answer)
+        if (context.Length > SimpleContextThreshold)
+        {
+            return false;
+        }
+
+        // Check 2: Search confidence must be high (good match = less hallucination risk)
+        if (debugReport.SearchConfidence != "High")
+        {
+            return false;
+        }
+
+        logger.LogDebug("[ASK] Simple question: context={Len} chars, confidence={Conf}",
+            context.Length, debugReport.SearchConfidence);
+
+        return true;
     }
 }
