@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Name transliteration bug in LLM answers** — LLM was incorrectly transliterating names (e.g., `Gleb Bezrukov` → `Глеб Безуров`):
+  - Added rule "Имена пиши ТОЧНО как в source (НЕ переводи, НЕ транслитерируй!)" to Stage 2 grounded answer prompt
+  - Added rule "source — имя ТОЧНО как в тексте" to Stage 1 fact extraction prompt
+  - Names now preserved exactly as they appear in chat context
+
 - **SQL bug in ContextWindowService** — `GetMergedContextWindowsAsync` used incorrect table alias `m` instead of `w`, causing "missing FROM-clause entry for table 'm'" errors
 
 ### Changed

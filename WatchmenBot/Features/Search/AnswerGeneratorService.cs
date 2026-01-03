@@ -41,6 +41,7 @@ public class AnswerGeneratorService(
         2. Если информации нет — добавь в not_found
         3. confidence: high = прямое утверждение, medium = можно вывести, low = косвенно
         4. Максимум 5 фактов
+        5. source — имя ТОЧНО как в тексте (НЕ переводи, НЕ транслитерируй!)
         """;
     public async Task<string> GenerateAnswerWithDebugAsync(
         string command, string question, string? context, string? memoryContext, string askerName, DebugReport debugReport, CancellationToken ct)
@@ -283,6 +284,7 @@ public class AnswerGeneratorService(
             3. Если факта нет — честно скажи "хз" или "не знаю"
             4. Если в not_found есть то, что спрашивали — упомяни что не нашёл
             5. Добавляй юмор и подъёбку к СУЩЕСТВУЮЩИМ фактам
+            6. Имена пиши ТОЧНО как в source (НЕ переводи, НЕ транслитерируй!)
             """;
 
         var factsJson = FormatFactsForStage2(facts);
