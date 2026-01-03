@@ -68,7 +68,7 @@ public class ContextEmbeddingService(
 
                 var contextText = FormatWindowForEmbedding(window);
 
-                var embedding = await embeddingClient.GetEmbeddingAsync(contextText, ct);
+                var embedding = await embeddingClient.GetEmbeddingAsync(contextText, EmbeddingTask.RetrievalPassage, ct);
                 if (embedding.Length == 0)
                 {
                     logger.LogWarning("[ContextEmb] Empty embedding for window centered at {CenterId}", window.CenterMessageId);
@@ -118,7 +118,7 @@ public class ContextEmbeddingService(
                 return [];
             }
 
-            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, EmbeddingTask.RetrievalQuery, ct);
             if (queryEmbedding.Length == 0)
             {
                 logger.LogWarning("[ContextEmb] Failed to get embedding for query: {Query}", query);
@@ -177,7 +177,7 @@ public class ContextEmbeddingService(
         {
             using var connection = await connectionFactory.CreateConnectionAsync();
 
-            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, EmbeddingTask.RetrievalQuery, ct);
             if (queryEmbedding.Length == 0)
             {
                 logger.LogWarning("[ContextEmb] Failed to get embedding for query: {Query}", query);

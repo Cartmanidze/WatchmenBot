@@ -27,7 +27,7 @@ public class EmbeddingStorageService(
         try
         {
             var text = FormatMessageForEmbedding(message);
-            var embedding = await embeddingClient.GetEmbeddingAsync(text, ct);
+            var embedding = await embeddingClient.GetEmbeddingAsync(text, EmbeddingTask.RetrievalPassage, ct);
 
             if (embedding.Length == 0)
             {
@@ -75,7 +75,7 @@ public class EmbeddingStorageService(
                 messageList.Count, groups.Count);
 
             var texts = groups.Select(g => FormatGroupForEmbedding(g)).ToList();
-            var embeddings = await embeddingClient.GetEmbeddingsAsync(texts, ct);
+            var embeddings = await embeddingClient.GetEmbeddingsAsync(texts, EmbeddingTask.RetrievalPassage, ct);
 
             // Prepare batch data
             var batchData = new List<(long ChatId, long MessageId, int ChunkIndex, string ChunkText, float[] Embedding, string MetadataJson)>();

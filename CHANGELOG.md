@@ -8,13 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **Switched embeddings from HuggingFace to OpenRouter** — HuggingFace Inference API became unresponsive (router.huggingface.co timeouts):
-  - Provider: `huggingface` → `openai` (OpenRouter is OpenAI-compatible)
-  - Model: `deepvk/USER-bge-m3` → `text-embedding-3-small`
-  - BaseUrl: `router.huggingface.co` → `openrouter.ai/api/v1`
-  - Dimensions: kept at 1024 for database compatibility
-  - Cost: ~$0.02 per 1M tokens (very cheap)
-  - Performance: /ask response time improved from 90-133s to ~47s
+- **Switched embeddings to Jina AI** — Better multilingual support with task-specific adapters:
+  - Provider: `jina` (from HuggingFace/OpenRouter)
+  - Model: `jina-embeddings-v3` — MTEB score 65.52 (beats OpenAI & Cohere)
+  - Task adapters: `retrieval.passage` for indexing, `retrieval.query` for search
+  - Dimensions: 1024
+  - Context: 8192 tokens (vs 512 in OpenAI)
+  - Free tier: 10M tokens
+  - Cost after: ~$0.02 per 1M tokens
+  - **Requires full reindex** — old embeddings incompatible
 
 ### Added
 

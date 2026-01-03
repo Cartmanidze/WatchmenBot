@@ -22,7 +22,7 @@ public class EmbeddingClientIntegrationTests
         var client = _config.CreateEmbeddingClient();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var embedding = await client.GetEmbeddingAsync("Привет, это тест embeddings!", cts.Token);
+        var embedding = await client.GetEmbeddingAsync("Привет, это тест embeddings!", ct: cts.Token);
 
         Assert.NotNull(embedding);
         Assert.Equal(1536, embedding.Length);
@@ -45,7 +45,7 @@ public class EmbeddingClientIntegrationTests
             "Третье сообщение о еде"
         };
 
-        var embeddings = await client.GetEmbeddingsAsync(texts, cts.Token);
+        var embeddings = await client.GetEmbeddingsAsync(texts, ct: cts.Token);
 
         Assert.Equal(3, embeddings.Count);
         Assert.All(embeddings, e => Assert.Equal(1536, e.Length));
@@ -67,7 +67,7 @@ public class EmbeddingClientIntegrationTests
             "Нужно купить молоко и хлеб"              // 2: о покупках (не похоже)
         };
 
-        var embeddings = await client.GetEmbeddingsAsync(texts, cts.Token);
+        var embeddings = await client.GetEmbeddingsAsync(texts, ct: cts.Token);
 
         var sim01 = CosineSimilarity(embeddings[0], embeddings[1]); // погода-погода
         var sim02 = CosineSimilarity(embeddings[0], embeddings[2]); // погода-покупки

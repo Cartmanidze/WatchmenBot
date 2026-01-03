@@ -121,6 +121,7 @@ public static class ServiceCollectionExtensions
                 // Parse provider
                 var provider = providerStr.ToLowerInvariant() switch
                 {
+                    "jina" => EmbeddingProvider.Jina,
                     "huggingface" or "hf" => EmbeddingProvider.HuggingFace,
                     _ => EmbeddingProvider.OpenAI
                 };
@@ -129,11 +130,6 @@ public static class ServiceCollectionExtensions
                 if (string.IsNullOrWhiteSpace(apiKey))
                 {
                     logger.LogWarning("Embeddings:ApiKey not configured. RAG features will be disabled.");
-                }
-                else
-                {
-                    logger.LogInformation("Embeddings configured: Provider={Provider}, Dimensions={Dimensions}",
-                        provider, dimensions > 0 ? dimensions : (provider == EmbeddingProvider.HuggingFace ? 1024 : 1536));
                 }
 
                 return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, provider, logger);

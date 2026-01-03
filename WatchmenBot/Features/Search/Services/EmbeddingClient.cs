@@ -8,7 +8,19 @@ namespace WatchmenBot.Features.Search.Services;
 public enum EmbeddingProvider
 {
     OpenAI,
-    HuggingFace
+    HuggingFace,
+    Jina
+}
+
+/// <summary>
+/// Task type for Jina embeddings (affects embedding optimization)
+/// </summary>
+public enum EmbeddingTask
+{
+    /// <summary>For indexing documents in vector DB</summary>
+    RetrievalPassage,
+    /// <summary>For search queries</summary>
+    RetrievalQuery
 }
 
 public class EmbeddingClient
@@ -30,6 +42,7 @@ public class EmbeddingClient
     // Pricing varies by provider
     private const double OpenAiPricePerThousandTokens = 0.00002; // text-embedding-3-small
     private const double HuggingFacePricePerThousandTokens = 0.0; // Free tier
+    private const double JinaPricePerThousandTokens = 0.00002; // jina-embeddings-v3
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -53,7 +66,15 @@ public class EmbeddingClient
         _isConfigured = !string.IsNullOrWhiteSpace(apiKey);
 
         // Set defaults based on provider
-        if (_provider == EmbeddingProvider.HuggingFace)
+        if (_provider == EmbeddingProvider.Jina)
+        {
+            _baseUrl = string.IsNullOrWhiteSpace(baseUrl)
+                ? "https://api.jina.ai/v1"
+                : baseUrl.TrimEnd('/');
+            _model = string.IsNullOrWhiteSpace(model) ? "jina-embeddings-v3" : model;
+            _dimensions = dimensions > 0 ? dimensions : 1024;
+        }
+        else if (_provider == EmbeddingProvider.HuggingFace)
         {
             _baseUrl = string.IsNullOrWhiteSpace(baseUrl)
                 ? "https://router.huggingface.co/hf-inference/models/deepvk/USER-bge-m3/pipeline/feature-extraction"
@@ -69,19 +90,40 @@ public class EmbeddingClient
             _model = string.IsNullOrWhiteSpace(model) ? "text-embedding-3-small" : model;
             _dimensions = dimensions > 0 ? dimensions : 1536;
         }
+
+        _logger.LogInformation("Embeddings configured: Provider={Provider}, Dimensions={Dimensions}",
+            _provider, _dimensions);
     }
 
     public bool IsConfigured => _isConfigured;
     public EmbeddingProvider Provider => _provider;
     public int Dimensions => _dimensions;
 
-    public async Task<float[]> GetEmbeddingAsync(string text, CancellationToken ct = default)
+    /// <summary>
+    /// Get embedding for a single text
+    /// </summary>
+    /// <param name="text">Text to embed</param>
+    /// <param name="task">Task type (for Jina: retrieval.query or retrieval.passage)</param>
+    /// <param name="ct">Cancellation token</param>
+    public async Task<float[]> GetEmbeddingAsync(
+        string text,
+        EmbeddingTask task = EmbeddingTask.RetrievalQuery,
+        CancellationToken ct = default)
     {
-        var embeddings = await GetEmbeddingsAsync([text], ct);
+        var embeddings = await GetEmbeddingsAsync([text], task, ct);
         return embeddings.FirstOrDefault() ?? [];
     }
 
-    public async Task<List<float[]>> GetEmbeddingsAsync(IEnumerable<string> texts, CancellationToken ct = default)
+    /// <summary>
+    /// Get embeddings for multiple texts
+    /// </summary>
+    /// <param name="texts">Texts to embed</param>
+    /// <param name="task">Task type (for Jina: retrieval.query or retrieval.passage)</param>
+    /// <param name="ct">Cancellation token</param>
+    public async Task<List<float[]>> GetEmbeddingsAsync(
+        IEnumerable<string> texts,
+        EmbeddingTask task = EmbeddingTask.RetrievalPassage,
+        CancellationToken ct = default)
     {
         var textList = texts.ToList();
         if (textList.Count == 0)
@@ -93,9 +135,12 @@ public class EmbeddingClient
             return [];
         }
 
-        return _provider == EmbeddingProvider.HuggingFace
-            ? await GetEmbeddingsHuggingFaceAsync(textList, ct)
-            : await GetEmbeddingsOpenAiAsync(textList, ct);
+        return _provider switch
+        {
+            EmbeddingProvider.Jina => await GetEmbeddingsJinaAsync(textList, task, ct),
+            EmbeddingProvider.HuggingFace => await GetEmbeddingsHuggingFaceAsync(textList, ct),
+            _ => await GetEmbeddingsOpenAiAsync(textList, ct)
+        };
     }
 
     private async Task<List<float[]>> GetEmbeddingsOpenAiAsync(List<string> textList, CancellationToken ct)
@@ -227,6 +272,85 @@ public class EmbeddingClient
         return result;
     }
 
+    private async Task<List<float[]>> GetEmbeddingsJinaAsync(
+        List<string> textList,
+        EmbeddingTask task,
+        CancellationToken ct)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/embeddings");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+
+        // Jina API format with task-specific adapter
+        var taskString = task switch
+        {
+            EmbeddingTask.RetrievalQuery => "retrieval.query",
+            EmbeddingTask.RetrievalPassage => "retrieval.passage",
+            _ => "retrieval.passage"
+        };
+
+        var body = new
+        {
+            model = _model,
+            task = taskString,
+            dimensions = _dimensions,
+            input = textList
+        };
+
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(body, JsonOptions),
+            Encoding.UTF8,
+            "application/json");
+
+        var sw = Stopwatch.StartNew();
+
+        using var response = await _httpClient.SendAsync(request, ct);
+        var json = await response.Content.ReadAsStringAsync(ct);
+        sw.Stop();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("[Jina] Embeddings API error {StatusCode}: {Response}", response.StatusCode, json);
+            response.EnsureSuccessStatusCode();
+        }
+
+        // Jina response format is OpenAI-compatible
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var result = new List<float[]>();
+        var dataArray = root.GetProperty("data");
+
+        foreach (var item in dataArray.EnumerateArray().OrderBy(x => x.GetProperty("index").GetInt32()))
+        {
+            var embeddingArray = item.GetProperty("embedding");
+            var embedding = new float[embeddingArray.GetArrayLength()];
+            var i = 0;
+            foreach (var value in embeddingArray.EnumerateArray())
+            {
+                embedding[i++] = value.GetSingle();
+            }
+            result.Add(embedding);
+        }
+
+        // Track usage
+        var tokens = 0;
+        if (root.TryGetProperty("usage", out var usage) &&
+            usage.TryGetProperty("total_tokens", out var totalTokens))
+        {
+            tokens = totalTokens.GetInt32();
+            lock (_statsLock)
+            {
+                _totalTokensUsed += tokens;
+                _totalRequests++;
+            }
+        }
+
+        _logger.LogDebug("[Jina] Embeddings: {Count} texts, {Tokens} tokens, {Ms}ms, task={Task}",
+            textList.Count, tokens, sw.ElapsedMilliseconds, taskString);
+
+        return result;
+    }
+
     /// <summary>
     /// Get usage statistics since app start
     /// </summary>
@@ -234,9 +358,12 @@ public class EmbeddingClient
     {
         lock (_statsLock)
         {
-            var pricePerK = _provider == EmbeddingProvider.HuggingFace
-                ? HuggingFacePricePerThousandTokens
-                : OpenAiPricePerThousandTokens;
+            var pricePerK = _provider switch
+            {
+                EmbeddingProvider.HuggingFace => HuggingFacePricePerThousandTokens,
+                EmbeddingProvider.Jina => JinaPricePerThousandTokens,
+                _ => OpenAiPricePerThousandTokens
+            };
 
             return new EmbeddingUsageStats
             {
