@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Switched embeddings from HuggingFace to OpenRouter** — HuggingFace Inference API became unresponsive (router.huggingface.co timeouts):
+  - Provider: `huggingface` → `openai` (OpenRouter is OpenAI-compatible)
+  - Model: `deepvk/USER-bge-m3` → `text-embedding-3-small`
+  - BaseUrl: `router.huggingface.co` → `openrouter.ai/api/v1`
+  - Dimensions: kept at 1024 for database compatibility
+  - Cost: ~$0.02 per 1M tokens (very cheap)
+  - Performance: /ask response time improved from 90-133s to ~47s
+
 ### Fixed
 
 - **Name transliteration bug in LLM answers** — LLM was incorrectly transliterating names (e.g., `Gleb Bezrukov` → `Глеб Безуров`):

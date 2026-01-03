@@ -36,11 +36,11 @@ services:
       Llm__Providers__1__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__2__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__3__ApiKey: ${OPENROUTER_API_KEY}
-      # Embeddings (HuggingFace deepvk/USER-bge-m3)
-      Embeddings__Provider: ${EMBEDDINGS_PROVIDER:-huggingface}
-      Embeddings__ApiKey: ${HUGGINGFACE_API_KEY}
-      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://router.huggingface.co/hf-inference/models/deepvk/USER-bge-m3/pipeline/feature-extraction}
-      Embeddings__Model: ${EMBEDDINGS_MODEL:-deepvk/USER-bge-m3}
+      # Embeddings (OpenRouter - OpenAI compatible)
+      Embeddings__Provider: ${EMBEDDINGS_PROVIDER:-openai}
+      Embeddings__ApiKey: ${EMBEDDINGS_API_KEY:-${OPENROUTER_API_KEY}}
+      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://openrouter.ai/api/v1}
+      Embeddings__Model: ${EMBEDDINGS_MODEL:-text-embedding-3-small}
       Embeddings__Dimensions: ${EMBEDDINGS_DIMENSIONS:-1024}
       DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}
       Admin__UserId: ${ADMIN_USER_ID}
