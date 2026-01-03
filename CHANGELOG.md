@@ -10,6 +10,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **SQL bug in ContextWindowService** — `GetMergedContextWindowsAsync` used incorrect table alias `m` instead of `w`, causing "missing FROM-clause entry for table 'm'" errors
 
+### Changed
+
+- **Simplified Answer Verification** — removed quotes extraction from Stage 1, now only extracts facts and not_found (faster, simpler JSON)
+
+- **Background processing for /ask and /smart** — moved LLM processing to a background worker to avoid Telegram webhook timeouts (~60 sec limit):
+
+  **Architecture:**
+  - `AskHandler` now immediately enqueues requests and returns (no timeout risk)
+  - `BackgroundAskWorker` processes queue items with unlimited time budget
+  - Uses `System.Threading.Channels` for thread-safe queue (same pattern as summary)
+
+  **New Files:**
+  - `Features/Search/Services/AskQueueService.cs` — queue model and channel service
+  - `Features/Search/Services/BackgroundAskWorker.cs` — BackgroundService for processing
+
+  **Benefits:**
+  - No more TaskCanceledException from webhook timeouts
+  - DeepSeek/other slow providers work reliably (~26 sec per call)
+  - Two-stage Answer Verification has time to complete
+  - User sees typing indicator while processing continues in background
+
 ### Added
 
 - **Two-stage Answer Verification for /ask** — anti-hallucination improvement using fact extraction:

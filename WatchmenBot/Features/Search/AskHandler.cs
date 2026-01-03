@@ -1,27 +1,18 @@
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using WatchmenBot.Features.Memory.Services;
-using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Search.Services;
-using WatchmenBot.Features.Admin.Services;
-using WatchmenBot.Features.Webhook.Services;
 
 namespace WatchmenBot.Features.Search;
 
 /// <summary>
-/// Handler for /ask and /smart commands
-/// Orchestrates search, context building, and answer generation
+/// Handler for /ask and /smart commands.
+/// Enqueues requests for background processing to avoid Telegram webhook timeout.
+/// Actual processing is done by BackgroundAskWorker.
 /// </summary>
 public class AskHandler(
     ITelegramBotClient bot,
-    LlmMemoryService memoryService,
-    DebugService debugService,
-    SearchStrategyService searchStrategy,
-    AnswerGeneratorService answerGenerator,
-    IntentClassifier intentClassifier,
-    DebugReportCollector debugCollector,
-    ConfidenceGateService confidenceGate,
+    AskQueueService askQueue,
     ILogger<AskHandler> logger)
 {
     /// <summary>
@@ -47,96 +38,21 @@ public class AskHandler(
             return;
         }
 
-        // Initialize debug report
-        var debugReport = new DebugReport
+        // Enqueue for background processing (avoids Telegram webhook timeout)
+        if (askQueue.EnqueueFromMessage(message, command, question))
         {
-            Command = command,
-            ChatId = chatId,
-            Query = question
-        };
+            logger.LogInformation("[{Command}] Enqueued: {Question} in chat {ChatId}",
+                command.ToUpper(), question, chatId);
 
-        try
-        {
+            // Send typing indicator - response will come from BackgroundAskWorker
             await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
-
-            logger.LogInformation("[{Command}] Question: {Question} in chat {ChatId}", command.ToUpper(), question, chatId);
-
-            // Get asker's info for personal retrieval
-            var askerName = AskHandlerHelpers.GetDisplayName(message.From);
-            var askerUsername = message.From?.Username;
-            var askerId = message.From?.Id ?? 0;
-
-            // Classify intent using LLM (replaces simple pattern matching)
-            var classified = await intentClassifier.ClassifyAsync(question, askerName, askerUsername, ct);
-
-            // Collect intent classification debug info
-            debugReport.IntentClassification = new IntentClassificationDebug
-            {
-                Intent = classified.Intent.ToString(),
-                Confidence = classified.Confidence,
-                Entities = classified.Entities.Select(e => $"{e.Type}: {e.Text}").ToList(),
-                MentionedPeople = classified.MentionedPeople,
-                TemporalText = classified.TemporalRef?.Text,
-                TemporalDays = classified.TemporalRef?.RelativeDays,
-                Reasoning = classified.Reasoning
-            };
-
-            // === PARALLEL EXECUTION: Memory + Search ===
-            var (memoryContext, searchResponse) = await ExecuteSearchAsync(
-                command, chatId, askerId, askerName, askerUsername, question, classified, ct);
-
-            // Handle confidence gate and build context
-            var (context, confidenceWarning, contextTracker, shouldContinue) = await confidenceGate.ProcessSearchResultsAsync(
-                command, chatId, message, searchResponse, debugReport, ct);
-
-            if (!shouldContinue)
-            {
-                // Early return - already sent message to user
-                return;
-            }
-
-            // Collect debug info for search results WITH context tracking
-            var personalTarget = classified.IsPersonal
-                ? (classified.Intent == QueryIntent.PersonalSelf ? "self" : classified.MentionedPeople.FirstOrDefault())
-                : null;
-            debugCollector.CollectSearchDebugInfo(debugReport, searchResponse.Results, contextTracker, personalTarget);
-
-            // Collect debug info for context
-            debugCollector.CollectContextDebugInfo(debugReport, context, contextTracker);
-
-            // Generate answer using LLM with command-specific prompt
-            var answer = await answerGenerator.GenerateAnswerWithDebugAsync(command, question, context, memoryContext, askerName, debugReport, ct);
-
-            // Add confidence warning if needed (context shown only in debug mode for admins)
-            var rawResponse = (confidenceWarning ?? "") + answer;
-
-            // Sanitize HTML for Telegram
-            var response = TelegramHtmlSanitizer.Sanitize(rawResponse);
-
-            await bot.SendMessage(
-                chatId: chatId,
-                text: response,
-                parseMode: ParseMode.Html,
-                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new ReplyParameters { MessageId = message.MessageId },
-                cancellationToken: ct);
-
-            logger.LogInformation("[{Command}] Answered question: {Question} (confidence: {Conf})",
-                command.ToUpper(), question, searchResponse.Confidence);
-
-            // Store memory and update profile (fire and forget)
-            StoreMemoryAsync(chatId, askerId, askerName, askerUsername, question, answer);
-
-            // Send debug report to admin
-            await debugService.SendDebugReportAsync(debugReport, ct);
         }
-        catch (Exception ex)
+        else
         {
-            logger.LogError(ex, "[{Command}] Failed for question: {Question}", command.ToUpper(), question);
-
+            // Queue is full
             await bot.SendMessage(
                 chatId: chatId,
-                text: "Произошла ошибка при обработке вопроса. Попробуйте позже.",
+                text: "Слишком много запросов, попробуй через минуту.",
                 replyParameters: new ReplyParameters { MessageId = message.MessageId },
                 cancellationToken: ct);
         }
@@ -172,85 +88,5 @@ public class AskHandler(
             parseMode: ParseMode.Html,
             replyParameters: new ReplyParameters { MessageId = messageId },
             cancellationToken: ct);
-    }
-
-    private async Task<(string? memoryContext, SearchResponse searchResponse)> ExecuteSearchAsync(
-        string command, long chatId, long askerId, string askerName, string? askerUsername,
-        string question, ClassifiedQuery classified, CancellationToken ct)
-    {
-        // Start memory loading task (only for /ask, not /smart)
-        Task<string?>? memoryTask = null;
-        if (command == "ask" && askerId != 0)
-        {
-            memoryTask = memoryService.BuildEnhancedContextAsync(chatId, askerId, askerName, question, ct);
-        }
-        else if (command != "smart" && askerId != 0)
-        {
-            memoryTask = memoryService.BuildMemoryContextAsync(chatId, askerId, askerName, ct);
-        }
-
-        // Start search task (runs in parallel with memory loading)
-        Task<SearchResponse> searchTask;
-
-        if (command == "smart")
-        {
-            // /smart — no RAG search needed
-            logger.LogInformation("[SMART] Direct query to Perplexity (no RAG)");
-            searchTask = Task.FromResult(new SearchResponse
-            {
-                Confidence = SearchConfidence.None,
-                ConfidenceReason = "Прямой запрос к Perplexity (без RAG)"
-            });
-        }
-        else
-        {
-            // Use intent-based search strategy
-            logger.LogInformation("[ASK] Intent: {Intent}, Confidence: {Conf:F2}",
-                classified.Intent, classified.Confidence);
-            searchTask = searchStrategy.SearchWithIntentAsync(
-                chatId, classified, askerUsername ?? askerName, askerName, ct);
-        }
-
-        // Await both tasks in parallel
-        string? memoryContext = null;
-        SearchResponse searchResponse;
-
-        if (memoryTask != null)
-        {
-            await Task.WhenAll(memoryTask, searchTask);
-            memoryContext = memoryTask.Result;
-            searchResponse = searchTask.Result;
-
-            if (memoryContext != null)
-            {
-                logger.LogDebug("[{Command}] Loaded memory for user {User}", command.ToUpper(), askerName);
-            }
-        }
-        else
-        {
-            searchResponse = await searchTask;
-        }
-
-        return (memoryContext, searchResponse);
-    }
-
-    private void StoreMemoryAsync(long chatId, long askerId, string askerName, string? askerUsername, string question, string answer)
-    {
-        if (askerId == 0)
-            return;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await memoryService.StoreMemoryAsync(chatId, askerId, question, answer, CancellationToken.None);
-                await memoryService.UpdateProfileFromInteractionAsync(
-                    chatId, askerId, askerName, askerUsername, question, answer, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "[Memory] Failed to store memory for user {UserId}", askerId);
-            }
-        });
     }
 }

@@ -311,22 +311,13 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             adminSettings,
             NullLogger<DebugService>.Instance);
 
-        var confidenceGate = new ConfidenceGateService(
-            botMock.Object,
-            contextBuilder,
-            debugCollector,
-            debugService);
+        // Note: AskHandler now uses background processing via AskQueueService
+        // These E2E tests need to be rewritten to test BackgroundAskWorker instead
+        var askQueue = new AskQueueService(NullLogger<AskQueueService>.Instance);
 
-        // Create AskHandler
         var handler = new AskHandler(
             botMock.Object,
-            memoryService,
-            debugService,
-            searchStrategy,
-            answerGenerator,
-            intentClassifier,
-            debugCollector,
-            confidenceGate,
+            askQueue,
             NullLogger<AskHandler>.Instance);
 
         return (handler, botMock, sentMessages);

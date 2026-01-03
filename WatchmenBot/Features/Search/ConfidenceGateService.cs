@@ -23,7 +23,7 @@ public class ConfidenceGateService(
         ProcessSearchResultsAsync(
             string command,
             long chatId,
-            Message message,
+            int replyToMessageId,
             SearchResponse searchResponse,
             DebugReport debugReport,
             CancellationToken ct)
@@ -58,7 +58,7 @@ public class ConfidenceGateService(
             await bot.SendMessage(
                 chatId: chatId,
                 text: "🤷 В истории чата про это не нашёл. Попробуй уточнить вопрос или период.",
-                replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                replyParameters: new ReplyParameters { MessageId = replyToMessageId },
                 cancellationToken: ct);
 
             await debugService.SendDebugReportAsync(debugReport, ct);

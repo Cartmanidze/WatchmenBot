@@ -210,6 +210,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SummaryQueueService>();
         services.AddHostedService<BackgroundSummaryWorker>();
 
+        // Ask Queue (background processing to avoid Telegram webhook timeout)
+        services.AddSingleton<AskQueueService>();
+        services.AddHostedService<BackgroundAskWorker>();
+
         // Background Services
         services.AddHostedService<DailySummaryService>();
         services.AddHostedService<BackgroundEmbeddingService>();

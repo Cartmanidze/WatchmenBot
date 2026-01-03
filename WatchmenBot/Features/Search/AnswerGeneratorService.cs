@@ -34,19 +34,14 @@ public class AnswerGeneratorService(
           "facts": [
             {"claim": "утверждение", "source": "кто сказал/упомянул", "confidence": "high|medium|low"}
           ],
-          "quotes": [
-            {"text": "прямая цитата", "author": "имя", "context": "о чём"}
-          ],
-          "not_found": ["что спрашивали, но нет в контексте"],
-          "relevance_note": "краткая оценка релевантности контекста"
+          "not_found": ["что спрашивали, но нет в контексте"]
         }
 
         ПРАВИЛА:
         1. ТОЛЬКО факты из контекста — НЕ придумывай
-        2. Цитаты — ДОСЛОВНО из сообщений
-        3. Если информации нет — добавь в not_found
-        4. confidence: high = прямое утверждение, medium = можно вывести, low = косвенно
-        5. Максимум 5 фактов, 3 цитаты
+        2. Если информации нет — добавь в not_found
+        3. confidence: high = прямое утверждение, medium = можно вывести, low = косвенно
+        4. Максимум 5 фактов
         """;
     public async Task<string> GenerateAnswerWithDebugAsync(
         string command, string question, string? context, string? memoryContext, string askerName, DebugReport debugReport, CancellationToken ct)
@@ -127,7 +122,7 @@ public class AnswerGeneratorService(
     {
         debugReport.IsMultiStage = false;
         debugReport.StageCount = 1;
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew();
 
         // Build memory section if available
         var memorySection = !string.IsNullOrWhiteSpace(memoryContext)
@@ -253,8 +248,8 @@ public class AnswerGeneratorService(
         // Parse extracted facts
         var facts = ParseAnswerFacts(stage1Response.Content);
 
-        logger.LogInformation("[ASK] Stage1 (Facts): {FactCount} facts, {QuoteCount} quotes, {NotFoundCount} not_found in {Ms}ms",
-            facts.Facts.Count, facts.Quotes.Count, facts.NotFound.Count, stage1Sw.ElapsedMilliseconds);
+        logger.LogInformation("[ASK] Stage1 (Facts): {FactCount} facts, {NotFoundCount} not_found in {Ms}ms",
+            facts.Facts.Count, facts.NotFound.Count, stage1Sw.ElapsedMilliseconds);
 
         debugReport.Stages.Add(new DebugStage
         {
@@ -277,10 +272,9 @@ public class AnswerGeneratorService(
             КРИТИЧЕСКИ ВАЖНО — ANTI-HALLUCINATION:
             1. Используй ТОЛЬКО факты из JSON ниже
             2. НЕ придумывай новых фактов, имён, событий
-            3. Цитаты бери ДОСЛОВНО из поля "quotes"
-            4. Если факта нет — честно скажи "хз" или "не знаю"
-            5. Если в not_found есть то, что спрашивали — упомяни что не нашёл
-            6. Добавляй юмор и подъёбку к СУЩЕСТВУЮЩИМ фактам
+            3. Если факта нет — честно скажи "хз" или "не знаю"
+            4. Если в not_found есть то, что спрашивали — упомяни что не нашёл
+            5. Добавляй юмор и подъёбку к СУЩЕСТВУЮЩИМ фактам
             """;
 
         var factsJson = FormatFactsForStage2(facts);
@@ -381,32 +375,6 @@ public class AnswerGeneratorService(
                 }
             }
 
-            // Parse quotes
-            if (root.TryGetProperty("quotes", out var quotesEl) && quotesEl.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var q in quotesEl.EnumerateArray())
-                {
-                    var text = q.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String
-                        ? t.GetString()
-                        : null;
-                    var author = q.TryGetProperty("author", out var a) && a.ValueKind == JsonValueKind.String
-                        ? a.GetString()
-                        : null;
-
-                    if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(author))
-                        continue;
-
-                    result.Quotes.Add(new ExtractedQuote
-                    {
-                        Text = text,
-                        Author = author,
-                        Context = q.TryGetProperty("context", out var ctx) && ctx.ValueKind == JsonValueKind.String
-                            ? ctx.GetString()
-                            : null
-                    });
-                }
-            }
-
             // Parse not_found
             if (root.TryGetProperty("not_found", out var notFoundEl) && notFoundEl.ValueKind == JsonValueKind.Array)
             {
@@ -423,11 +391,6 @@ public class AnswerGeneratorService(
                 }
             }
 
-            // Parse relevance_note
-            if (root.TryGetProperty("relevance_note", out var noteEl) && noteEl.ValueKind == JsonValueKind.String)
-            {
-                result.RelevanceNote = noteEl.GetString();
-            }
         }
         catch (JsonException ex)
         {
@@ -455,16 +418,6 @@ public class AnswerGeneratorService(
         }
         sb.AppendLine("  ],");
 
-        // Quotes
-        sb.AppendLine("  \"quotes\": [");
-        for (var i = 0; i < facts.Quotes.Count; i++)
-        {
-            var q = facts.Quotes[i];
-            var comma = i < facts.Quotes.Count - 1 ? "," : "";
-            sb.AppendLine($"    {{\"text\": \"{EscapeJson(q.Text)}\", \"author\": \"{EscapeJson(q.Author)}\"}}{comma}");
-        }
-        sb.AppendLine("  ],");
-
         // Not found
         sb.AppendLine("  \"not_found\": [");
         for (var i = 0; i < facts.NotFound.Count; i++)
@@ -472,10 +425,8 @@ public class AnswerGeneratorService(
             var comma = i < facts.NotFound.Count - 1 ? "," : "";
             sb.AppendLine($"    \"{EscapeJson(facts.NotFound[i])}\"{comma}");
         }
-        sb.AppendLine("  ],");
+        sb.AppendLine("  ]");
 
-        // Relevance note
-        sb.AppendLine($"  \"relevance_note\": \"{EscapeJson(facts.RelevanceNote ?? "")}\"");
         sb.AppendLine("}");
 
         return sb.ToString();

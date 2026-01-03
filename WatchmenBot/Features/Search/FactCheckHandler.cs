@@ -82,7 +82,7 @@ public class FactCheckHandler(
                 Проанализируй и проверь факты.
                 """;
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var sw = Stopwatch.StartNew();
             var response = await llmRouter.CompleteWithFallbackAsync(
                 new LlmRequest
                 {
