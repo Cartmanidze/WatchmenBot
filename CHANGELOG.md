@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Late Chunking for embeddings (Jina AI)** — Better cross-chunk context preservation:
+  - Batch embeddings now use `late_chunking: true` parameter
+  - Each chunk embedding "knows" about surrounding chunks
+  - Improves retrieval for context-dependent phrases ("он", "это", "там")
+  - Applied to both message embeddings and context window embeddings
+
+- **Hybrid BM25 + Vector search** — Better retrieval combining keyword and semantic search:
+  - 70% weight for vector similarity (dense retrieval)
+  - 30% weight for BM25/ts_rank_cd (sparse retrieval)
+  - Added FTS index for `context_embeddings` table
+  - Catches exact matches that embeddings might miss (names, terms, commands)
+  - Applied to both `EmbeddingService` and `ContextEmbeddingService`
+
+- **Topic-aware dialog segmentation** — Smarter conversation boundaries for context embeddings:
+  - Primary boundary: 30-minute time gaps (unchanged)
+  - New: Topic shift markers ("кстати", "а вообще", "btw", "вопрос")
+  - New: Participant pattern shifts (monologue → group discussion)
+  - Windows now contain more coherent conversations
+  - Requires context reindex for improvements to take effect
+
+- **Increased batch sizes for indexing**:
+  - Message embeddings: 100 → 500 per batch
+  - Context embeddings: 100 → 500 per batch
+  - Delay between batches: 2s → 1s
+  - Faster reindexing (~3-5x speedup)
+
 - **Switched embeddings to Jina AI** — Better multilingual support with task-specific adapters:
   - Provider: `jina` (from HuggingFace/OpenRouter)
   - Model: `jina-embeddings-v3` — MTEB score 65.52 (beats OpenAI & Cohere)
