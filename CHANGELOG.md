@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Two-stage Answer Verification for /ask** — anti-hallucination improvement using fact extraction:
+
+  **Stage 1: Fact Extraction (T=0.1)**
+  - Extracts verified facts from context with source attribution
+  - Extracts direct quotes with author
+  - Identifies what information was asked but NOT found in context
+  - Low temperature for factual precision
+  - Returns structured JSON for Stage 2
+
+  **Stage 2: Grounded Answer Generation (T=0.5)**
+  - Generates answer using ONLY extracted facts
+  - Cannot hallucinate facts not present in Stage 1 output
+  - Preserves humor and personality
+  - Explicitly mentions when information was not found
+
+  **New Files:**
+  - `Features/Search/Models/AnswerFacts.cs` — models for extracted facts and quotes
+
+  **Benefits:**
+  - Significantly reduces hallucinations
+  - Transparent fact sourcing (visible in debug reports)
+  - Honest "don't know" responses when info is missing
+  - Similar pattern to Summary's two-stage generation
+
 ## [2026-01-02]
 
 ### Fixed
