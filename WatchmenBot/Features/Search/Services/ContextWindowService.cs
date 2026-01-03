@@ -114,12 +114,12 @@ public class ContextWindowService(
                 )
                 SELECT
                     t.id as CenterMessageId,
-                    m.id as MessageId,
-                    m.chat_id as ChatId,
-                    m.from_user_id as FromUserId,
-                    COALESCE(m.display_name, m.username, m.from_user_id::text) as Author,
-                    m.text as Text,
-                    m.date_utc as DateUtc
+                    w.id as MessageId,
+                    w.chat_id as ChatId,
+                    w.from_user_id as FromUserId,
+                    COALESCE(w.display_name, w.username, w.from_user_id::text) as Author,
+                    w.text as Text,
+                    w.date_utc as DateUtc
                 FROM target_messages t
                 CROSS JOIN LATERAL (
                     -- Get messages before (including target)
@@ -130,16 +130,16 @@ public class ContextWindowService(
                       AND text IS NOT NULL AND text != ''
                     ORDER BY date_utc DESC
                     LIMIT @BeforeLimit
-                ) AS before
+                ) AS w
                 UNION ALL
                 SELECT
                     t.id as CenterMessageId,
-                    m.id as MessageId,
-                    m.chat_id as ChatId,
-                    m.from_user_id as FromUserId,
-                    COALESCE(m.display_name, m.username, m.from_user_id::text) as Author,
-                    m.text as Text,
-                    m.date_utc as DateUtc
+                    w.id as MessageId,
+                    w.chat_id as ChatId,
+                    w.from_user_id as FromUserId,
+                    COALESCE(w.display_name, w.username, w.from_user_id::text) as Author,
+                    w.text as Text,
+                    w.date_utc as DateUtc
                 FROM target_messages t
                 CROSS JOIN LATERAL (
                     -- Get messages after (excluding target)
@@ -150,7 +150,7 @@ public class ContextWindowService(
                       AND text IS NOT NULL AND text != ''
                     ORDER BY date_utc ASC
                     LIMIT @AfterLimit
-                ) AS after
+                ) AS w
                 ORDER BY CenterMessageId, DateUtc
                 """,
                 new

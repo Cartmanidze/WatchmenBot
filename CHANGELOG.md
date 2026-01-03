@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **SQL bug in ContextWindowService** — `GetMergedContextWindowsAsync` used incorrect table alias `m` instead of `w`, causing "missing FROM-clause entry for table 'm'" errors
+
 ### Added
 
 - **Two-stage Answer Verification for /ask** — anti-hallucination improvement using fact extraction:
