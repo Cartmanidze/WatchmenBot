@@ -290,8 +290,8 @@ public class EmbeddingClient
     }
 
     // Jina late_chunking limit: all texts are concatenated, max 8192 tokens total
-    // Using ~3 chars per token (conservative for multilingual) = ~24000 chars
-    private const int LateChunkingMaxChars = 24000;
+    // For Russian/multilingual: ~2 chars per token (conservative) = ~15000 chars
+    private const int LateChunkingMaxChars = 15000;
 
     private async Task<List<float[]>> GetEmbeddingsJinaAsync(
         List<string> textList,

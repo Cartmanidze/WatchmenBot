@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Jina late_chunking token limit error** — Fixed "Input text exceeds maximum length of 8194 tokens":
   - When `late_chunking: true`, Jina concatenates all texts internally with 8192 token limit
-  - Added automatic sub-batch splitting when total chars exceed ~24K (conservative estimate)
+  - Added automatic sub-batch splitting when total chars exceed 15K (~2 chars/token for Russian)
   - Single texts exceeding limit are now truncated with warning
   - Fixes indexing failures for large message batches and context windows
 
