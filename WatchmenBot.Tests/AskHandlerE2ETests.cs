@@ -216,8 +216,11 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
         }
 
         // Memory services
+        var genderDetection = new GenderDetectionService(
+            NullLogger<GenderDetectionService>.Instance);
         var profileManagement = new ProfileManagementService(
             connectionFactory,
+            genderDetection,
             NullLogger<ProfileManagementService>.Instance);
 
         var conversationMemory = new ConversationMemoryService(

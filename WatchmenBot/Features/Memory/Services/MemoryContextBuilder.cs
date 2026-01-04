@@ -88,6 +88,13 @@ public class MemoryContextBuilder(
         var name = displayName ?? profile?.DisplayName ?? $"User_{userId}";
         sb.AppendLine($"Пользователь: {name}");
 
+        // Add gender for proper pronoun usage
+        if (profile is { Gender: not Gender.Unknown, GenderConfidence: >= 0.5 })
+        {
+            var genderStr = profile.Gender == Gender.Male ? "мужской" : "женский";
+            sb.AppendLine($"Пол: {genderStr}");
+        }
+
         if (profile != null)
         {
             if (profile.MessageCount > 0)

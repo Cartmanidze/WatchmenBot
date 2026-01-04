@@ -1,5 +1,19 @@
 namespace WatchmenBot.Features.Memory.Models;
 
+#region Enums
+
+/// <summary>
+/// User gender for personalized responses
+/// </summary>
+public enum Gender
+{
+    Unknown,
+    Male,
+    Female
+}
+
+#endregion
+
 #region Public Models
 
 public class UserProfile
@@ -14,6 +28,8 @@ public class UserProfile
     public List<string> NotableQuotes { get; set; } = [];
     public int InteractionCount { get; set; }
     public DateTimeOffset? LastInteraction { get; set; }
+    public Gender Gender { get; set; } = Gender.Unknown;
+    public double GenderConfidence { get; set; }
 }
 
 public class EnhancedProfile
@@ -29,6 +45,8 @@ public class EnhancedProfile
     public List<string> Interests { get; set; } = [];
     public List<string> Traits { get; set; } = [];
     public List<string> RoastMaterial { get; set; } = [];
+    public Gender Gender { get; set; } = Gender.Unknown;
+    public double GenderConfidence { get; set; }
 }
 
 public class UserFact
@@ -81,6 +99,8 @@ internal class UserProfileRecord
     public string? notable_quotes { get; set; }
     public int interaction_count { get; set; }
     public DateTime? last_interaction { get; set; }
+    public string? gender { get; set; }
+    public double gender_confidence { get; set; }
 }
 
 internal class ConversationMemoryRecord
@@ -108,6 +128,8 @@ internal class EnhancedProfileRecord
     public string? interests { get; set; }
     public string? traits { get; set; }
     public string? roast_material { get; set; }
+    public string? gender { get; set; }
+    public double gender_confidence { get; set; }
 }
 
 internal class UserFactRecord

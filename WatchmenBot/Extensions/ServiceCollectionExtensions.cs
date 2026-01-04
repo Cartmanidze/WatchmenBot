@@ -161,6 +161,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RerankService>();
 
         // LLM Memory Services (refactored architecture)
+        services.AddSingleton<GenderDetectionService>(); // Stateless, can be singleton
         services.AddScoped<ProfileManagementService>();
         services.AddScoped<ConversationMemoryService>();
         services.AddScoped<LlmExtractionService>();

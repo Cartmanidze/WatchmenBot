@@ -10,6 +10,7 @@ namespace WatchmenBot.Features.Memory.Services;
 /// </summary>
 public class ProfileManagementService(
     IDbConnectionFactory connectionFactory,
+    GenderDetectionService genderDetection,
     ILogger<ProfileManagementService> logger)
 {
     // Limit memory items to avoid token overflow
@@ -30,7 +31,8 @@ public class ProfileManagementService(
                 """
                 SELECT user_id, chat_id, display_name, username,
                        facts, traits, interests, notable_quotes,
-                       interaction_count, last_interaction
+                       interaction_count, last_interaction,
+                       gender, gender_confidence
                 FROM user_profiles
                 WHERE chat_id = @ChatId AND user_id = @UserId
                 """,
@@ -52,7 +54,9 @@ public class ProfileManagementService(
                 InteractionCount = profile.interaction_count,
                 LastInteraction = profile.last_interaction.HasValue
                     ? new DateTimeOffset(profile.last_interaction.Value, TimeSpan.Zero)
-                    : null
+                    : null,
+                Gender = ParseGender(profile.gender),
+                GenderConfidence = profile.gender_confidence
             };
         }
         catch (Exception ex)
@@ -75,7 +79,8 @@ public class ProfileManagementService(
                 """
                 SELECT user_id, chat_id, display_name, username,
                        message_count, summary, communication_style, role_in_chat,
-                       interests, traits, roast_material
+                       interests, traits, roast_material,
+                       gender, gender_confidence
                 FROM user_profiles
                 WHERE chat_id = @ChatId AND user_id = @UserId
                 """,
@@ -96,7 +101,9 @@ public class ProfileManagementService(
                 RoleInChat = profile.role_in_chat,
                 Interests = MemoryHelpers.ParseJsonArray(profile.interests),
                 Traits = MemoryHelpers.ParseJsonArray(profile.traits),
-                RoastMaterial = MemoryHelpers.ParseJsonArray(profile.roast_material)
+                RoastMaterial = MemoryHelpers.ParseJsonArray(profile.roast_material),
+                Gender = ParseGender(profile.gender),
+                GenderConfidence = profile.gender_confidence
             };
         }
         catch (Exception ex)
@@ -204,22 +211,115 @@ public class ProfileManagementService(
         try
         {
             using var connection = await connectionFactory.CreateConnectionAsync();
+
+            // Try to detect gender from name on first interaction
+            var genderResult = genderDetection.DetectFromName(displayName);
+            var genderStr = genderResult.Gender != Gender.Unknown ? genderResult.Gender.ToString() : null;
+
             await connection.ExecuteAsync(
                 """
-                INSERT INTO user_profiles (user_id, chat_id, display_name, username, interaction_count, last_interaction)
-                VALUES (@UserId, @ChatId, @DisplayName, @Username, 1, NOW())
+                INSERT INTO user_profiles (user_id, chat_id, display_name, username, interaction_count, last_interaction, gender, gender_confidence)
+                VALUES (@UserId, @ChatId, @DisplayName, @Username, 1, NOW(), @Gender, @GenderConfidence)
                 ON CONFLICT (chat_id, user_id) DO UPDATE SET
                     display_name = COALESCE(@DisplayName, user_profiles.display_name),
                     username = COALESCE(@Username, user_profiles.username),
                     interaction_count = user_profiles.interaction_count + 1,
                     last_interaction = NOW(),
-                    updated_at = NOW()
+                    updated_at = NOW(),
+                    -- Only update gender if new detection is more confident
+                    gender = CASE
+                        WHEN @GenderConfidence > COALESCE(user_profiles.gender_confidence, 0)
+                        THEN @Gender
+                        ELSE user_profiles.gender
+                    END,
+                    gender_confidence = CASE
+                        WHEN @GenderConfidence > COALESCE(user_profiles.gender_confidence, 0)
+                        THEN @GenderConfidence
+                        ELSE user_profiles.gender_confidence
+                    END
                 """,
-                new { UserId = userId, ChatId = chatId, DisplayName = displayName, Username = username });
+                new
+                {
+                    UserId = userId,
+                    ChatId = chatId,
+                    DisplayName = displayName,
+                    Username = username,
+                    Gender = genderStr,
+                    GenderConfidence = genderResult.Confidence
+                });
         }
         catch (Exception ex)
         {
             logger.LogDebug(ex, "[Memory] Failed to increment interaction count");
         }
     }
+
+    /// <summary>
+    /// Update gender for a user based on their messages
+    /// Call this periodically to refine gender detection
+    /// </summary>
+    public async Task UpdateGenderFromMessagesAsync(
+        long chatId, long userId, IEnumerable<string> messages, CancellationToken ct = default)
+    {
+        try
+        {
+            // Get existing profile to check current confidence
+            var existing = await GetProfileAsync(chatId, userId, ct);
+
+            // Detect gender from messages
+            var genderResult = genderDetection.DetectHybrid(existing?.DisplayName, messages);
+
+            // Only update if new detection is more confident
+            if (genderResult.Gender == Gender.Unknown ||
+                (existing != null && genderResult.Confidence <= existing.GenderConfidence))
+            {
+                return;
+            }
+
+            using var connection = await connectionFactory.CreateConnectionAsync();
+            await connection.ExecuteAsync(
+                """
+                UPDATE user_profiles
+                SET gender = @Gender,
+                    gender_confidence = @Confidence,
+                    updated_at = NOW()
+                WHERE chat_id = @ChatId AND user_id = @UserId
+                  AND (@Confidence > COALESCE(gender_confidence, 0))
+                """,
+                new
+                {
+                    ChatId = chatId,
+                    UserId = userId,
+                    Gender = genderResult.Gender.ToString(),
+                    Confidence = genderResult.Confidence
+                });
+
+            logger.LogInformation("[Memory] Updated gender for user {UserId}: {Gender} ({Conf:P0})",
+                userId, genderResult.Gender, genderResult.Confidence);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "[Memory] Failed to update gender for user {UserId}", userId);
+        }
+    }
+
+    #region Helpers
+
+    /// <summary>
+    /// Parse gender string from database to enum
+    /// </summary>
+    private static Gender ParseGender(string? genderStr)
+    {
+        if (string.IsNullOrEmpty(genderStr))
+            return Gender.Unknown;
+
+        return genderStr.ToLowerInvariant() switch
+        {
+            "male" => Gender.Male,
+            "female" => Gender.Female,
+            _ => Gender.Unknown
+        };
+    }
+
+    #endregion
 }

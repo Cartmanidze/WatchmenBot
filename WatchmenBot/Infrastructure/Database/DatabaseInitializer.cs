@@ -215,6 +215,8 @@ public class DatabaseInitializer(
             ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS roast_material JSONB DEFAULT '[]';
             ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS profile_version INT DEFAULT 1;
             ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS last_profile_update TIMESTAMPTZ;
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS gender VARCHAR(10);
+            ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS gender_confidence FLOAT DEFAULT 0;
             """;
 
         await connection.ExecuteAsync(addColumnsSql);
