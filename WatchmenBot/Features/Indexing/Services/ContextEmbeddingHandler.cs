@@ -25,17 +25,16 @@ public class ContextEmbeddingHandler(
 
     public async Task<IndexingStats> GetStatsAsync(CancellationToken ct = default)
     {
-        // For context embeddings, we don't have a simple "pending count"
-        // Instead, we return the number of chats that need processing
-        var chats = await messageStore.GetDistinctChatIdsAsync();
-        var totalChats = chats.Count;
+        // Get real stats from the database
+        var stats = await contextService.GetIndexingStatsAsync(ct);
 
-        // Approximate: count chats that have context embeddings
-        // This is a rough estimate, not exact "indexed" count
+        // Calculate pending: estimated total - already indexed
+        var pending = Math.Max(0, stats.EstimatedTotal - stats.Indexed);
+
         return new IndexingStats(
-            Total: totalChats,
-            Indexed: 0,  // We don't track this separately for context
-            Pending: totalChats);  // Assume all chats need periodic updates
+            Total: stats.EstimatedTotal,
+            Indexed: stats.Indexed,
+            Pending: pending);
     }
 
     public async Task<IndexingResult> ProcessBatchAsync(int batchSize, CancellationToken ct = default)

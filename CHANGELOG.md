@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`/admin indexing` showing incorrect context embeddings stats** — Fixed hardcoded `Indexed: 0`:
+  - `ContextEmbeddingHandler.GetStatsAsync()` now queries real stats from database
+  - Shows actual indexed count instead of hardcoded zero
+  - Estimates total expected windows based on message count (1 window per ~4 messages)
+  - Correctly calculates pending count
+
 - **Jina late_chunking token limit error** — Fixed "Input text exceeds maximum length of 8194 tokens":
   - When `late_chunking: true`, Jina concatenates all texts internally with 8192 token limit
   - Added automatic sub-batch splitting when total chars exceed 15K (~2 chars/token for Russian)

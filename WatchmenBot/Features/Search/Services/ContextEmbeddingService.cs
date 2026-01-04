@@ -350,6 +350,32 @@ public class ContextEmbeddingService(
     }
 
     /// <summary>
+    /// Get indexing statistics for context embeddings
+    /// </summary>
+    public async Task<ContextEmbeddingStats> GetIndexingStatsAsync(CancellationToken ct = default)
+    {
+        using var connection = await connectionFactory.CreateConnectionAsync();
+
+        // Count actual context embeddings
+        var indexed = await connection.ExecuteScalarAsync<long>(
+            "SELECT COUNT(*) FROM context_embeddings");
+
+        // Estimate total expected windows: messages / 4 (average window step)
+        var totalMessages = await connection.ExecuteScalarAsync<long>(
+            "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND LENGTH(text) > 5");
+
+        // Rough estimate: 1 window per ~4 messages (WindowStep=3, some overlap)
+        var estimatedTotal = Math.Max(totalMessages / 4, indexed);
+
+        return new ContextEmbeddingStats
+        {
+            Indexed = indexed,
+            EstimatedTotal = estimatedTotal,
+            TotalMessages = totalMessages
+        };
+    }
+
+    /// <summary>
     /// Delete ALL context embeddings (for full reindexing)
     /// </summary>
     public async Task DeleteAllContextEmbeddingsAsync(CancellationToken ct = default)
