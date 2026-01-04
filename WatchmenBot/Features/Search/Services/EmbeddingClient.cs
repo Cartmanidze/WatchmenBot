@@ -289,7 +289,86 @@ public class EmbeddingClient
         return result;
     }
 
+    // Jina late_chunking limit: all texts are concatenated, max 8192 tokens total
+    // Using ~3 chars per token (conservative for multilingual) = ~24000 chars
+    private const int LateChunkingMaxChars = 24000;
+
     private async Task<List<float[]>> GetEmbeddingsJinaAsync(
+        List<string> textList,
+        EmbeddingTask task,
+        bool lateChunking,
+        CancellationToken ct)
+    {
+        // When late_chunking is enabled, Jina concatenates all texts internally
+        // Total must fit within 8192 tokens. Split into sub-batches if needed.
+        if (lateChunking)
+        {
+            var totalChars = textList.Sum(t => t.Length);
+            if (totalChars > LateChunkingMaxChars)
+            {
+                _logger.LogDebug("[Jina] Late chunking: {TotalChars} chars exceeds limit, splitting into sub-batches",
+                    totalChars);
+                return await GetEmbeddingsJinaWithSubBatchesAsync(textList, task, ct);
+            }
+        }
+
+        return await GetEmbeddingsJinaSingleBatchAsync(textList, task, lateChunking, ct);
+    }
+
+    /// <summary>
+    /// Split texts into sub-batches for late_chunking to fit within token limit
+    /// </summary>
+    private async Task<List<float[]>> GetEmbeddingsJinaWithSubBatchesAsync(
+        List<string> textList,
+        EmbeddingTask task,
+        CancellationToken ct)
+    {
+        var allEmbeddings = new List<float[]>();
+        var currentBatch = new List<string>();
+        var currentBatchChars = 0;
+
+        for (var i = 0; i < textList.Count; i++)
+        {
+            var text = textList[i];
+            var textChars = text.Length;
+
+            // If single text exceeds limit, truncate it
+            if (textChars > LateChunkingMaxChars)
+            {
+                _logger.LogWarning("[Jina] Single text exceeds limit ({Chars} chars), truncating", textChars);
+                text = text[..LateChunkingMaxChars];
+                textChars = LateChunkingMaxChars;
+            }
+
+            // If adding this text would exceed limit, process current batch first
+            if (currentBatchChars + textChars > LateChunkingMaxChars && currentBatch.Count > 0)
+            {
+                var batchEmbeddings = await GetEmbeddingsJinaSingleBatchAsync(currentBatch, task, lateChunking: true, ct);
+                allEmbeddings.AddRange(batchEmbeddings);
+
+                currentBatch.Clear();
+                currentBatchChars = 0;
+            }
+
+            currentBatch.Add(text);
+            currentBatchChars += textChars;
+        }
+
+        // Process remaining batch
+        if (currentBatch.Count > 0)
+        {
+            var batchEmbeddings = await GetEmbeddingsJinaSingleBatchAsync(currentBatch, task, lateChunking: true, ct);
+            allEmbeddings.AddRange(batchEmbeddings);
+        }
+
+        _logger.LogDebug("[Jina] Late chunking: processed {Count} texts in sub-batches", textList.Count);
+        return allEmbeddings;
+    }
+
+    /// <summary>
+    /// Send a single batch to Jina API
+    /// </summary>
+    private async Task<List<float[]>> GetEmbeddingsJinaSingleBatchAsync(
         List<string> textList,
         EmbeddingTask task,
         bool lateChunking,
