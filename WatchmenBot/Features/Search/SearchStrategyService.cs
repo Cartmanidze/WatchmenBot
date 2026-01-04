@@ -20,7 +20,7 @@ public class SearchStrategyService(
     public async Task<SearchResponse> SearchWithIntentAsync(
         long chatId,
         ClassifiedQuery classified,
-        string askerUsername,
+        string? askerUsername,
         string askerName,
         CancellationToken ct)
     {

@@ -325,84 +325,38 @@ public class PersonalSearchService(
             }
 
             using var connection = await connectionFactory.CreateConnectionAsync();
-            var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
-            // Extract search terms for hybrid scoring
-            var searchTerms = TextSearchHelpers.ExtractSearchTerms(query);
-            var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+            // Parse query for hybrid search components
+            var (searchTerms, exactMatchWords, useHybrid) = VectorSearchBase.ParseQuery(query);
 
-            // Extract raw words for exact match boost (case-insensitive ILIKE)
-            var exactMatchWords = TextSearchHelpers.ExtractIlikeWords(query);
+            // Build SQL components using base class helpers
+            var exactMatchSql = VectorSearchBase.BuildExactMatchSql("me.chunk_text", exactMatchWords);
+            var similaritySql = VectorSearchBase.BuildSimilaritySql(
+                embeddingColumn: "me.embedding",
+                textColumn: "me.chunk_text",
+                dateColumn: "m.date_utc",
+                exactMatchSql: exactMatchSql,
+                useHybrid: useHybrid);
 
-            // Build exact match boost SQL
-            var exactMatchSql = exactMatchWords.Count > 0
-                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(me.chunk_text) LIKE @ExactWord{i}"))} THEN {SearchConstants.ExactMatchBoost} ELSE 0 END"
-                : "0";
+            var sql = $"""
+                SELECT
+                    me.chat_id as ChatId,
+                    me.message_id as MessageId,
+                    me.chunk_index as ChunkIndex,
+                    me.chunk_text as ChunkText,
+                    me.metadata as MetadataJson,
+                    me.embedding <=> @Embedding::vector as Distance,
+                    {similaritySql} as Similarity
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND me.message_id = ANY(@MessageIds)
+                ORDER BY Similarity DESC
+                LIMIT @Limit
+                """;
 
-            // Time decay formula: weight * exp(-age_days * ln(2) / half_life)
-            var timeDecaySql = $"{SearchConstants.TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - m.date_utc)) / 86400.0) * LN(2) / {SearchConstants.TimeDecayHalfLifeDays})";
-
-            var sql = useHybrid
-                ? $"""
-                    SELECT
-                        me.chat_id as ChatId,
-                        me.message_id as MessageId,
-                        me.chunk_index as ChunkIndex,
-                        me.chunk_text as ChunkText,
-                        me.metadata as MetadataJson,
-                        me.embedding <=> @Embedding::vector as Distance,
-                        {SearchConstants.DenseWeight} * (1 - (me.embedding <=> @Embedding::vector))
-                        + {SearchConstants.SparseWeight} * COALESCE(
-                            ts_rank_cd(
-                                to_tsvector('russian', me.chunk_text),
-                                websearch_to_tsquery('russian', @SearchTerms),
-                                32
-                            ),
-                            0
-                        )
-                        + {exactMatchSql}
-                        + {timeDecaySql}
-                        as Similarity
-                    FROM message_embeddings me
-                    JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
-                    WHERE me.chat_id = @ChatId
-                      AND me.message_id = ANY(@MessageIds)
-                    ORDER BY Similarity DESC
-                    LIMIT @Limit
-                    """
-                : $"""
-                    SELECT
-                        me.chat_id as ChatId,
-                        me.message_id as MessageId,
-                        me.chunk_index as ChunkIndex,
-                        me.chunk_text as ChunkText,
-                        me.metadata as MetadataJson,
-                        me.embedding <=> @Embedding::vector as Distance,
-                        (1 - (me.embedding <=> @Embedding::vector))
-                        + {exactMatchSql}
-                        + {timeDecaySql}
-                        as Similarity
-                    FROM message_embeddings me
-                    JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
-                    WHERE me.chat_id = @ChatId
-                      AND me.message_id = ANY(@MessageIds)
-                    ORDER BY Similarity DESC
-                    LIMIT @Limit
-                    """;
-
-            // Build parameters
-            var parameters = new DynamicParameters();
-            parameters.Add("ChatId", chatId);
-            parameters.Add("Embedding", embeddingString);
-            parameters.Add("SearchTerms", searchTerms);
+            var parameters = VectorSearchBase.BuildSearchParameters(chatId, queryEmbedding, searchTerms, exactMatchWords, limit);
             parameters.Add("MessageIds", messageIds.ToArray());
-            parameters.Add("Limit", limit);
-
-            // Add exact match word parameters
-            for (var i = 0; i < exactMatchWords.Count; i++)
-            {
-                parameters.Add($"ExactWord{i}", $"%{exactMatchWords[i].ToLowerInvariant()}%");
-            }
 
             var results = await connection.QueryAsync<SearchResult>(sql, parameters);
 

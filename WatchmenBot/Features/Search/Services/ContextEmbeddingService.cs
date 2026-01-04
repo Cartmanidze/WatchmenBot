@@ -144,84 +144,36 @@ public class ContextEmbeddingService(
                 return [];
             }
 
-            var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
+            // Parse query for hybrid search components
+            var (searchTerms, exactMatchWords, useHybrid) = VectorSearchBase.ParseQuery(query);
 
-            // Extract search terms for BM25 component
-            var searchTerms = ExtractSearchTerms(query);
-            var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+            // Build SQL components using base class helpers
+            var exactMatchSql = VectorSearchBase.BuildExactMatchSql("context_text", exactMatchWords);
+            var similaritySql = VectorSearchBase.BuildSimilaritySql(
+                embeddingColumn: "embedding",
+                textColumn: "context_text",
+                dateColumn: "created_at",
+                exactMatchSql: exactMatchSql,
+                useHybrid: useHybrid);
 
-            // Extract raw words for exact match boost
-            var exactMatchWords = TextSearchHelpers.ExtractIlikeWords(query);
+            var sql = $"""
+                SELECT
+                    id as Id,
+                    chat_id as ChatId,
+                    center_message_id as CenterMessageId,
+                    window_start_id as WindowStartId,
+                    window_end_id as WindowEndId,
+                    message_ids as MessageIds,
+                    context_text as ContextText,
+                    embedding <=> @Embedding::vector as Distance,
+                    {similaritySql} as Similarity
+                FROM context_embeddings
+                WHERE chat_id = @ChatId
+                ORDER BY Similarity DESC
+                LIMIT @Limit
+                """;
 
-            // Build exact match boost SQL
-            var exactMatchSql = exactMatchWords.Count > 0
-                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(context_text) LIKE @ExactWord{i}"))} THEN {SearchConstants.ExactMatchBoost} ELSE 0 END"
-                : "0";
-
-            // Time decay formula using created_at
-            var timeDecaySql = $"{SearchConstants.TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0) * LN(2) / {SearchConstants.TimeDecayHalfLifeDays})";
-
-            // Hybrid search: combine vector + BM25 + exact match + time decay
-            var sql = useHybrid
-                ? $"""
-                    SELECT
-                        id as Id,
-                        chat_id as ChatId,
-                        center_message_id as CenterMessageId,
-                        window_start_id as WindowStartId,
-                        window_end_id as WindowEndId,
-                        message_ids as MessageIds,
-                        context_text as ContextText,
-                        embedding <=> @Embedding::vector as Distance,
-                        {SearchConstants.DenseWeight} * (1 - (embedding <=> @Embedding::vector))
-                        + {SearchConstants.SparseWeight} * COALESCE(
-                            ts_rank_cd(
-                                to_tsvector('russian', context_text),
-                                websearch_to_tsquery('russian', @SearchTerms),
-                                32
-                            ),
-                            0
-                        )
-                        + {exactMatchSql}
-                        + {timeDecaySql}
-                        as Similarity
-                    FROM context_embeddings
-                    WHERE chat_id = @ChatId
-                    ORDER BY Similarity DESC
-                    LIMIT @Limit
-                    """
-                : $"""
-                    SELECT
-                        id as Id,
-                        chat_id as ChatId,
-                        center_message_id as CenterMessageId,
-                        window_start_id as WindowStartId,
-                        window_end_id as WindowEndId,
-                        message_ids as MessageIds,
-                        context_text as ContextText,
-                        embedding <=> @Embedding::vector as Distance,
-                        (1 - (embedding <=> @Embedding::vector))
-                        + {exactMatchSql}
-                        + {timeDecaySql}
-                        as Similarity
-                    FROM context_embeddings
-                    WHERE chat_id = @ChatId
-                    ORDER BY Similarity DESC
-                    LIMIT @Limit
-                    """;
-
-            // Build parameters
-            var parameters = new DynamicParameters();
-            parameters.Add("ChatId", chatId);
-            parameters.Add("Embedding", embeddingString);
-            parameters.Add("SearchTerms", searchTerms);
-            parameters.Add("Limit", limit);
-
-            for (var i = 0; i < exactMatchWords.Count; i++)
-            {
-                parameters.Add($"ExactWord{i}", $"%{exactMatchWords[i].ToLowerInvariant()}%");
-            }
-
+            var parameters = VectorSearchBase.BuildSearchParameters(chatId, queryEmbedding, searchTerms, exactMatchWords, limit);
             var results = await connection.QueryAsync<ContextSearchResult>(sql, parameters);
 
             logger.LogDebug("[ContextEmb] Hybrid={Hybrid}, Terms='{Terms}', ExactWords=[{Words}]",
@@ -265,91 +217,41 @@ public class ContextEmbeddingService(
                 return [];
             }
 
-            var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
+            // Parse query for hybrid search components
+            var (searchTerms, exactMatchWords, useHybrid) = VectorSearchBase.ParseQuery(query);
 
-            // Extract search terms for BM25 component
-            var searchTerms = ExtractSearchTerms(query);
-            var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+            // Build SQL components using base class helpers
+            var exactMatchSql = VectorSearchBase.BuildExactMatchSql("ce.context_text", exactMatchWords);
+            var similaritySql = VectorSearchBase.BuildSimilaritySql(
+                embeddingColumn: "ce.embedding",
+                textColumn: "ce.context_text",
+                dateColumn: "ce.created_at",
+                exactMatchSql: exactMatchSql,
+                useHybrid: useHybrid);
 
-            // Extract raw words for exact match boost
-            var exactMatchWords = TextSearchHelpers.ExtractIlikeWords(query);
+            var sql = $"""
+                SELECT
+                    ce.id as Id,
+                    ce.chat_id as ChatId,
+                    ce.center_message_id as CenterMessageId,
+                    ce.window_start_id as WindowStartId,
+                    ce.window_end_id as WindowEndId,
+                    ce.message_ids as MessageIds,
+                    ce.context_text as ContextText,
+                    ce.embedding <=> @Embedding::vector as Distance,
+                    {similaritySql} as Similarity
+                FROM context_embeddings ce
+                JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
+                WHERE ce.chat_id = @ChatId
+                  AND m.date_utc >= @StartUtc
+                  AND m.date_utc < @EndUtc
+                ORDER BY Similarity DESC
+                LIMIT @Limit
+                """;
 
-            // Build exact match boost SQL
-            var exactMatchSql = exactMatchWords.Count > 0
-                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(ce.context_text) LIKE @ExactWord{i}"))} THEN {SearchConstants.ExactMatchBoost} ELSE 0 END"
-                : "0";
-
-            // Time decay formula using created_at
-            var timeDecaySql = $"{SearchConstants.TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - ce.created_at)) / 86400.0) * LN(2) / {SearchConstants.TimeDecayHalfLifeDays})";
-
-            // Hybrid search: combine vector + BM25 + exact match + time decay
-            var sql = useHybrid
-                ? $"""
-                    SELECT
-                        ce.id as Id,
-                        ce.chat_id as ChatId,
-                        ce.center_message_id as CenterMessageId,
-                        ce.window_start_id as WindowStartId,
-                        ce.window_end_id as WindowEndId,
-                        ce.message_ids as MessageIds,
-                        ce.context_text as ContextText,
-                        ce.embedding <=> @Embedding::vector as Distance,
-                        {SearchConstants.DenseWeight} * (1 - (ce.embedding <=> @Embedding::vector))
-                        + {SearchConstants.SparseWeight} * COALESCE(
-                            ts_rank_cd(
-                                to_tsvector('russian', ce.context_text),
-                                websearch_to_tsquery('russian', @SearchTerms),
-                                32
-                            ),
-                            0
-                        )
-                        + {exactMatchSql}
-                        + {timeDecaySql}
-                        as Similarity
-                    FROM context_embeddings ce
-                    JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
-                    WHERE ce.chat_id = @ChatId
-                      AND m.date_utc >= @StartUtc
-                      AND m.date_utc < @EndUtc
-                    ORDER BY Similarity DESC
-                    LIMIT @Limit
-                    """
-                : $"""
-                    SELECT
-                        ce.id as Id,
-                        ce.chat_id as ChatId,
-                        ce.center_message_id as CenterMessageId,
-                        ce.window_start_id as WindowStartId,
-                        ce.window_end_id as WindowEndId,
-                        ce.message_ids as MessageIds,
-                        ce.context_text as ContextText,
-                        ce.embedding <=> @Embedding::vector as Distance,
-                        (1 - (ce.embedding <=> @Embedding::vector))
-                        + {exactMatchSql}
-                        + {timeDecaySql}
-                        as Similarity
-                    FROM context_embeddings ce
-                    JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
-                    WHERE ce.chat_id = @ChatId
-                      AND m.date_utc >= @StartUtc
-                      AND m.date_utc < @EndUtc
-                    ORDER BY Similarity DESC
-                    LIMIT @Limit
-                    """;
-
-            // Build parameters
-            var parameters = new DynamicParameters();
-            parameters.Add("ChatId", chatId);
-            parameters.Add("Embedding", embeddingString);
-            parameters.Add("SearchTerms", searchTerms);
+            var parameters = VectorSearchBase.BuildSearchParameters(chatId, queryEmbedding, searchTerms, exactMatchWords, limit);
             parameters.Add("StartUtc", startUtc.UtcDateTime);
             parameters.Add("EndUtc", endUtc.UtcDateTime);
-            parameters.Add("Limit", limit);
-
-            for (var i = 0; i < exactMatchWords.Count; i++)
-            {
-                parameters.Add($"ExactWord{i}", $"%{exactMatchWords[i].ToLowerInvariant()}%");
-            }
 
             var results = await connection.QueryAsync<ContextSearchResult>(sql, parameters);
 
@@ -782,12 +684,6 @@ public class ContextEmbeddingService(
             return text;
         return text[..(maxLength - 3)] + "...";
     }
-
-    /// <summary>
-    /// Extract meaningful search terms from a query for BM25 component
-    /// </summary>
-    private static string ExtractSearchTerms(string query)
-        => TextSearchHelpers.ExtractSearchTerms(query);
 
     #endregion
 }

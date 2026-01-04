@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -54,7 +55,7 @@ public partial class BackgroundAskWorker(
 
     private async Task ProcessAskRequestAsync(AskQueueItem item, CancellationToken ct)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew();
 
         logger.LogInformation("[BackgroundAsk] Processing /{Command}: {Question} from @{User}",
             item.Command, item.Question.Length > 50 ? item.Question[..50] + "..." : item.Question,
@@ -118,8 +119,7 @@ public partial class BackgroundAskWorker(
                         resolution.OriginalNick, resolution.ResolvedName, resolution.Confidence);
 
                     // Expand the question for better search
-                    if (expandedQuestion == null)
-                        expandedQuestion = item.Question;
+                    expandedQuestion ??= item.Question;
                     expandedQuestion = expandedQuestion.Replace(
                         resolution.OriginalNick,
                         resolution.ResolvedName,

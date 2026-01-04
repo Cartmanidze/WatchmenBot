@@ -9,7 +9,7 @@ namespace WatchmenBot.Features.Search.Services;
 /// LLM-based intent classification for /ask command.
 /// Replaces simple pattern matching with rich understanding of user questions.
 /// </summary>
-public class IntentClassifier(
+public partial class IntentClassifier(
     LlmRouter llmRouter,
     ILogger<IntentClassifier> logger)
 {
@@ -69,7 +69,7 @@ public class IntentClassifier(
     {
         if (string.IsNullOrWhiteSpace(question))
         {
-            return CreateFallback(question, askerName, askerUsername);
+            return CreateFallback(question);
         }
 
         try
@@ -96,7 +96,7 @@ public class IntentClassifier(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "[IntentClassifier] LLM classification failed, using fallback");
-            return CreateFallback(question, askerName, askerUsername);
+            return CreateFallback(question);
         }
     }
 
@@ -275,7 +275,7 @@ public class IntentClassifier(
     /// Create fallback classification using simple pattern matching
     /// (reuses PersonalQuestionDetector logic)
     /// </summary>
-    private ClassifiedQuery CreateFallback(string question, string askerName, string? askerUsername)
+    private ClassifiedQuery CreateFallback(string question)
     {
         var q = question.ToLowerInvariant().Trim();
 
@@ -299,7 +299,7 @@ public class IntentClassifier(
         }
 
         // @username patterns
-        var usernameMatch = Regex.Match(question, @"@(\w+)");
+        var usernameMatch = MyRegex().Match(question);
         if (usernameMatch.Success)
         {
             var username = usernameMatch.Groups[1].Value;
@@ -357,4 +357,7 @@ public class IntentClassifier(
             Reasoning = "Fallback: no specific pattern detected"
         };
     }
+
+    [GeneratedRegex(@"@(\w+)")]
+    private static partial Regex MyRegex();
 }
