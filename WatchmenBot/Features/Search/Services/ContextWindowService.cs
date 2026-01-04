@@ -46,11 +46,15 @@ public class ContextWindowService(
                     w.from_user_id as FromUserId,
                     COALESCE(w.display_name, w.username, w.from_user_id::text) as Author,
                     w.text as Text,
-                    w.date_utc as DateUtc
+                    w.date_utc as DateUtc,
+                    COALESCE(w.is_forwarded, false) as IsForwarded,
+                    w.forward_origin_type as ForwardOriginType,
+                    w.forward_from_name as ForwardFromName
                 FROM target_messages t
                 CROSS JOIN LATERAL (
                     -- Get messages before (including target)
-                    SELECT id, chat_id, from_user_id, display_name, username, text, date_utc
+                    SELECT id, chat_id, from_user_id, display_name, username, text, date_utc,
+                           is_forwarded, forward_origin_type, forward_from_name
                     FROM messages
                     WHERE chat_id = @ChatId
                       AND date_utc <= t.date_utc
@@ -66,11 +70,15 @@ public class ContextWindowService(
                     w.from_user_id as FromUserId,
                     COALESCE(w.display_name, w.username, w.from_user_id::text) as Author,
                     w.text as Text,
-                    w.date_utc as DateUtc
+                    w.date_utc as DateUtc,
+                    COALESCE(w.is_forwarded, false) as IsForwarded,
+                    w.forward_origin_type as ForwardOriginType,
+                    w.forward_from_name as ForwardFromName
                 FROM target_messages t
                 CROSS JOIN LATERAL (
                     -- Get messages after (excluding target)
-                    SELECT id, chat_id, from_user_id, display_name, username, text, date_utc
+                    SELECT id, chat_id, from_user_id, display_name, username, text, date_utc,
+                           is_forwarded, forward_origin_type, forward_from_name
                     FROM messages
                     WHERE chat_id = @ChatId
                       AND date_utc > t.date_utc
@@ -101,7 +109,10 @@ public class ContextWindowService(
                         FromUserId = r.FromUserId,
                         Author = r.Author,
                         Text = r.Text,
-                        DateUtc = r.DateUtc
+                        DateUtc = r.DateUtc,
+                        IsForwarded = r.IsForwarded,
+                        ForwardOriginType = r.ForwardOriginType,
+                        ForwardFromName = r.ForwardFromName
                     })
                     .DistinctBy(m => m.MessageId) // Deduplicate (target message appears in both UNION parts)
                     .OrderBy(m => m.DateUtc)
@@ -137,6 +148,9 @@ public class ContextWindowService(
         public string Author { get; set; } = string.Empty;
         public string Text { get; set; } = string.Empty;
         public DateTime DateUtc { get; set; }
+        public bool IsForwarded { get; set; }
+        public string? ForwardOriginType { get; set; }
+        public string? ForwardFromName { get; set; }
     }
 
     /// <summary>

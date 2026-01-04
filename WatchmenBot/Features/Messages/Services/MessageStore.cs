@@ -10,8 +10,10 @@ public class MessageStore(IDbConnectionFactory connectionFactory, ILogger<Messag
     public async Task SaveAsync(MessageRecord record)
     {
         const string sql = """
-            INSERT INTO messages (id, chat_id, thread_id, from_user_id, username, display_name, text, date_utc, has_links, has_media, reply_to_message_id, message_type)
-            VALUES (@Id, @ChatId, @ThreadId, @FromUserId, @Username, @DisplayName, @Text, @DateUtc, @HasLinks, @HasMedia, @ReplyToMessageId, @MessageType)
+            INSERT INTO messages (id, chat_id, thread_id, from_user_id, username, display_name, text, date_utc, has_links, has_media, reply_to_message_id, message_type,
+                                  is_forwarded, forward_origin_type, forward_from_name, forward_from_id, forward_date)
+            VALUES (@Id, @ChatId, @ThreadId, @FromUserId, @Username, @DisplayName, @Text, @DateUtc, @HasLinks, @HasMedia, @ReplyToMessageId, @MessageType,
+                    @IsForwarded, @ForwardOriginType, @ForwardFromName, @ForwardFromId, @ForwardDate)
             ON CONFLICT (chat_id, id) DO UPDATE SET
                 username = EXCLUDED.username,
                 display_name = EXCLUDED.display_name,
@@ -19,7 +21,12 @@ public class MessageStore(IDbConnectionFactory connectionFactory, ILogger<Messag
                 has_links = EXCLUDED.has_links,
                 has_media = EXCLUDED.has_media,
                 reply_to_message_id = EXCLUDED.reply_to_message_id,
-                message_type = EXCLUDED.message_type;
+                message_type = EXCLUDED.message_type,
+                is_forwarded = EXCLUDED.is_forwarded,
+                forward_origin_type = EXCLUDED.forward_origin_type,
+                forward_from_name = EXCLUDED.forward_from_name,
+                forward_from_id = EXCLUDED.forward_from_id,
+                forward_date = EXCLUDED.forward_date;
             """;
 
         try
@@ -71,7 +78,12 @@ public class MessageStore(IDbConnectionFactory connectionFactory, ILogger<Messag
                 has_links as HasLinks,
                 has_media as HasMedia,
                 reply_to_message_id as ReplyToMessageId,
-                message_type as MessageType
+                message_type as MessageType,
+                is_forwarded as IsForwarded,
+                forward_origin_type as ForwardOriginType,
+                forward_from_name as ForwardFromName,
+                forward_from_id as ForwardFromId,
+                forward_date as ForwardDate
             FROM messages
             WHERE chat_id = @ChatId AND date_utc >= @StartUtc AND date_utc < @EndUtc
             ORDER BY date_utc;
@@ -108,7 +120,12 @@ public class MessageStore(IDbConnectionFactory connectionFactory, ILogger<Messag
                 has_links as HasLinks,
                 has_media as HasMedia,
                 reply_to_message_id as ReplyToMessageId,
-                message_type as MessageType
+                message_type as MessageType,
+                is_forwarded as IsForwarded,
+                forward_origin_type as ForwardOriginType,
+                forward_from_name as ForwardFromName,
+                forward_from_id as ForwardFromId,
+                forward_date as ForwardDate
             FROM messages
             WHERE chat_id = @ChatId
               AND text IS NOT NULL
@@ -163,7 +180,12 @@ public class MessageStore(IDbConnectionFactory connectionFactory, ILogger<Messag
                 has_links as HasLinks,
                 has_media as HasMedia,
                 reply_to_message_id as ReplyToMessageId,
-                message_type as MessageType
+                message_type as MessageType,
+                is_forwarded as IsForwarded,
+                forward_origin_type as ForwardOriginType,
+                forward_from_name as ForwardFromName,
+                forward_from_id as ForwardFromId,
+                forward_date as ForwardDate
             FROM messages
             WHERE chat_id = @ChatId
               AND date_utc >= @StartUtc
@@ -217,7 +239,12 @@ public class MessageStore(IDbConnectionFactory connectionFactory, ILogger<Messag
                 m.has_links as HasLinks,
                 m.has_media as HasMedia,
                 m.reply_to_message_id as ReplyToMessageId,
-                m.message_type as MessageType
+                m.message_type as MessageType,
+                m.is_forwarded as IsForwarded,
+                m.forward_origin_type as ForwardOriginType,
+                m.forward_from_name as ForwardFromName,
+                m.forward_from_id as ForwardFromId,
+                m.forward_date as ForwardDate
             FROM messages m
             LEFT JOIN message_embeddings e ON m.chat_id = e.chat_id AND m.id = e.message_id
             WHERE e.id IS NULL

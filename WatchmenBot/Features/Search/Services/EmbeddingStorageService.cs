@@ -41,7 +41,16 @@ public class EmbeddingStorageService(
                 0,
                 text,
                 embedding,
-                new { message.FromUserId, message.Username, message.DisplayName, message.DateUtc },
+                new
+                {
+                    message.FromUserId,
+                    message.Username,
+                    message.DisplayName,
+                    message.DateUtc,
+                    message.IsForwarded,
+                    message.ForwardFromName,
+                    message.ForwardOriginType
+                },
                 ct);
 
             logger.LogDebug("Stored embedding for message {MessageId} in chat {ChatId}", message.Id, message.ChatId);
@@ -96,6 +105,7 @@ public class EmbeddingStorageService(
 
                 var firstMsg = group.First();
                 var lastMsg = group.Last();
+                var hasForwarded = group.Any(m => m.IsForwarded);
                 var metadata = new
                 {
                     firstMsg.FromUserId,
@@ -104,7 +114,12 @@ public class EmbeddingStorageService(
                     firstMsg.DateUtc,
                     EndDateUtc = lastMsg.DateUtc,
                     MessageCount = group.Count,
-                    MessageIds = group.Select(m => m.Id).ToArray()
+                    MessageIds = group.Select(m => m.Id).ToArray(),
+                    HasForwarded = hasForwarded,
+                    // Include forward info for single forwarded messages
+                    firstMsg.IsForwarded,
+                    firstMsg.ForwardFromName,
+                    firstMsg.ForwardOriginType
                 };
                 var metadataJson = JsonSerializer.Serialize(metadata);
 
@@ -363,18 +378,23 @@ public class EmbeddingStorageService(
     private static string FormatGroupForEmbedding(List<MessageRecord> group)
     {
         var first = group.First();
-        var name = !string.IsNullOrWhiteSpace(first.DisplayName)
-            ? first.DisplayName
-            : !string.IsNullOrWhiteSpace(first.Username)
-                ? first.Username
-                : first.FromUserId.ToString();
+        var name = GetDisplayName(first);
 
+        // Single message - use standard format (handles forwarded)
         if (group.Count == 1)
         {
-            return $"{name}: {first.Text}";
+            return FormatMessageForEmbedding(first);
         }
 
-        // Multiple messages - combine with newlines
+        // Multiple messages - check if any are forwarded
+        var hasForwarded = group.Any(m => m.IsForwarded);
+        if (hasForwarded)
+        {
+            // Format each message individually to preserve forward attribution
+            return string.Join("\n", group.Select(FormatMessageForEmbedding));
+        }
+
+        // Multiple regular messages - combine with newlines
         var combinedText = string.Join("\n", group.Select(m => m.Text));
         return $"{name}: {combinedText}";
     }
@@ -384,14 +404,50 @@ public class EmbeddingStorageService(
     /// </summary>
     private static string FormatMessageForEmbedding(MessageRecord message)
     {
+        var name = GetDisplayName(message);
+
+        // Handle forwarded messages differently
+        if (message.IsForwarded)
+        {
+            return FormatForwardedMessage(name, message);
+        }
+
         // Format: "Name: message text" (без даты — она в metadata)
-        var name = !string.IsNullOrWhiteSpace(message.DisplayName)
+        return $"{name}: {message.Text}";
+    }
+
+    /// <summary>
+    /// Format forwarded message with source attribution
+    /// </summary>
+    private static string FormatForwardedMessage(string forwarderName, MessageRecord message)
+    {
+        var source = message.ForwardFromName;
+        var sourceType = message.ForwardOriginType;
+
+        // Format based on source type
+        var sourceLabel = sourceType switch
+        {
+            "channel" => $"канала «{source}»",
+            "chat" => $"чата «{source}»",
+            "user" => $"{source}",
+            "hidden_user" => source ?? "скрытого пользователя",
+            _ => source ?? "неизвестного источника"
+        };
+
+        // Format: "🔄 Вася переслал от [source]: [text]"
+        return $"🔄 {forwarderName} переслал от {sourceLabel}: {message.Text}";
+    }
+
+    /// <summary>
+    /// Get display name from message record
+    /// </summary>
+    private static string GetDisplayName(MessageRecord message)
+    {
+        return !string.IsNullOrWhiteSpace(message.DisplayName)
             ? message.DisplayName
             : !string.IsNullOrWhiteSpace(message.Username)
                 ? message.Username
                 : message.FromUserId.ToString();
-
-        return $"{name}: {message.Text}";
     }
 
     #endregion

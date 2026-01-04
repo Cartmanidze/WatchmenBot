@@ -79,6 +79,17 @@ public class DatabaseInitializer(
             """;
 
         await connection.ExecuteAsync(createTableSql);
+
+        // Add forward-related columns (migration for existing databases)
+        const string addForwardColumnsSql = """
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_forwarded BOOLEAN DEFAULT FALSE;
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS forward_origin_type VARCHAR(20);
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS forward_from_name VARCHAR(255);
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS forward_from_id BIGINT;
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS forward_date TIMESTAMPTZ;
+            """;
+
+        await connection.ExecuteAsync(addForwardColumnsSql);
     }
 
     private static async Task CreateChatsTableAsync(System.Data.IDbConnection connection)

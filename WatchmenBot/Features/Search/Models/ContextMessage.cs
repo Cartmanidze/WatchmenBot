@@ -11,4 +11,9 @@ public class ContextMessage
     public string Author { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
     public DateTime DateUtc { get; set; }
+
+    // Forward-related fields
+    public bool IsForwarded { get; set; }
+    public string? ForwardOriginType { get; set; }
+    public string? ForwardFromName { get; set; }
 }

@@ -66,7 +66,8 @@ public class SaveMessageHandler(
                 message.MessageId, message.Chat.Id);
 
             // Queue message for profile analysis (fire-and-forget)
-            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length >= 20)
+            // Skip forwarded messages - they don't represent the user's own thoughts
+            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length >= 20 && !record.IsForwarded)
             {
                 _ = profileQueueService.EnqueueMessageAsync(
                     record.ChatId, record.Id, record.FromUserId, record.DisplayName, record.Text);
@@ -106,7 +107,7 @@ public class SaveMessageHandler(
 
     private static MessageRecord CreateMessageRecord(Message message)
     {
-        return new MessageRecord
+        var record = new MessageRecord
         {
             Id = message.MessageId,
             ChatId = message.Chat.Id,
@@ -118,14 +119,61 @@ public class SaveMessageHandler(
             Text = message.Text ?? message.Caption,
             DateUtc = message.Date.ToUniversalTime(),
             HasLinks = MessageStore.DetectLinks(message.Text ?? message.Caption),
-            HasMedia = message.Type is MessageType.Photo or 
-                      MessageType.Video or 
-                      MessageType.Document or 
-                      MessageType.Audio or 
-                      MessageType.Voice or 
+            HasMedia = message.Type is MessageType.Photo or
+                      MessageType.Video or
+                      MessageType.Document or
+                      MessageType.Audio or
+                      MessageType.Voice or
                       MessageType.VideoNote,
             ReplyToMessageId = message.ReplyToMessage?.MessageId,
             MessageType = message.Type.ToString().ToLowerInvariant()
         };
+
+        // Extract forward information if present
+        ExtractForwardInfo(message, record);
+
+        return record;
+    }
+
+    /// <summary>
+    /// Extract forward origin information from Telegram message
+    /// </summary>
+    private static void ExtractForwardInfo(Message message, MessageRecord record)
+    {
+        if (message.ForwardOrigin == null)
+            return;
+
+        record.IsForwarded = true;
+        record.ForwardDate = message.ForwardOrigin.Date;
+
+        switch (message.ForwardOrigin)
+        {
+            case Telegram.Bot.Types.MessageOriginUser userOrigin:
+                record.ForwardOriginType = "user";
+                record.ForwardFromId = userOrigin.SenderUser.Id;
+                record.ForwardFromName = string.Join(' ', new[]
+                    {
+                        userOrigin.SenderUser.FirstName,
+                        userOrigin.SenderUser.LastName
+                    }.Where(x => !string.IsNullOrWhiteSpace(x)));
+                break;
+
+            case Telegram.Bot.Types.MessageOriginChannel channelOrigin:
+                record.ForwardOriginType = "channel";
+                record.ForwardFromId = channelOrigin.Chat.Id;
+                record.ForwardFromName = channelOrigin.Chat.Title ?? channelOrigin.AuthorSignature;
+                break;
+
+            case Telegram.Bot.Types.MessageOriginChat chatOrigin:
+                record.ForwardOriginType = "chat";
+                record.ForwardFromId = chatOrigin.SenderChat.Id;
+                record.ForwardFromName = chatOrigin.SenderChat.Title ?? chatOrigin.AuthorSignature;
+                break;
+
+            case Telegram.Bot.Types.MessageOriginHiddenUser hiddenOrigin:
+                record.ForwardOriginType = "hidden_user";
+                record.ForwardFromName = hiddenOrigin.SenderUserName;
+                break;
+        }
     }
 }
