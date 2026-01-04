@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Dapper;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Infrastructure.Database;
@@ -12,11 +11,10 @@ namespace WatchmenBot.Features.Search.Services;
 public class PersonalSearchService(
     IDbConnectionFactory connectionFactory,
     EmbeddingClient embeddingClient,
+    SearchConfidenceEvaluator confidenceEvaluator,
     ILogger<PersonalSearchService> logger)
 {
-    // Hybrid search weights
-    private const double DenseWeight = 0.7;  // 70% semantic
-    private const double SparseWeight = 0.3;  // 30% keyword
+    // Search scoring constants are defined in SearchConstants class
 
     /// <summary>
     /// Get messages from a specific user (for personal questions like "я гондон?" or "что за тип @Вася?")
@@ -198,46 +196,20 @@ public class PersonalSearchService(
                 return response;
             }
 
-            // Apply recency boost (same as main search)
-            var now = DateTimeOffset.UtcNow;
-            foreach (var r in results)
-            {
-                if (r.IsNewsDump)
-                    r.Similarity -= 0.05;
-
-                var timestamp = ParseTimestampFromMetadata(r.MetadataJson);
-                if (timestamp != DateTimeOffset.MinValue)
-                {
-                    var ageInDays = (now - timestamp).TotalDays;
-                    var recencyBoost = ageInDays switch
-                    {
-                        <= 7 => 0.10,
-                        <= 30 => 0.05,
-                        <= 90 => 0.02,
-                        _ => 0.0
-                    };
-                    r.Similarity += recencyBoost;
-                }
-            }
-
-            // Re-sort after adjustments (primary: similarity, secondary: date for tie-breaking)
-            results = results
-                .OrderByDescending(r => r.Similarity)
-                .ThenByDescending(r => ParseTimestampFromMetadata(r.MetadataJson))
-                .ToList();
+            // Apply adjustments: news dump penalty + recency boost, then re-sort
+            results = confidenceEvaluator.ApplyAdjustmentsAndSort(results);
             response.Results = results;
 
             // Calculate confidence metrics
             var best = results[0].Similarity;
-            var fifth = results.Count >= 5 ? results[4].Similarity : results.Last().Similarity;
-            var gap = best - fifth;
+            var gap = confidenceEvaluator.CalculateGap(results);
 
             response.BestScore = best;
             response.ScoreGap = gap;
             response.HasFullTextMatch = false; // Could add full-text within pool if needed
 
             // Determine confidence level (same thresholds as main search)
-            (response.Confidence, response.ConfidenceReason) = EvaluateConfidence(best, gap, false);
+            (response.Confidence, response.ConfidenceReason) = confidenceEvaluator.Evaluate(best, gap, false);
             response.ConfidenceReason = $"[Персональный пул: {poolMessageIds.Count}] " + response.ConfidenceReason;
 
             logger.LogInformation(
@@ -356,57 +328,87 @@ public class PersonalSearchService(
             var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
             // Extract search terms for hybrid scoring
-            var searchTerms = ExtractSearchTerms(query);
+            var searchTerms = TextSearchHelpers.ExtractSearchTerms(query);
             var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+
+            // Extract raw words for exact match boost (case-insensitive ILIKE)
+            var exactMatchWords = TextSearchHelpers.ExtractIlikeWords(query);
+
+            // Build exact match boost SQL
+            var exactMatchSql = exactMatchWords.Count > 0
+                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(me.chunk_text) LIKE @ExactWord{i}"))} THEN {SearchConstants.ExactMatchBoost} ELSE 0 END"
+                : "0";
+
+            // Time decay formula: weight * exp(-age_days * ln(2) / half_life)
+            var timeDecaySql = $"{SearchConstants.TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - m.date_utc)) / 86400.0) * LN(2) / {SearchConstants.TimeDecayHalfLifeDays})";
 
             var sql = useHybrid
                 ? $"""
                     SELECT
-                        chat_id as ChatId,
-                        message_id as MessageId,
-                        chunk_index as ChunkIndex,
-                        chunk_text as ChunkText,
-                        metadata as MetadataJson,
-                        embedding <=> @Embedding::vector as Distance,
-                        -- Hybrid score
-                        {DenseWeight} * (1 - (embedding <=> @Embedding::vector))
-                        + {SparseWeight} * COALESCE(
+                        me.chat_id as ChatId,
+                        me.message_id as MessageId,
+                        me.chunk_index as ChunkIndex,
+                        me.chunk_text as ChunkText,
+                        me.metadata as MetadataJson,
+                        me.embedding <=> @Embedding::vector as Distance,
+                        {SearchConstants.DenseWeight} * (1 - (me.embedding <=> @Embedding::vector))
+                        + {SearchConstants.SparseWeight} * COALESCE(
                             ts_rank_cd(
-                                to_tsvector('russian', chunk_text),
+                                to_tsvector('russian', me.chunk_text),
                                 websearch_to_tsquery('russian', @SearchTerms),
                                 32
                             ),
                             0
-                        ) as Similarity
-                    FROM message_embeddings
-                    WHERE chat_id = @ChatId
-                      AND message_id = ANY(@MessageIds)
+                        )
+                        + {exactMatchSql}
+                        + {timeDecaySql}
+                        as Similarity
+                    FROM message_embeddings me
+                    JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                    WHERE me.chat_id = @ChatId
+                      AND me.message_id = ANY(@MessageIds)
                     ORDER BY Similarity DESC
                     LIMIT @Limit
                     """
-                : """
+                : $"""
                     SELECT
-                        chat_id as ChatId,
-                        message_id as MessageId,
-                        chunk_index as ChunkIndex,
-                        chunk_text as ChunkText,
-                        metadata as MetadataJson,
-                        embedding <=> @Embedding::vector as Distance,
-                        1 - (embedding <=> @Embedding::vector) as Similarity
-                    FROM message_embeddings
-                    WHERE chat_id = @ChatId
-                      AND message_id = ANY(@MessageIds)
-                    ORDER BY embedding <=> @Embedding::vector
+                        me.chat_id as ChatId,
+                        me.message_id as MessageId,
+                        me.chunk_index as ChunkIndex,
+                        me.chunk_text as ChunkText,
+                        me.metadata as MetadataJson,
+                        me.embedding <=> @Embedding::vector as Distance,
+                        (1 - (me.embedding <=> @Embedding::vector))
+                        + {exactMatchSql}
+                        + {timeDecaySql}
+                        as Similarity
+                    FROM message_embeddings me
+                    JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                    WHERE me.chat_id = @ChatId
+                      AND me.message_id = ANY(@MessageIds)
+                    ORDER BY Similarity DESC
                     LIMIT @Limit
                     """;
 
-            var results = await connection.QueryAsync<SearchResult>(
-                sql,
-                new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, MessageIds = messageIds.ToArray(), Limit = limit });
+            // Build parameters
+            var parameters = new DynamicParameters();
+            parameters.Add("ChatId", chatId);
+            parameters.Add("Embedding", embeddingString);
+            parameters.Add("SearchTerms", searchTerms);
+            parameters.Add("MessageIds", messageIds.ToArray());
+            parameters.Add("Limit", limit);
+
+            // Add exact match word parameters
+            for (var i = 0; i < exactMatchWords.Count; i++)
+            {
+                parameters.Add($"ExactWord{i}", $"%{exactMatchWords[i].ToLowerInvariant()}%");
+            }
+
+            var results = await connection.QueryAsync<SearchResult>(sql, parameters);
 
             return results.Select(r =>
             {
-                r.IsNewsDump = DetectNewsDump(r.ChunkText);
+                r.IsNewsDump = NewsDumpDetector.IsNewsDump(r.ChunkText);
                 return r;
             }).ToList();
         }
@@ -417,117 +419,4 @@ public class PersonalSearchService(
         }
     }
 
-    #region Helper Methods
-
-    /// <summary>
-    /// Extract meaningful search terms from a query
-    /// </summary>
-    private static string ExtractSearchTerms(string query)
-    {
-        // Remove common question words and punctuation
-        var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "кто", "что", "где", "когда", "как", "почему", "зачем", "какой", "какая", "какое", "какие",
-            "это", "эта", "этот", "эти", "тот", "та", "то", "те", "чем", "про", "об", "обо",
-            "ли", "же", "бы", "не", "ни", "да", "нет", "или", "и", "а", "но", "в", "на", "с", "к", "у", "о",
-            "за", "из", "по", "до", "от", "для", "при", "без", "над", "под", "между", "через",
-            "самый", "самая", "самое", "очень", "много", "мало", "все", "всё", "всех", "весь", "вся",
-            "был", "была", "было", "были", "есть", "будет", "можно", "нужно", "надо"
-        };
-
-        var words = query
-            .ToLowerInvariant()
-            .Split([' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\''], StringSplitOptions.RemoveEmptyEntries)
-            .Where(w => w.Length > 2 && !stopWords.Contains(w))
-            .Distinct()
-            .ToList();
-
-        return string.Join(" ", words);
-    }
-
-    /// <summary>
-    /// Evaluate search confidence based on scores
-    /// </summary>
-    private static (SearchConfidence confidence, string reason) EvaluateConfidence(double bestScore, double gap, bool hasFullText)
-    {
-        // If full-text found exact matches, that's a strong signal
-        if (hasFullText)
-        {
-            if (bestScore >= 0.5)
-                return (SearchConfidence.High, "Точное совпадение слов + высокий similarity");
-            if (bestScore >= 0.35)
-                return (SearchConfidence.Medium, "Точное совпадение слов");
-            return (SearchConfidence.Low, "Слова найдены, но семантически далеко");
-        }
-
-        // Vector-only search thresholds
-        // High: best >= 0.5 AND gap >= 0.05 (clear winner)
-        if (bestScore >= 0.5 && gap >= 0.05)
-            return (SearchConfidence.High, $"Сильное совпадение (sim={bestScore:F2}, gap={gap:F2})");
-
-        // Medium: best >= 0.4 OR (best >= 0.35 AND gap >= 0.03)
-        if (bestScore >= 0.4)
-            return (SearchConfidence.Medium, $"Среднее совпадение (sim={bestScore:F2})");
-
-        if (bestScore >= 0.35 && gap >= 0.03)
-            return (SearchConfidence.Medium, $"Есть выделяющийся результат (sim={bestScore:F2}, gap={gap:F2})");
-
-        // Low: best >= 0.25
-        if (bestScore >= 0.25)
-            return (SearchConfidence.Low, $"Слабое совпадение (sim={bestScore:F2})");
-
-        // None: best < 0.25
-        return (SearchConfidence.None, $"Нет релевантных совпадений (best sim={bestScore:F2})");
-    }
-
-    /// <summary>
-    /// Detect if text looks like a news dump (long, lots of links, emojis)
-    /// </summary>
-    private static bool DetectNewsDump(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return false;
-
-        var indicators = 0;
-
-        // Long text
-        if (text.Length > 800) indicators++;
-
-        // Multiple URLs
-        var urlCount = System.Text.RegularExpressions.Regex.Matches(text, @"https?://").Count;
-        if (urlCount >= 2) indicators++;
-
-        // News indicators
-        var newsPatterns = new[] { "— СМИ", "Подписаться", "⚡", "❗", "🔴", "BREAKING", "Срочно:", "Источник:" };
-        if (newsPatterns.Any(p => text.Contains(p, StringComparison.OrdinalIgnoreCase))) indicators++;
-
-        // Many emojis at the start
-        if (text.Length > 0 && char.IsHighSurrogate(text[0])) indicators++;
-
-        return indicators >= 2;
-    }
-
-    /// <summary>
-    /// Parse timestamp from JSON metadata
-    /// </summary>
-    private static DateTimeOffset ParseTimestampFromMetadata(string? metadataJson)
-    {
-        if (string.IsNullOrEmpty(metadataJson))
-            return DateTimeOffset.MinValue;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(metadataJson);
-            if (doc.RootElement.TryGetProperty("DateUtc", out var dateEl))
-                return dateEl.GetDateTimeOffset();
-        }
-        catch
-        {
-            // ignored
-        }
-
-        return DateTimeOffset.MinValue;
-    }
-
-    #endregion
 }

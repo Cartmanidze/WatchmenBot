@@ -84,7 +84,7 @@ public class RagFusionService(
 
                 // RRF scores are typically 0.01-0.05 range, so adjust thresholds
                 (response.Confidence, response.ConfidenceReason) = EvaluateFusionConfidence(
-                    bestScore, gap, filteredResults.Count, allQueries.Count);
+                    bestScore, filteredResults.Count, allQueries.Count);
             }
             else
             {
@@ -299,7 +299,7 @@ public class RagFusionService(
     /// RRF scores are typically in 0.01-0.05 range (much lower than similarity scores)
     /// </summary>
     private static (SearchConfidence confidence, string reason) EvaluateFusionConfidence(
-        double bestScore, double gap, int resultCount, int queryCount)
+        double bestScore, int resultCount, int queryCount)
     {
         // Maximum possible RRF score for a result in position 1 across all queries:
         // queryCount * 1/(60+1) ≈ queryCount * 0.0164

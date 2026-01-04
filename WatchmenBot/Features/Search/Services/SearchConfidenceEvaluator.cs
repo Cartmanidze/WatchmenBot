@@ -3,7 +3,8 @@ using WatchmenBot.Features.Search.Models;
 namespace WatchmenBot.Features.Search.Services;
 
 /// <summary>
-/// Evaluates search confidence based on similarity scores and text match signals
+/// Evaluates search confidence based on similarity scores and text match signals.
+/// Also applies result adjustments (recency boost, news dump penalty).
 /// </summary>
 public class SearchConfidenceEvaluator
 {
@@ -14,6 +15,9 @@ public class SearchConfidenceEvaluator
     private const double MinConfidenceThreshold = 0.25;
     private const double SignificantGapThreshold = 0.05;
     private const double SmallGapThreshold = 0.03;
+
+    // Result adjustment constants are defined in SearchConstants class
+    // Note: Recency boost is now applied in SQL via time decay formula (see EmbeddingService, PersonalSearchService)
 
     /// <summary>
     /// Evaluate search confidence based on scores
@@ -65,5 +69,38 @@ public class SearchConfidenceEvaluator
         var best = results[0].Similarity;
         var fifth = results.Count >= 5 ? results[4].Similarity : results.Last().Similarity;
         return best - fifth;
+    }
+
+    /// <summary>
+    /// Apply adjustments to search results: news dump penalty.
+    /// Recency boost is now applied in SQL via time decay formula.
+    /// Modifies the Similarity property of each result in-place.
+    /// </summary>
+    /// <param name="results">List of search results to adjust</param>
+    public void ApplyAdjustments(List<SearchResult> results)
+    {
+        foreach (var r in results)
+        {
+            // News dump penalty
+            if (r.IsNewsDump)
+            {
+                r.Similarity -= SearchConstants.NewsDumpPenalty;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Apply adjustments and re-sort results by similarity (descending), then by date.
+    /// </summary>
+    /// <param name="results">List of search results to adjust and sort</param>
+    /// <returns>Sorted list of adjusted results</returns>
+    public List<SearchResult> ApplyAdjustmentsAndSort(List<SearchResult> results)
+    {
+        ApplyAdjustments(results);
+
+        return results
+            .OrderByDescending(r => r.Similarity)
+            .ThenByDescending(r => MetadataParser.ParseTimestamp(r.MetadataJson))
+            .ToList();
     }
 }

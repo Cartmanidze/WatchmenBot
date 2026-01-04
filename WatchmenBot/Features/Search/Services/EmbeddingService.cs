@@ -19,16 +19,7 @@ public class EmbeddingService(
     ContextWindowService contextWindowService,
     SearchConfidenceEvaluator confidenceEvaluator)
 {
-    // Weight for hybrid search: 50% semantic, 50% keyword (better for slang/profanity)
-    private const double DenseWeight = 0.5;
-    private const double SparseWeight = 0.5;
-
-    // Time decay: messages lose relevance over time (half-life = 30 days)
-    private const double TimeDecayHalfLifeDays = 30.0;
-    private const double TimeDecayWeight = 0.1; // Max 10% boost for fresh messages
-
-    // Exact match boost: when query words appear exactly in text
-    private const double ExactMatchBoost = 0.15; // 15% boost for exact matches
+    // Search scoring constants are defined in SearchConstants class
 
     #region Delegated Operations
 
@@ -315,14 +306,8 @@ public class EmbeddingService(
                 return response;
             }
 
-            // Apply adjustments: news dump penalty + recency boost
-            ApplyResultAdjustments(results);
-
-            // Re-sort after adjustments
-            results = results
-                .OrderByDescending(r => r.Similarity)
-                .ThenByDescending(r => MetadataParser.ParseTimestamp(r.MetadataJson))
-                .ToList();
+            // Apply adjustments: news dump penalty + recency boost, then re-sort
+            results = confidenceEvaluator.ApplyAdjustmentsAndSort(results);
             response.Results = results;
 
             // Calculate confidence metrics
@@ -561,12 +546,12 @@ public class EmbeddingService(
 
         // Build exact match boost SQL: CASE WHEN text contains any query word THEN boost ELSE 0 END
         var exactMatchSql = exactMatchWords.Count > 0
-            ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(me.chunk_text) LIKE @ExactWord{i}"))} THEN {ExactMatchBoost} ELSE 0 END"
+            ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(me.chunk_text) LIKE @ExactWord{i}"))} THEN {SearchConstants.ExactMatchBoost} ELSE 0 END"
             : "0";
 
         // Time decay formula: weight * exp(-age_days * ln(2) / half_life)
         // This gives 100% boost for today, 50% at half_life days, 25% at 2*half_life, etc.
-        var timeDecaySql = $"{TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - m.date_utc)) / 86400.0) * LN(2) / {TimeDecayHalfLifeDays})";
+        var timeDecaySql = $"{SearchConstants.TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - m.date_utc)) / 86400.0) * LN(2) / {SearchConstants.TimeDecayHalfLifeDays})";
 
         var sql = useHybrid
             ? $"""
@@ -577,8 +562,8 @@ public class EmbeddingService(
                     me.chunk_text as ChunkText,
                     me.metadata as MetadataJson,
                     me.embedding <=> @Embedding::vector as Distance,
-                    {DenseWeight} * (1 - (me.embedding <=> @Embedding::vector))
-                    + {SparseWeight} * COALESCE(
+                    {SearchConstants.DenseWeight} * (1 - (me.embedding <=> @Embedding::vector))
+                    + {SearchConstants.SparseWeight} * COALESCE(
                         ts_rank_cd(
                             to_tsvector('russian', me.chunk_text),
                             websearch_to_tsquery('russian', @SearchTerms),
@@ -639,33 +624,6 @@ public class EmbeddingService(
         }).ToList();
     }
 
-    private void ApplyResultAdjustments(List<SearchResult> results)
-    {
-        var now = DateTimeOffset.UtcNow;
-        foreach (var r in results)
-        {
-            // News dump penalty
-            if (r.IsNewsDump)
-            {
-                r.Similarity -= 0.05;
-            }
-
-            // Recency boost
-            var timestamp = MetadataParser.ParseTimestamp(r.MetadataJson);
-            if (timestamp != DateTimeOffset.MinValue)
-            {
-                var ageInDays = (now - timestamp).TotalDays;
-                var recencyBoost = ageInDays switch
-                {
-                    <= 7 => 0.10,
-                    <= 30 => 0.05,
-                    <= 90 => 0.02,
-                    _ => 0.0
-                };
-                r.Similarity += recencyBoost;
-            }
-        }
-    }
 
     #endregion
 }

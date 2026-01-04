@@ -245,16 +245,17 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             connectionFactory,
             NullLogger<EmbeddingStorageService>.Instance);
 
-        var personalSearch = new PersonalSearchService(
-            connectionFactory,
-            embeddingClient,
-            NullLogger<PersonalSearchService>.Instance);
-
         var contextWindowService = new ContextWindowService(
             connectionFactory,
             NullLogger<ContextWindowService>.Instance);
 
         var confidenceEvaluator = new SearchConfidenceEvaluator();
+
+        var personalSearch = new PersonalSearchService(
+            connectionFactory,
+            embeddingClient,
+            confidenceEvaluator,
+            NullLogger<PersonalSearchService>.Instance);
 
         var embeddingService = new EmbeddingService(
             embeddingClient,

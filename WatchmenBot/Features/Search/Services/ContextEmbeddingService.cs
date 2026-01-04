@@ -111,16 +111,7 @@ public class ContextEmbeddingService(
         }
     }
 
-    // Hybrid search weights: 50% semantic, 50% keyword (better for slang/profanity)
-    private const double DenseWeight = 0.5;
-    private const double SparseWeight = 0.5;
-
-    // Time decay: windows lose relevance over time (half-life = 30 days)
-    private const double TimeDecayHalfLifeDays = 30.0;
-    private const double TimeDecayWeight = 0.1; // Max 10% boost for fresh windows
-
-    // Exact match boost: when query words appear exactly in context
-    private const double ExactMatchBoost = 0.15; // 15% boost for exact matches
+    // Search scoring constants are defined in SearchConstants class
 
     /// <summary>
     /// Search in context embeddings for a query using hybrid BM25 + vector search.
@@ -164,11 +155,11 @@ public class ContextEmbeddingService(
 
             // Build exact match boost SQL
             var exactMatchSql = exactMatchWords.Count > 0
-                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(context_text) LIKE @ExactWord{i}"))} THEN {ExactMatchBoost} ELSE 0 END"
+                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(context_text) LIKE @ExactWord{i}"))} THEN {SearchConstants.ExactMatchBoost} ELSE 0 END"
                 : "0";
 
             // Time decay formula using created_at
-            var timeDecaySql = $"{TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0) * LN(2) / {TimeDecayHalfLifeDays})";
+            var timeDecaySql = $"{SearchConstants.TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0) * LN(2) / {SearchConstants.TimeDecayHalfLifeDays})";
 
             // Hybrid search: combine vector + BM25 + exact match + time decay
             var sql = useHybrid
@@ -182,8 +173,8 @@ public class ContextEmbeddingService(
                         message_ids as MessageIds,
                         context_text as ContextText,
                         embedding <=> @Embedding::vector as Distance,
-                        {DenseWeight} * (1 - (embedding <=> @Embedding::vector))
-                        + {SparseWeight} * COALESCE(
+                        {SearchConstants.DenseWeight} * (1 - (embedding <=> @Embedding::vector))
+                        + {SearchConstants.SparseWeight} * COALESCE(
                             ts_rank_cd(
                                 to_tsvector('russian', context_text),
                                 websearch_to_tsquery('russian', @SearchTerms),
@@ -285,11 +276,11 @@ public class ContextEmbeddingService(
 
             // Build exact match boost SQL
             var exactMatchSql = exactMatchWords.Count > 0
-                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(ce.context_text) LIKE @ExactWord{i}"))} THEN {ExactMatchBoost} ELSE 0 END"
+                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(ce.context_text) LIKE @ExactWord{i}"))} THEN {SearchConstants.ExactMatchBoost} ELSE 0 END"
                 : "0";
 
             // Time decay formula using created_at
-            var timeDecaySql = $"{TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - ce.created_at)) / 86400.0) * LN(2) / {TimeDecayHalfLifeDays})";
+            var timeDecaySql = $"{SearchConstants.TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - ce.created_at)) / 86400.0) * LN(2) / {SearchConstants.TimeDecayHalfLifeDays})";
 
             // Hybrid search: combine vector + BM25 + exact match + time decay
             var sql = useHybrid
@@ -303,8 +294,8 @@ public class ContextEmbeddingService(
                         ce.message_ids as MessageIds,
                         ce.context_text as ContextText,
                         ce.embedding <=> @Embedding::vector as Distance,
-                        {DenseWeight} * (1 - (ce.embedding <=> @Embedding::vector))
-                        + {SparseWeight} * COALESCE(
+                        {SearchConstants.DenseWeight} * (1 - (ce.embedding <=> @Embedding::vector))
+                        + {SearchConstants.SparseWeight} * COALESCE(
                             ts_rank_cd(
                                 to_tsvector('russian', ce.context_text),
                                 websearch_to_tsquery('russian', @SearchTerms),
