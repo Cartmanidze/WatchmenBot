@@ -41,7 +41,7 @@ public class ContextEmbeddingService(
             logger.LogInformation("[ContextEmb] Building for chat {ChatId}, starting after message {LastId}",
                 chatId, lastProcessedId ?? 0);
 
-            var messages = await GetMessagesForWindowsAsync(connection, chatId, lastProcessedId, batchSize * WindowStep, ct);
+            var messages = await GetMessagesForWindowsAsync(connection, chatId, lastProcessedId, batchSize * WindowStep);
 
             if (messages.Count < MinWindowSize)
             {
@@ -111,9 +111,16 @@ public class ContextEmbeddingService(
         }
     }
 
-    // Hybrid search weights: 70% semantic, 30% keyword
-    private const double DenseWeight = 0.7;
-    private const double SparseWeight = 0.3;
+    // Hybrid search weights: 50% semantic, 50% keyword (better for slang/profanity)
+    private const double DenseWeight = 0.5;
+    private const double SparseWeight = 0.5;
+
+    // Time decay: windows lose relevance over time (half-life = 30 days)
+    private const double TimeDecayHalfLifeDays = 30.0;
+    private const double TimeDecayWeight = 0.1; // Max 10% boost for fresh windows
+
+    // Exact match boost: when query words appear exactly in context
+    private const double ExactMatchBoost = 0.15; // 15% boost for exact matches
 
     /// <summary>
     /// Search in context embeddings for a query using hybrid BM25 + vector search.
@@ -152,7 +159,18 @@ public class ContextEmbeddingService(
             var searchTerms = ExtractSearchTerms(query);
             var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
 
-            // Hybrid search: combine vector similarity (70%) + BM25 text ranking (30%)
+            // Extract raw words for exact match boost
+            var exactMatchWords = TextSearchHelpers.ExtractIlikeWords(query);
+
+            // Build exact match boost SQL
+            var exactMatchSql = exactMatchWords.Count > 0
+                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(context_text) LIKE @ExactWord{i}"))} THEN {ExactMatchBoost} ELSE 0 END"
+                : "0";
+
+            // Time decay formula using created_at
+            var timeDecaySql = $"{TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0) * LN(2) / {TimeDecayHalfLifeDays})";
+
+            // Hybrid search: combine vector + BM25 + exact match + time decay
             var sql = useHybrid
                 ? $"""
                     SELECT
@@ -172,13 +190,16 @@ public class ContextEmbeddingService(
                                 32
                             ),
                             0
-                        ) as Similarity
+                        )
+                        + {exactMatchSql}
+                        + {timeDecaySql}
+                        as Similarity
                     FROM context_embeddings
                     WHERE chat_id = @ChatId
                     ORDER BY Similarity DESC
                     LIMIT @Limit
                     """
-                : """
+                : $"""
                     SELECT
                         id as Id,
                         chat_id as ChatId,
@@ -188,18 +209,32 @@ public class ContextEmbeddingService(
                         message_ids as MessageIds,
                         context_text as ContextText,
                         embedding <=> @Embedding::vector as Distance,
-                        1 - (embedding <=> @Embedding::vector) as Similarity
+                        (1 - (embedding <=> @Embedding::vector))
+                        + {exactMatchSql}
+                        + {timeDecaySql}
+                        as Similarity
                     FROM context_embeddings
                     WHERE chat_id = @ChatId
-                    ORDER BY embedding <=> @Embedding::vector
+                    ORDER BY Similarity DESC
                     LIMIT @Limit
                     """;
 
-            var results = await connection.QueryAsync<ContextSearchResult>(
-                sql,
-                new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, Limit = limit });
+            // Build parameters
+            var parameters = new DynamicParameters();
+            parameters.Add("ChatId", chatId);
+            parameters.Add("Embedding", embeddingString);
+            parameters.Add("SearchTerms", searchTerms);
+            parameters.Add("Limit", limit);
 
-            logger.LogDebug("[ContextEmb] Hybrid={Hybrid}, Terms='{Terms}'", useHybrid, searchTerms ?? "none");
+            for (var i = 0; i < exactMatchWords.Count; i++)
+            {
+                parameters.Add($"ExactWord{i}", $"%{exactMatchWords[i].ToLowerInvariant()}%");
+            }
+
+            var results = await connection.QueryAsync<ContextSearchResult>(sql, parameters);
+
+            logger.LogDebug("[ContextEmb] Hybrid={Hybrid}, Terms='{Terms}', ExactWords=[{Words}]",
+                useHybrid, searchTerms ?? "none", string.Join(",", exactMatchWords));
 
             var resultList = results.ToList();
 
@@ -245,7 +280,18 @@ public class ContextEmbeddingService(
             var searchTerms = ExtractSearchTerms(query);
             var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
 
-            // Hybrid search: combine vector similarity (70%) + BM25 text ranking (30%)
+            // Extract raw words for exact match boost
+            var exactMatchWords = TextSearchHelpers.ExtractIlikeWords(query);
+
+            // Build exact match boost SQL
+            var exactMatchSql = exactMatchWords.Count > 0
+                ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(ce.context_text) LIKE @ExactWord{i}"))} THEN {ExactMatchBoost} ELSE 0 END"
+                : "0";
+
+            // Time decay formula using created_at
+            var timeDecaySql = $"{TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - ce.created_at)) / 86400.0) * LN(2) / {TimeDecayHalfLifeDays})";
+
+            // Hybrid search: combine vector + BM25 + exact match + time decay
             var sql = useHybrid
                 ? $"""
                     SELECT
@@ -265,7 +311,10 @@ public class ContextEmbeddingService(
                                 32
                             ),
                             0
-                        ) as Similarity
+                        )
+                        + {exactMatchSql}
+                        + {timeDecaySql}
+                        as Similarity
                     FROM context_embeddings ce
                     JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
                     WHERE ce.chat_id = @ChatId
@@ -274,7 +323,7 @@ public class ContextEmbeddingService(
                     ORDER BY Similarity DESC
                     LIMIT @Limit
                     """
-                : """
+                : $"""
                     SELECT
                         ce.id as Id,
                         ce.chat_id as ChatId,
@@ -284,19 +333,34 @@ public class ContextEmbeddingService(
                         ce.message_ids as MessageIds,
                         ce.context_text as ContextText,
                         ce.embedding <=> @Embedding::vector as Distance,
-                        1 - (ce.embedding <=> @Embedding::vector) as Similarity
+                        (1 - (ce.embedding <=> @Embedding::vector))
+                        + {exactMatchSql}
+                        + {timeDecaySql}
+                        as Similarity
                     FROM context_embeddings ce
                     JOIN messages m ON ce.chat_id = m.chat_id AND ce.center_message_id = m.id
                     WHERE ce.chat_id = @ChatId
                       AND m.date_utc >= @StartUtc
                       AND m.date_utc < @EndUtc
-                    ORDER BY ce.embedding <=> @Embedding::vector
+                    ORDER BY Similarity DESC
                     LIMIT @Limit
                     """;
 
-            var results = await connection.QueryAsync<ContextSearchResult>(
-                sql,
-                new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, StartUtc = startUtc.UtcDateTime, EndUtc = endUtc.UtcDateTime, Limit = limit });
+            // Build parameters
+            var parameters = new DynamicParameters();
+            parameters.Add("ChatId", chatId);
+            parameters.Add("Embedding", embeddingString);
+            parameters.Add("SearchTerms", searchTerms);
+            parameters.Add("StartUtc", startUtc.UtcDateTime);
+            parameters.Add("EndUtc", endUtc.UtcDateTime);
+            parameters.Add("Limit", limit);
+
+            for (var i = 0; i < exactMatchWords.Count; i++)
+            {
+                parameters.Add($"ExactWord{i}", $"%{exactMatchWords[i].ToLowerInvariant()}%");
+            }
+
+            var results = await connection.QueryAsync<ContextSearchResult>(sql, parameters);
 
             var resultList = results.ToList();
 
@@ -444,8 +508,7 @@ public class ContextEmbeddingService(
         System.Data.IDbConnection connection,
         long chatId,
         long? afterMessageId,
-        int limit,
-        CancellationToken ct)
+        int limit)
     {
         var sql = afterMessageId.HasValue
             ? """

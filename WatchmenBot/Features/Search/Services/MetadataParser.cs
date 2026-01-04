@@ -37,48 +37,4 @@ public static class MetadataParser
         var timestamp = ParseTimestamp(metadataJson);
         return timestamp == DateTimeOffset.MinValue ? null : timestamp;
     }
-
-    /// <summary>
-    /// Extract username from metadata JSON
-    /// </summary>
-    public static string? ParseUsername(string? metadataJson)
-    {
-        if (string.IsNullOrEmpty(metadataJson))
-            return null;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(metadataJson);
-            if (doc.RootElement.TryGetProperty("Username", out var usernameEl))
-                return usernameEl.GetString();
-        }
-        catch
-        {
-            // Ignore parsing errors
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Extract display name from metadata JSON
-    /// </summary>
-    public static string? ParseDisplayName(string? metadataJson)
-    {
-        if (string.IsNullOrEmpty(metadataJson))
-            return null;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(metadataJson);
-            if (doc.RootElement.TryGetProperty("DisplayName", out var displayNameEl))
-                return displayNameEl.GetString();
-        }
-        catch
-        {
-            // Ignore parsing errors
-        }
-
-        return null;
-    }
 }

@@ -10,7 +10,7 @@ namespace WatchmenBot.Features.Search.Services;
 /// Core embedding service - handles search and RAG operations.
 /// Storage, personal search, and context window operations are delegated to specialized services.
 /// </summary>
-public partial class EmbeddingService(
+public class EmbeddingService(
     EmbeddingClient embeddingClient,
     IDbConnectionFactory connectionFactory,
     ILogger<EmbeddingService> logger,
@@ -19,9 +19,16 @@ public partial class EmbeddingService(
     ContextWindowService contextWindowService,
     SearchConfidenceEvaluator confidenceEvaluator)
 {
-    // Weight for hybrid search: 70% semantic, 30% keyword
-    private const double DenseWeight = 0.7;
-    private const double SparseWeight = 0.3;
+    // Weight for hybrid search: 50% semantic, 50% keyword (better for slang/profanity)
+    private const double DenseWeight = 0.5;
+    private const double SparseWeight = 0.5;
+
+    // Time decay: messages lose relevance over time (half-life = 30 days)
+    private const double TimeDecayHalfLifeDays = 30.0;
+    private const double TimeDecayWeight = 0.1; // Max 10% boost for fresh messages
+
+    // Exact match boost: when query words appear exactly in text
+    private const double ExactMatchBoost = 0.15; // 15% boost for exact matches
 
     #region Delegated Operations
 
@@ -96,16 +103,6 @@ public partial class EmbeddingService(
         => personalSearchService.GetPersonalContextAsync(chatId, usernameOrName, displayName, question, days, ct);
 
     /// <summary>
-    /// Get context window around a message (delegates to ContextWindowService)
-    /// </summary>
-    public Task<List<ContextMessage>> GetContextWindowAsync(
-        long chatId,
-        long messageId,
-        int windowSize = 2,
-        CancellationToken ct = default)
-        => contextWindowService.GetContextWindowAsync(chatId, messageId, windowSize, ct);
-
-    /// <summary>
     /// Get merged context windows (delegates to ContextWindowService)
     /// </summary>
     public Task<List<ContextWindow>> GetMergedContextWindowsAsync(
@@ -162,30 +159,6 @@ public partial class EmbeddingService(
             logger.LogWarning(ex, "Failed to search similar messages for query: {Query}", query);
             return [];
         }
-    }
-
-    /// <summary>
-    /// Get context for RAG based on a query
-    /// </summary>
-    public async Task<string> GetRagContextAsync(
-        long chatId,
-        string query,
-        int maxResults = 10,
-        CancellationToken ct = default)
-    {
-        var results = await SearchSimilarAsync(chatId, query, maxResults, ct);
-
-        if (results.Count == 0)
-            return string.Empty;
-
-        var sb = new StringBuilder();
-        foreach (var result in results)
-        {
-            sb.AppendLine(result.ChunkText);
-            sb.AppendLine("---");
-        }
-
-        return sb.ToString();
     }
 
     /// <summary>
@@ -579,51 +552,85 @@ public partial class EmbeddingService(
             ? TextSearchHelpers.ExtractSearchTerms(queryText)
             : null;
 
+        // Extract raw words for exact match boost (case-insensitive ILIKE)
+        var exactMatchWords = !string.IsNullOrWhiteSpace(queryText)
+            ? TextSearchHelpers.ExtractIlikeWords(queryText)
+            : [];
+
         var useHybrid = !string.IsNullOrWhiteSpace(searchTerms);
+
+        // Build exact match boost SQL: CASE WHEN text contains any query word THEN boost ELSE 0 END
+        var exactMatchSql = exactMatchWords.Count > 0
+            ? $"CASE WHEN {string.Join(" OR ", exactMatchWords.Select((_, i) => $"LOWER(me.chunk_text) LIKE @ExactWord{i}"))} THEN {ExactMatchBoost} ELSE 0 END"
+            : "0";
+
+        // Time decay formula: weight * exp(-age_days * ln(2) / half_life)
+        // This gives 100% boost for today, 50% at half_life days, 25% at 2*half_life, etc.
+        var timeDecaySql = $"{TimeDecayWeight} * EXP(-GREATEST(0, EXTRACT(EPOCH FROM (NOW() - m.date_utc)) / 86400.0) * LN(2) / {TimeDecayHalfLifeDays})";
 
         var sql = useHybrid
             ? $"""
                 SELECT
-                    chat_id as ChatId,
-                    message_id as MessageId,
-                    chunk_index as ChunkIndex,
-                    chunk_text as ChunkText,
-                    metadata as MetadataJson,
-                    embedding <=> @Embedding::vector as Distance,
-                    {DenseWeight} * (1 - (embedding <=> @Embedding::vector))
+                    me.chat_id as ChatId,
+                    me.message_id as MessageId,
+                    me.chunk_index as ChunkIndex,
+                    me.chunk_text as ChunkText,
+                    me.metadata as MetadataJson,
+                    me.embedding <=> @Embedding::vector as Distance,
+                    {DenseWeight} * (1 - (me.embedding <=> @Embedding::vector))
                     + {SparseWeight} * COALESCE(
                         ts_rank_cd(
-                            to_tsvector('russian', chunk_text),
+                            to_tsvector('russian', me.chunk_text),
                             websearch_to_tsquery('russian', @SearchTerms),
                             32
                         ),
                         0
-                    ) as Similarity
-                FROM message_embeddings
-                WHERE chat_id = @ChatId
+                    )
+                    + {exactMatchSql}
+                    + {timeDecaySql}
+                    as Similarity
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
                 ORDER BY Similarity DESC
                 LIMIT @Limit
                 """
-            : """
+            : $"""
                 SELECT
-                    chat_id as ChatId,
-                    message_id as MessageId,
-                    chunk_index as ChunkIndex,
-                    chunk_text as ChunkText,
-                    metadata as MetadataJson,
-                    embedding <=> @Embedding::vector as Distance,
-                    1 - (embedding <=> @Embedding::vector) as Similarity
-                FROM message_embeddings
-                WHERE chat_id = @ChatId
-                ORDER BY embedding <=> @Embedding::vector
+                    me.chat_id as ChatId,
+                    me.message_id as MessageId,
+                    me.chunk_index as ChunkIndex,
+                    me.chunk_text as ChunkText,
+                    me.metadata as MetadataJson,
+                    me.embedding <=> @Embedding::vector as Distance,
+                    (1 - (me.embedding <=> @Embedding::vector))
+                    + {exactMatchSql}
+                    + {timeDecaySql}
+                    as Similarity
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                ORDER BY Similarity DESC
                 LIMIT @Limit
                 """;
 
-        var results = await connection.QueryAsync<SearchResult>(
-            sql,
-            new { ChatId = chatId, Embedding = embeddingString, SearchTerms = searchTerms, Limit = limit });
+        // Build parameters
+        var parameters = new DynamicParameters();
+        parameters.Add("ChatId", chatId);
+        parameters.Add("Embedding", embeddingString);
+        parameters.Add("SearchTerms", searchTerms);
+        parameters.Add("Limit", limit);
 
-        logger.LogDebug("[Search] Hybrid={Hybrid}, Terms='{Terms}'", useHybrid, searchTerms ?? "none");
+        // Add exact match word parameters
+        for (var i = 0; i < exactMatchWords.Count; i++)
+        {
+            parameters.Add($"ExactWord{i}", $"%{exactMatchWords[i].ToLowerInvariant()}%");
+        }
+
+        var results = await connection.QueryAsync<SearchResult>(sql, parameters);
+
+        logger.LogDebug("[Search] Hybrid={Hybrid}, Terms='{Terms}', ExactWords=[{Words}]",
+            useHybrid, searchTerms ?? "none", string.Join(",", exactMatchWords));
 
         return results.Select(r =>
         {
@@ -659,9 +666,6 @@ public partial class EmbeddingService(
             }
         }
     }
-
-    [System.Text.RegularExpressions.GeneratedRegex(@"https?://")]
-    private static partial System.Text.RegularExpressions.Regex MyRegex();
 
     #endregion
 }

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Roslynator.Analyzers** — статический анализатор для обнаружения неиспользуемого кода:
+  - Автоматически подсвечивает unused methods, variables, parameters в IDE
+  - Помогает поддерживать чистоту кодовой базы
+  - Добавлен как dev-dependency (не влияет на runtime)
+
 ### Fixed
 
 - **`/admin indexing` showing incorrect context embeddings stats** — Fixed hardcoded `Indexed: 0`:
@@ -20,7 +27,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Single texts exceeding limit are now truncated with warning
   - Fixes indexing failures for large message batches and context windows
 
+### Removed
+
+- **Dead code cleanup** — Removed unused methods and duplicate code:
+  - Deleted `PersonalQuestionDetector.cs` entirely (replaced by `IntentClassifier`)
+  - Removed 3 unused methods from `RerankResponse`: `HasSignificantChange()`, `GetFilteredResults()`, `FilteredOutCount()`
+  - Removed `TelegramUpdateParserExtensions.IsGroupMessage()` extension method
+  - Removed `EmbeddingService.GetRagContextAsync()` — unused method
+  - Removed `EmbeddingService.MyRegex()` — unused GeneratedRegex
+  - Removed `EmbeddingService.GetContextWindowAsync()` delegate — never called
+  - Removed `ContextWindowService.GetContextWindowAsync()` — only `GetMergedContextWindowsAsync` is used
+  - Removed `MetadataParser.ParseUsername()` and `ParseDisplayName()` — unused methods
+  - Replaced duplicate `RerankService.GetRussianStem()` with shared `TextSearchHelpers.GetRussianStem()`
+
 ### Changed
+
+- **Improved hybrid search ranking** — Better handling of slang, profanity, and recent messages:
+  - Changed BM25 weight from 70/30 to 50/50 (semantic/keyword balance)
+  - Added **time decay boost** (10% max): fresh messages ranked higher, half-life = 30 days
+  - Added **exact keyword match boost** (15%): messages containing query words get priority
+  - Fixes issue where old messages about "гей" ranked higher than recent "пидорас" messages
+  - Formula: `similarity = 0.5*vector + 0.5*bm25 + 0.15*exact_match + 0.1*time_decay`
+  - Applied to both `EmbeddingService` and `ContextEmbeddingService` (message + context embeddings)
 
 - **Late Chunking for embeddings (Jina AI)** — Better cross-chunk context preservation:
   - Batch embeddings now use `late_chunking: true` parameter

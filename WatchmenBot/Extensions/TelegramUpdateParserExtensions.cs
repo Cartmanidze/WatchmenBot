@@ -37,12 +37,6 @@ public static class TelegramUpdateParserExtensions
         }
     }
 
-    public static bool IsGroupMessage(this Update update)
-    {
-        return update.Message?.Chat.Type is Telegram.Bot.Types.Enums.ChatType.Group or 
-               Telegram.Bot.Types.Enums.ChatType.Supergroup;
-    }
-
     public static bool HasMessage(this Update update)
     {
         return update.Message is not null;

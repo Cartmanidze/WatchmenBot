@@ -294,7 +294,7 @@ public class RerankService(LlmRouter llmRouter, ILogger<RerankService> logger)
         var withStems = new List<string>(words);
         foreach (var word in words)
         {
-            var stem = GetRussianStem(word);
+            var stem = TextSearchHelpers.GetRussianStem(word);
             if (!string.IsNullOrEmpty(stem) && stem.Length >= 3 && stem != word)
             {
                 withStems.Add(stem);
@@ -302,31 +302,6 @@ public class RerankService(LlmRouter llmRouter, ILogger<RerankService> logger)
         }
 
         return withStems.Distinct().Take(10).ToList();
-    }
-
-    /// <summary>
-    /// Simple Russian stemmer - strips common word endings
-    /// </summary>
-    private static string GetRussianStem(string word)
-    {
-        if (string.IsNullOrEmpty(word) || word.Length < 4)
-            return word;
-
-        var endings = new[]
-        {
-            "ами", "ями", "ов", "ев", "ей", "ах", "ях", "ом", "ем", "ём",
-            "ам", "ям", "ы", "и", "а", "я", "у", "ю", "е", "о"
-        };
-
-        foreach (var ending in endings)
-        {
-            if (word.Length > ending.Length + 2 && word.EndsWith(ending))
-            {
-                return word[..^ending.Length];
-            }
-        }
-
-        return word;
     }
 }
 
@@ -366,50 +341,4 @@ public class RerankResponse
     /// Error message if reranking failed
     /// </summary>
     public string? Error { get; set; }
-
-    /// <summary>
-    /// Check if order changed significantly
-    /// </summary>
-    public bool HasSignificantChange()
-    {
-        if (OriginalOrder.Count == 0 || RerankedOrder.Count == 0)
-            return false;
-
-        // Check if top-3 changed
-        var origTop3 = OriginalOrder.Take(3).ToHashSet();
-        var newTop3 = RerankedOrder.Take(3).ToHashSet();
-
-        return !origTop3.SetEquals(newTop3);
-    }
-
-    /// <summary>
-    /// Get results filtered by minimum rerank score
-    /// Removes results with score below threshold (0-1 = irrelevant)
-    /// </summary>
-    public List<SearchResult> GetFilteredResults(int minScore = 2)
-    {
-        if (Scores.Count == 0 || Results.Count == 0)
-            return Results;
-
-        var filtered = new List<SearchResult>();
-        for (var i = 0; i < Results.Count && i < Scores.Count; i++)
-        {
-            if (Scores[i] >= minScore)
-                filtered.Add(Results[i]);
-        }
-
-        // Always keep at least top result if nothing passes filter
-        if (filtered.Count == 0 && Results.Count > 0)
-            filtered.Add(Results[0]);
-
-        return filtered;
-    }
-
-    /// <summary>
-    /// Count of results filtered out due to low score
-    /// </summary>
-    public int FilteredOutCount(int minScore = 2)
-    {
-        return Scores.Count(s => s < minScore);
-    }
 }
