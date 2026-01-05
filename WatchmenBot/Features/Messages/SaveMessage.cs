@@ -37,6 +37,7 @@ public class SaveMessageResponse
 public class SaveMessageHandler(
     MessageStore messageStore,
     UserAliasService userAliasService,
+    NicknameExtractionService nicknameExtractionService,
     EmbeddingService embeddingService,
     ProfileQueueService profileQueueService,
     LogCollector logCollector,
@@ -78,6 +79,10 @@ public class SaveMessageHandler(
                             await userAliasService.RecordAliasAsync(
                                 record.ChatId, record.FromUserId, record.Username, "username");
                         }
+
+                        // Extract nicknames from reply addressing patterns
+                        // E.g., if user replies "Бекс, ты прав", associate "Бекс" with reply target
+                        await nicknameExtractionService.ExtractAndRecordAsync(message);
                     }
                     catch (Exception ex)
                     {

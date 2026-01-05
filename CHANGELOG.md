@@ -60,6 +60,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Файлы: `UserAliasService.cs`, `NicknameResolverService.cs`, `PersonalSearchService.cs`, `SearchStrategyService.cs`, `DatabaseInitializer.cs`
   - БД: новая таблица `user_aliases` (chat_id, user_id, alias, alias_type, usage_count, first_seen, last_seen)
 
+- **Nickname Extraction from Replies (Извлечение прозвищ из ответов)** — автоматическое обучение прозвищам участников:
+  - **Проблема** — участники называют друг друга прозвищами ("Бекс", "Глебыч"), которые бот не знал
+  - **NicknameExtractionService** — извлекает прозвища из паттернов обращения в reply-сообщениях
+  - **Паттерны обращения:**
+    - "Бекс, ты прав" → "Бекс" связывается с user_id адресата reply
+    - "Эй Глеб, смотри" → "Глеб" связывается с user_id адресата
+    - "Петя: это тебе" → "Петя" связывается с user_id адресата
+    - Короткие reply типа "Вася!" → "Вася" связывается с user_id адресата
+  - **Валидация** — фильтруются частые слова ("да", "ок", "ну"), слишком короткие/длинные строки
+  - **Fire-and-forget** — не блокирует сохранение сообщений
+  - **Использование** — прозвища сохраняются с `alias_type = "nickname"`, накапливают `usage_count`
+  - Файлы: `NicknameExtractionService.cs`, `SaveMessage.cs`
+
 - **Per-Chat Modes System (Система режимов для чатов)** — настраиваемые режимы поведения бота для каждого чата:
   - **Business mode** (default for new chats) — профессиональный стиль, без мата и шуток
   - **Funny mode** (default for existing chats) — текущее поведение с подколками, сарказмом, матом
