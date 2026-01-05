@@ -295,6 +295,11 @@ public class TelegramPollingService(
                 new BotCommandScopeAllPrivateChats(),
                 cancellationToken: ct);
 
+            // Enable menu button (shows commands) for all chats
+            await bot.SetChatMenuButton(
+                menuButton: new MenuButtonCommands(),
+                cancellationToken: ct);
+
             logger.LogInformation("[Telegram] Bot commands menu registered");
         }
         catch (Exception ex)
