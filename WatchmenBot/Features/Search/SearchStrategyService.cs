@@ -130,7 +130,8 @@ public class SearchStrategyService(
     }
 
     /// <summary>
-    /// Search for comparison between multiple entities
+    /// Search for comparison between multiple entities.
+    /// Supports all entity types: Person, Topic, Location, Organization, etc.
     /// </summary>
     public async Task<SearchResponse> SearchComparisonAsync(
         long chatId,
@@ -140,13 +141,22 @@ public class SearchStrategyService(
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        // Search for each entity in parallel
-        var personEntities = entities
-            .Where(e => e.Type == EntityType.Person)
+        // Search for each entity in parallel (all types, not just Person)
+        var searchEntities = entities
             .Take(3)
             .ToList();
 
-        var searchTasks = personEntities.Select(e =>
+        if (searchEntities.Count == 0)
+        {
+            return new SearchResponse
+            {
+                Confidence = SearchConfidence.None,
+                ConfidenceReason = "Не найдено сущностей для сравнения",
+                BestScore = 0
+            };
+        }
+
+        var searchTasks = searchEntities.Select(e =>
             embeddingService.SearchSimilarAsync(chatId, $"{query} {e.Text}", limit: 5, ct));
 
         var searchResults = await Task.WhenAll(searchTasks);
@@ -161,12 +171,14 @@ public class SearchStrategyService(
 
         sw.Stop();
 
+        var entityNames = searchEntities.Select(e => e.Text).ToList();
+
         if (mergedResults.Count == 0)
         {
             return new SearchResponse
             {
                 Confidence = SearchConfidence.None,
-                ConfidenceReason = $"Не найдено сообщений про: {string.Join(", ", personEntities.Select(e => e.Text))}",
+                ConfidenceReason = $"Не найдено сообщений про: {string.Join(", ", entityNames)}",
                 BestScore = 0
             };
         }
@@ -181,13 +193,13 @@ public class SearchStrategyService(
         };
 
         logger.LogInformation("[ComparisonSearch] Entities: [{Entities}], Found {Count} results in {Ms}ms",
-            string.Join(", ", personEntities.Select(e => e.Text)), mergedResults.Count, sw.ElapsedMilliseconds);
+            string.Join(", ", entityNames), mergedResults.Count, sw.ElapsedMilliseconds);
 
         return new SearchResponse
         {
             Results = mergedResults,
             Confidence = confidence,
-            ConfidenceReason = $"[Comparison: {string.Join(" vs ", personEntities.Select(e => e.Text))}] " +
+            ConfidenceReason = $"[Comparison: {string.Join(" vs ", entityNames)}] " +
                              $"Найдено {mergedResults.Count} результатов (sim={bestSim:F3})",
             BestScore = bestSim
         };

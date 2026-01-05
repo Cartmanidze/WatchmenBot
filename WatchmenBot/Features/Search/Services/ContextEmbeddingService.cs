@@ -308,61 +308,65 @@ public class ContextEmbeddingService(
 
     /// <summary>
     /// Get indexing statistics for context embeddings.
-    /// Uses ACTUAL pending count based on unprocessed messages per chat.
+    /// Uses simple time-based check to avoid expensive queries.
     /// </summary>
     public async Task<ContextEmbeddingStats> GetIndexingStatsAsync(CancellationToken ct = default)
     {
         using var connection = await connectionFactory.CreateConnectionAsync();
 
-        // Count actual context embeddings
+        // Count actual context embeddings (fast, uses index)
         var indexed = await connection.ExecuteScalarAsync<long>(
             "SELECT COUNT(*) FROM context_embeddings");
 
-        // Count total messages (for info)
-        var totalMessages = await connection.ExecuteScalarAsync<long>(
-            "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL AND LENGTH(text) > 5");
+        // Get newest context embedding timestamp
+        var newestContextTime = await connection.ExecuteScalarAsync<DateTime?>(
+            "SELECT MAX(created_at) FROM context_embeddings");
 
-        // Count ACTUAL pending: chats with unprocessed messages (> MinWindowSize messages after last window)
-        // This avoids the infinite loop caused by wrong estimation
-        var pendingChats = await connection.ExecuteScalarAsync<long>(
-            """
-            WITH chat_progress AS (
-                SELECT
-                    m.chat_id,
-                    COALESCE(MAX(ce.center_message_id), 0) as last_processed_id
-                FROM messages m
-                LEFT JOIN context_embeddings ce ON m.chat_id = ce.chat_id
-                WHERE m.text IS NOT NULL AND LENGTH(m.text) > 5
-                GROUP BY m.chat_id
-            ),
-            pending_counts AS (
-                SELECT
-                    cp.chat_id,
-                    COUNT(*) as unprocessed
-                FROM chat_progress cp
-                JOIN messages m ON m.chat_id = cp.chat_id
-                    AND m.id > cp.last_processed_id
-                    AND m.text IS NOT NULL
-                    AND LENGTH(m.text) > 5
-                GROUP BY cp.chat_id
-                HAVING COUNT(*) >= @MinWindowSize
-            )
-            SELECT COUNT(*) FROM pending_counts
-            """,
-            new { MinWindowSize });
+        // Check if there are messages newer than our newest context embedding
+        // This is a simple and fast way to detect pending work
+        long pendingChats = 0;
+        if (newestContextTime.HasValue)
+        {
+            // Count chats with messages after our last indexing run
+            // Uses index on (chat_id, date_utc)
+            pendingChats = await connection.ExecuteScalarAsync<long>(
+                """
+                SELECT COUNT(DISTINCT chat_id)
+                FROM messages
+                WHERE date_utc > @NewestTime
+                  AND text IS NOT NULL
+                  AND LENGTH(text) > 5
+                """,
+                new { NewestTime = newestContextTime.Value });
+        }
+        else
+        {
+            // No context embeddings yet - count all chats with enough messages
+            pendingChats = await connection.ExecuteScalarAsync<long>(
+                """
+                SELECT COUNT(*)
+                FROM (
+                    SELECT chat_id
+                    FROM messages
+                    WHERE text IS NOT NULL AND LENGTH(text) > 5
+                    GROUP BY chat_id
+                    HAVING COUNT(*) >= @MinWindowSize
+                ) chats
+                """,
+                new { MinWindowSize });
+        }
 
-        // Estimate total as: indexed + pending chats (rough estimate: 1 window per pending chat)
-        // This is conservative - we'll process more when we see new messages
+        // Simple estimation: indexed + pending
         var estimatedTotal = indexed + pendingChats;
 
-        logger.LogDebug("[ContextEmb] Stats: indexed={Indexed}, pendingChats={Pending}, totalMessages={Total}",
-            indexed, pendingChats, totalMessages);
+        logger.LogDebug("[ContextEmb] Stats: indexed={Indexed}, pendingChats={Pending}",
+            indexed, pendingChats);
 
         return new ContextEmbeddingStats
         {
             Indexed = indexed,
             EstimatedTotal = estimatedTotal,
-            TotalMessages = totalMessages
+            TotalMessages = 0 // Not needed, avoid extra query
         };
     }
 
