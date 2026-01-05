@@ -162,10 +162,12 @@ public class SearchStrategyService(
         var searchQueries = searchEntities.Select(e => $"{query} {e.Text}").ToList();
         logger.LogInformation("[ComparisonSearch] Queries: [{Queries}]", string.Join(" | ", searchQueries));
 
-        var searchTasks = searchQueries.Select(q =>
-            embeddingService.SearchSimilarAsync(chatId, q, limit: 5, ct));
-
-        var searchResults = await Task.WhenAll(searchTasks);
+        // SEQUENTIAL execution to prevent DB connection contention
+        var searchResults = new List<SearchResult>[searchQueries.Count];
+        for (var i = 0; i < searchQueries.Count; i++)
+        {
+            searchResults[i] = await embeddingService.SearchSimilarAsync(chatId, searchQueries[i], limit: 5, ct);
+        }
 
         logger.LogInformation("[ComparisonSearch] Search returned {Count} result sets: [{Counts}]",
             searchResults.Length, string.Join(", ", searchResults.Select(r => r.Count)));
@@ -448,20 +450,16 @@ public class SearchStrategyService(
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // Step 1: RAG Fusion search (generates variations + RRF merge)
-        var fusionTask = ragFusionService.SearchWithFusionAsync(
+        // SEQUENTIAL execution to prevent DB connection contention
+        var fusionResponse = await ragFusionService.SearchWithFusionAsync(
             chatId, query,
             participantNames: null, // Could pass chat participants for better name variation
             variationCount: 3,
             resultsPerQuery: 15,
             ct);
 
-        // Step 2: Parallel search in context embeddings (for dialog context)
-        var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
-
-        await Task.WhenAll(fusionTask, contextTask);
-
-        var fusionResponse = await fusionTask;
-        var contextResults = await contextTask;
+        // Step 2: Context embeddings search (for dialog context)
+        var contextResults = await contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
 
         sw.Stop();
 

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **PostgreSQL timeout in RAG Fusion** — таймаут при поиске из-за каскадного параллелизма:
+  - **Проблема** — запрос "тайланд и китай одно и тоже?" падал с `Npgsql.NpgsqlException: Timeout during reading attempt`
+  - **Root cause** — каскадный параллелизм: RAG Fusion запускал 4 параллельных DB запроса внутри уже параллельного поиска
+  - **Общее число параллельных запросов** — до 7+: (4 RAG + 1 Context + 2 Comparison)
+  - **Решение** — последовательное выполнение:
+    - `RagFusionService.SearchWithFusionAsync` — vector searches теперь sequential
+    - `SearchStrategyService.SearchWithRagAsync` — fusion и context теперь sequential
+    - `SearchStrategyService.SearchComparisonAsync` — entity searches теперь sequential
+  - **Trade-off** — чуть медленнее, но стабильно работает без таймаутов
+
 - **SearchComparisonAsync ignoring Topic entities** — сравнение стран/топиков не работало:
   - **Проблема** — метод фильтровал сущности по `EntityType.Person`, игнорируя Topic, Location, Organization
   - **Пример** — вопрос "Тайланд и Китай одно и тоже?" возвращал `Confidence: None` несмотря на наличие сообщений

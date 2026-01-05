@@ -68,11 +68,14 @@ public class RagFusionService(
                 return ProcessSearchResults(fallbackResults, allQueries, variations, query, sw);
             }
 
-            // Step 3: Search by vector for each embedding in parallel (no more API calls!)
-            var vectorSearchTasks = allQueries.Zip(allEmbeddings).Select(pair =>
-                embeddingService.SearchByVectorAsync(chatId, pair.Second, resultsPerQuery, ct, queryText: pair.First));
-
-            var allResults = await Task.WhenAll(vectorSearchTasks);
+            // Step 3: Search by vector for each embedding SEQUENTIALLY to prevent DB connection contention
+            // (Parallel queries caused PostgreSQL timeouts when combined with other parallel operations)
+            var allResults = new List<SearchResult>[allQueries.Count];
+            for (var i = 0; i < allQueries.Count; i++)
+            {
+                allResults[i] = await embeddingService.SearchByVectorAsync(
+                    chatId, allEmbeddings[i], resultsPerQuery, ct, queryText: allQueries[i]);
+            }
 
             // Step 3: Apply Reciprocal Rank Fusion
             var fusedResults = ApplyRrfFusion(allResults);
