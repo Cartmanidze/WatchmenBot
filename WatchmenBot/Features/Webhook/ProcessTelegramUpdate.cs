@@ -6,6 +6,7 @@ using WatchmenBot.Extensions;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Search;
+using WatchmenBot.Features.Settings;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Admin.Services;
@@ -102,6 +103,14 @@ public class ProcessTelegramUpdateHandler(
             {
                 var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();
                 await adminHandler.HandleAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
+            if (IsCommand(message.Text, "/mode"))
+            {
+                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /mode", chatName, userName);
+                var modeHandler = scope.ServiceProvider.GetRequiredService<ModeHandler>();
+                await modeHandler.HandleAsync(message, cancellationToken);
                 return ProcessTelegramUpdateResponse.Success();
             }
 

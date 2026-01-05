@@ -179,9 +179,9 @@ public partial class BackgroundAskWorker(
         // Send typing action again (long operation)
         await bot.SendChatAction(item.ChatId, ChatAction.Typing, cancellationToken: ct);
 
-        // Generate answer
+        // Generate answer (with chat mode support)
         var answer = await answerGenerator.GenerateAnswerWithDebugAsync(
-            item.Command, item.Question, context, memoryContext, item.AskerName, debugReport, ct);
+            item.Command, item.Question, context, memoryContext, item.AskerName, item.ChatId, debugReport, ct);
 
         var rawResponse = (confidenceWarning ?? "") + answer;
         var response = TelegramHtmlSanitizer.Sanitize(rawResponse);

@@ -9,6 +9,7 @@ using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
+using WatchmenBot.Features.Settings;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Infrastructure.Settings;
@@ -185,6 +186,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<LogCollector>();
         services.AddSingleton<AdminSettingsStore>();
         services.AddSingleton<PromptSettingsStore>();
+        services.AddSingleton<ChatSettingsStore>();
         services.AddSingleton<DebugService>();
 
         // Usage tracking
@@ -310,6 +312,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SetWebhookHandler>();
         services.AddScoped<DeleteWebhookHandler>();
         services.AddScoped<GetWebhookInfoHandler>();
+        services.AddScoped<ModeHandler>();
 
         // Search Services (extracted from AskHandler refactoring)
         services.AddScoped<SearchStrategyService>();

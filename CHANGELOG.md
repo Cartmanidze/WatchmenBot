@@ -17,6 +17,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Per-Chat Modes System (Система режимов для чатов)** — настраиваемые режимы поведения бота для каждого чата:
+  - **Business mode** (default for new chats) — профессиональный стиль, без мата и шуток
+  - **Funny mode** (default for existing chats) — текущее поведение с подколками, сарказмом, матом
+  - **Команда `/mode`** — доступна только для `@gleb_bezrukov` (и просмотр, и изменение)
+  - **Архитектура** — гибкая система с enum'ами для лёгкого добавления новых режимов
+  - **Подготовка к i18n** — заложена поддержка английского языка (`ChatLanguage` enum)
+  - **Миграция** — существующие чаты автоматически получают `funny` режим
+  - **Интеграция** — режимы применяются в `/ask`, `/summary`, `/smart`, `/recall`, `/truth`
+  - Файлы: `ChatMode.cs`, `ChatSettingsStore.cs`, `ModeHandler.cs`
+  - БД: новая таблица `chat_settings` (chat_id, mode, language)
+
 - **Enhanced CLAUDE.md with LSP Workflow** — обновлена документация по работе с кодом:
   - Добавлена полная схема работы: LSP → Read → Edit
   - Описано когда использовать каждый инструмент

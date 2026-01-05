@@ -13,10 +13,12 @@ namespace WatchmenBot.Features.Search;
 /// Supports two modes:
 /// - OneStage: Fast, single LLM call (default)
 /// - TwoStage: Anti-hallucination with fact extraction → grounded answer
+/// Also supports chat modes (Business/Funny) with different prompt styles.
 /// </summary>
 public class AnswerGeneratorService(
     LlmRouter llmRouter,
     PromptSettingsStore promptSettings,
+    ChatSettingsStore chatSettings,
     ILogger<AnswerGeneratorService> logger)
 {
     /// <summary>
@@ -44,9 +46,15 @@ public class AnswerGeneratorService(
         5. source — имя ТОЧНО как в тексте (НЕ переводи, НЕ транслитерируй!)
         """;
     public async Task<string> GenerateAnswerWithDebugAsync(
-        string command, string question, string? context, string? memoryContext, string askerName, DebugReport debugReport, CancellationToken ct)
+        string command, string question, string? context, string? memoryContext, string askerName,
+        long chatId, DebugReport debugReport, CancellationToken ct)
     {
-        var settings = await promptSettings.GetSettingsAsync(command);
+        // Get chat mode and language for appropriate prompt style
+        var chatSettingsData = await chatSettings.GetSettingsAsync(chatId);
+        var settings = await promptSettings.GetSettingsAsync(command, chatSettingsData.Mode, chatSettingsData.Language);
+
+        logger.LogDebug("[AnswerGenerator] Using mode={Mode}, language={Lang} for chat {ChatId}",
+            chatSettingsData.Mode, chatSettingsData.Language, chatId);
 
         // For /ask with context - choose between one-stage (fast) or two-stage (anti-hallucination)
         if (command == "ask" && !string.IsNullOrWhiteSpace(context))
@@ -58,11 +66,11 @@ public class AnswerGeneratorService(
             if (isSimpleQuestion)
             {
                 logger.LogInformation("[ASK] Simple question detected (high confidence + small context) → using one-stage");
-                return await GenerateOneStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, debugReport, ct);
+                return await GenerateOneStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, chatSettingsData.Mode, debugReport, ct);
             }
             else
             {
-                return await GenerateTwoStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, debugReport, ct);
+                return await GenerateTwoStageAnswerWithDebugAsync(question, context, memoryContext, askerName, settings, chatSettingsData.Mode, debugReport, ct);
             }
         }
 
@@ -127,7 +135,7 @@ public class AnswerGeneratorService(
     /// Faster than two-stage (saves ~1-2 sec) while maintaining quality.
     /// </summary>
     private async Task<string> GenerateOneStageAnswerWithDebugAsync(
-        string question, string context, string? memoryContext, string askerName, PromptSettings settings, DebugReport debugReport, CancellationToken ct)
+        string question, string context, string? memoryContext, string askerName, PromptSettings settings, ChatMode mode, DebugReport debugReport, CancellationToken ct)
     {
         debugReport.IsMultiStage = false;
         debugReport.StageCount = 1;
@@ -215,7 +223,7 @@ public class AnswerGeneratorService(
     /// Stage 2: Generate answer from extracted facts only (T=0.5, allow humor)
     /// </summary>
     private async Task<string> GenerateTwoStageAnswerWithDebugAsync(
-        string question, string context, string? memoryContext, string askerName, PromptSettings settings, DebugReport debugReport, CancellationToken ct)
+        string question, string context, string? memoryContext, string askerName, PromptSettings settings, ChatMode mode, DebugReport debugReport, CancellationToken ct)
     {
         debugReport.IsMultiStage = true;
         debugReport.StageCount = 2;

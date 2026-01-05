@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Summary.Models;
@@ -42,7 +43,7 @@ public class SmartSummaryService(
         string periodDescription,
         CancellationToken ct = default)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew();
 
         var debugReport = new DebugReport
         {
@@ -96,7 +97,7 @@ public class SmartSummaryService(
         {
             logger.LogInformation("[SmartSummary] Falling back to traditional approach (only {Count} embeddings)",
                 diverseMessages.Count);
-            summaryContent = await GenerateTraditionalSummaryAsync(humanMessages, debugReport, ct);
+            summaryContent = await GenerateTraditionalSummaryAsync(chatId, humanMessages, debugReport, ct);
         }
 
         sw.Stop();
@@ -127,7 +128,7 @@ public class SmartSummaryService(
         if (topics.Count == 0)
         {
             logger.LogWarning("[SmartSummary] No topics extracted, using fallback");
-            return await GenerateTraditionalSummaryAsync(allMessages, debugReport, ct);
+            return await GenerateTraditionalSummaryAsync(chatId, allMessages, debugReport, ct);
         }
 
         // Step 2: For each topic, find relevant messages
@@ -144,7 +145,7 @@ public class SmartSummaryService(
         debugReport.ContextMessagesCount = messagesIncluded;
         debugReport.ContextTokensEstimate = tokensEstimate;
 
-        var result = await stageExecutor.ExecuteTwoStageAsync(context, stats, debugReport, ct);
+        var result = await stageExecutor.ExecuteTwoStageAsync(context, stats, chatId, debugReport, ct);
 
         return result.FinalContent;
     }
@@ -187,7 +188,7 @@ public class SmartSummaryService(
         if (topics.Count == 0)
         {
             logger.LogWarning("[SmartSummary] No topics extracted in enhanced mode, using fallback");
-            return await GenerateTraditionalSummaryAsync(allMessages, debugReport, ct);
+            return await GenerateTraditionalSummaryAsync(chatId, allMessages, debugReport, ct);
         }
 
         // Step 4: Gather topic messages
@@ -217,8 +218,8 @@ public class SmartSummaryService(
         var enhancedFacts = BuildEnhancedFacts(
             timeline, segments, extractedEvents, minedQuotes, hotMoments);
 
-        // Step 8: Execute enhanced two-stage generation
-        var result = await stageExecutor.ExecuteEnhancedTwoStageAsync(context, stats, enhancedFacts, debugReport, ct);
+        // Step 8: Execute enhanced two-stage generation (with chat mode support)
+        var result = await stageExecutor.ExecuteEnhancedTwoStageAsync(context, stats, enhancedFacts, chatId, debugReport, ct);
 
         return result.FinalContent;
     }
@@ -331,6 +332,7 @@ public class SmartSummaryService(
     }
 
     private async Task<string> GenerateTraditionalSummaryAsync(
+        long chatId,
         List<MessageRecord> messages,
         DebugReport debugReport,
         CancellationToken ct)
@@ -348,7 +350,7 @@ public class SmartSummaryService(
         debugReport.ContextMessagesCount = messagesIncluded;
         debugReport.ContextTokensEstimate = tokensEstimate;
 
-        var result = await stageExecutor.ExecuteTwoStageAsync(context, stats, debugReport, ct);
+        var result = await stageExecutor.ExecuteTwoStageAsync(context, stats, chatId, debugReport, ct);
 
         return result.FinalContent;
     }

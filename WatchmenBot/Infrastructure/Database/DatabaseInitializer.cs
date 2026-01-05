@@ -28,6 +28,7 @@ public class DatabaseInitializer(
             await CreateMessageQueueTableAsync(connection);
             await CreateUserFactsTableAsync(connection);
             await CreateContextEmbeddingsTableAsync(connection);
+            await CreateChatSettingsTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -349,6 +350,37 @@ public class DatabaseInitializer(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Could not create context_embeddings table");
+        }
+    }
+
+    private async Task CreateChatSettingsTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                chat_id BIGINT PRIMARY KEY,
+                mode SMALLINT NOT NULL DEFAULT 0,
+                language SMALLINT NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+
+        // Migration: set existing chats to 'funny' mode (mode=1)
+        // New chats will get 'business' mode (mode=0) by default
+        const string migrationSql = """
+            INSERT INTO chat_settings (chat_id, mode, language)
+            SELECT DISTINCT chat_id, 1, 0
+            FROM chats
+            WHERE chat_id NOT IN (SELECT chat_id FROM chat_settings)
+            ON CONFLICT (chat_id) DO NOTHING;
+            """;
+
+        var migratedCount = await connection.ExecuteAsync(migrationSql);
+        if (migratedCount > 0)
+        {
+            logger.LogInformation("Migrated {Count} existing chats to 'funny' mode", migratedCount);
         }
     }
 

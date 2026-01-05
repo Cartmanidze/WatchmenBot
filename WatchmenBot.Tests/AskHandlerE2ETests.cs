@@ -294,9 +294,14 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             connectionFactory,
             NullLogger<PromptSettingsStore>.Instance);
 
+        var chatSettings = new ChatSettingsStore(
+            connectionFactory,
+            NullLogger<ChatSettingsStore>.Instance);
+
         var answerGenerator = new AnswerGeneratorService(
             llmRouter,
             promptSettings,
+            chatSettings,
             NullLogger<AnswerGeneratorService>.Instance);
 
         // AskHandler helper services

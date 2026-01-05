@@ -9,11 +9,13 @@ namespace WatchmenBot.Features.Summary.Services;
 /// <summary>
 /// Executes two-stage summary generation:
 /// Stage 1: Extract structured facts (low temperature)
-/// Stage 2: Add humor to facts (higher temperature)
+/// Stage 2: Add humor/style to facts based on chat mode (higher temperature)
+/// Supports Business and Funny modes with different output styles.
 /// </summary>
 public class SummaryStageExecutor(
     LlmRouter llmRouter,
     PromptSettingsStore promptSettings,
+    ChatSettingsStore chatSettings,
     ILogger<SummaryStageExecutor> logger)
 {
     private const string FactsSystemPrompt = """
@@ -47,10 +49,17 @@ public class SummaryStageExecutor(
     public async Task<SummaryStageResult> ExecuteTwoStageAsync(
         string context,
         ChatStats stats,
+        long chatId,
         DebugReport? debugReport,
         CancellationToken ct)
     {
         var result = new SummaryStageResult();
+
+        // Get chat mode for appropriate prompt style
+        var chatSettingsData = await chatSettings.GetSettingsAsync(chatId);
+
+        logger.LogDebug("[SummaryStage] Using mode={Mode} for chat {ChatId}",
+            chatSettingsData.Mode, chatId);
 
         // STAGE 1: Extract structured facts with low temperature
         var stage1Sw = Stopwatch.StartNew();
@@ -85,8 +94,8 @@ public class SummaryStageExecutor(
             TimeMs = stage1Sw.ElapsedMilliseconds
         });
 
-        // STAGE 2: Add humor based on structured facts
-        var settings = await promptSettings.GetSettingsAsync("summary");
+        // STAGE 2: Add style based on chat mode
+        var settings = await promptSettings.GetSettingsAsync("summary", chatSettingsData.Mode, chatSettingsData.Language);
 
         var humorSystemPrompt = $"""
             {settings.SystemPrompt}
@@ -171,10 +180,17 @@ public class SummaryStageExecutor(
         string context,
         ChatStats stats,
         EnhancedExtractedFacts facts,
+        long chatId,
         DebugReport? debugReport,
         CancellationToken ct)
     {
         var result = new SummaryStageResult();
+
+        // Get chat mode for appropriate prompt style
+        var chatSettingsData = await chatSettings.GetSettingsAsync(chatId);
+
+        logger.LogDebug("[SummaryStage] Enhanced using mode={Mode} for chat {ChatId}",
+            chatSettingsData.Mode, chatId);
 
         // Build structured facts JSON from pre-extracted data
         var structuredFacts = BuildStructuredFacts(facts);
@@ -196,8 +212,8 @@ public class SummaryStageExecutor(
             TimeMs = 0
         });
 
-        // STAGE 2: Generate enhanced summary with pre-extracted facts
-        var settings = await promptSettings.GetSettingsAsync("summary");
+        // STAGE 2: Generate enhanced summary with pre-extracted facts and chat mode
+        var settings = await promptSettings.GetSettingsAsync("summary", chatSettingsData.Mode, chatSettingsData.Language);
 
         var humorSystemPrompt = $"""
             {settings.SystemPrompt}
