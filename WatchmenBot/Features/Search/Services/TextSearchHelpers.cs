@@ -44,17 +44,21 @@ public static class TextSearchHelpers
     }
 
     /// <summary>
-    /// Extract words suitable for ILIKE search (longer than 3 chars)
+    /// Extract words suitable for ILIKE search (3+ chars, expanded with stems)
     /// </summary>
     public static List<string> ExtractIlikeWords(string query, int maxWords = 5)
     {
-        return query
+        var words = query
             .Split([' ', ',', '.', '!', '?', ':', ';', '-', '(', ')', '[', ']', '"', '\''], StringSplitOptions.RemoveEmptyEntries)
-            .Where(w => w.Length > 3)
+            .Where(w => w.Length >= 3 && !StopWords.Contains(w)) // Include 3-char words, exclude stop words
             .Select(w => w.ToLowerInvariant())
             .Distinct()
-            .Take(maxWords)
             .ToList();
+
+        // Expand with stems to match different word forms ("няма" → "ням", "делают" → "дела")
+        var expanded = ExpandWithStems(words);
+
+        return expanded.Take(maxWords).ToList();
     }
 
     /// <summary>
