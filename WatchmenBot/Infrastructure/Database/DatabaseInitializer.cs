@@ -369,11 +369,12 @@ public class DatabaseInitializer(
 
         // Migration: set existing chats to 'funny' mode (mode=1)
         // New chats will get 'business' mode (mode=0) by default
+        // Note: chats table uses 'id' as primary key, not 'chat_id'
         const string migrationSql = """
             INSERT INTO chat_settings (chat_id, mode, language)
-            SELECT DISTINCT chat_id, 1, 0
+            SELECT DISTINCT id, 1, 0
             FROM chats
-            WHERE chat_id NOT IN (SELECT chat_id FROM chat_settings)
+            WHERE id NOT IN (SELECT chat_id FROM chat_settings)
             ON CONFLICT (chat_id) DO NOTHING;
             """;
 
