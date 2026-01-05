@@ -45,14 +45,34 @@ public class RagFusionService(
             logger.LogInformation("[RAG Fusion] Generated {Count} variations for: {Query}",
                 variations.Count, TruncateForLog(query, 50));
 
-            // Step 2: Search with original + all variations in parallel
+            // Step 2: Get embeddings for all queries in a SINGLE batch API call
+            // This reduces 4 separate Jina API calls to just 1, saving ~20-25 seconds
             var allQueries = new List<string> { query };
             allQueries.AddRange(variations);
 
-            var searchTasks = allQueries.Select(q =>
-                embeddingService.SearchSimilarAsync(chatId, q, resultsPerQuery, ct));
+            var embeddingsSw = System.Diagnostics.Stopwatch.StartNew();
+            var allEmbeddings = await embeddingService.GetBatchEmbeddingsAsync(allQueries, ct);
+            embeddingsSw.Stop();
 
-            var allResults = await Task.WhenAll(searchTasks);
+            logger.LogInformation("[RAG Fusion] Batch embeddings: {Count} queries in {Ms}ms",
+                allQueries.Count, embeddingsSw.ElapsedMilliseconds);
+
+            if (allEmbeddings.Count != allQueries.Count)
+            {
+                logger.LogWarning("[RAG Fusion] Embedding count mismatch: expected {Expected}, got {Actual}",
+                    allQueries.Count, allEmbeddings.Count);
+                // Fallback to old behavior
+                var searchTasks = allQueries.Select(q =>
+                    embeddingService.SearchSimilarAsync(chatId, q, resultsPerQuery, ct));
+                var fallbackResults = await Task.WhenAll(searchTasks);
+                return ProcessSearchResults(fallbackResults, allQueries, variations, query, sw);
+            }
+
+            // Step 3: Search by vector for each embedding in parallel (no more API calls!)
+            var vectorSearchTasks = allQueries.Zip(allEmbeddings).Select(pair =>
+                embeddingService.SearchByVectorAsync(chatId, pair.Second, resultsPerQuery, ct, queryText: pair.First));
+
+            var allResults = await Task.WhenAll(vectorSearchTasks);
 
             // Step 3: Apply Reciprocal Rank Fusion
             var fusedResults = ApplyRrfFusion(allResults);
@@ -467,6 +487,53 @@ public class RagFusionService(
             return (SearchConfidence.Low, $"RRF={bestScore:F4} (norm={normalizedBest:F2}), weak match");
 
         return (SearchConfidence.None, $"RRF={bestScore:F4} too low");
+    }
+
+    /// <summary>
+    /// Process search results into RagFusionResponse (used for fallback when batch fails)
+    /// </summary>
+    private RagFusionResponse ProcessSearchResults(
+        List<SearchResult>[] allResults,
+        List<string> allQueries,
+        List<string> variations,
+        string originalQuery,
+        System.Diagnostics.Stopwatch sw)
+    {
+        var response = new RagFusionResponse
+        {
+            OriginalQuery = originalQuery,
+            QueryVariations = variations
+        };
+
+        var fusedResults = ApplyRrfFusion(allResults);
+
+        var filteredResults = fusedResults
+            .Where(r => r.Similarity < 0.98)
+            .ToList();
+
+        response.Results = filteredResults;
+
+        if (filteredResults.Count > 0)
+        {
+            var bestScore = filteredResults[0].FusedScore;
+            (response.Confidence, response.ConfidenceReason) = EvaluateFusionConfidence(
+                bestScore, filteredResults.Count, allQueries.Count);
+            response.BestScore = bestScore;
+        }
+        else
+        {
+            response.Confidence = SearchConfidence.None;
+            response.ConfidenceReason = "No results from any query variation";
+        }
+
+        sw.Stop();
+        response.TotalTimeMs = sw.ElapsedMilliseconds;
+
+        logger.LogInformation(
+            "[RAG Fusion] Fallback: Query: '{Query}' | Results: {Count} | Time: {Ms}ms",
+            TruncateForLog(originalQuery, 30), filteredResults.Count, response.TotalTimeMs);
+
+        return response;
     }
 
     private static string TruncateForLog(string text, int maxLength)

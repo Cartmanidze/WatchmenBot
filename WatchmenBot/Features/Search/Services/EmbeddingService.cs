@@ -522,9 +522,13 @@ public class EmbeddingService(
 
     #endregion
 
-    #region Private Helpers
+    #region Vector Search Helpers
 
-    private async Task<List<SearchResult>> SearchByVectorAsync(
+    /// <summary>
+    /// Search using a pre-computed embedding vector.
+    /// Use this for batch operations where embeddings are already available.
+    /// </summary>
+    public async Task<List<SearchResult>> SearchByVectorAsync(
         long chatId,
         float[] queryEmbedding,
         int limit,
@@ -574,6 +578,16 @@ public class EmbeddingService(
         }).ToList();
     }
 
+    /// <summary>
+    /// Get embeddings for multiple queries in a single batch API call.
+    /// Much faster than calling GetEmbeddingAsync for each query separately.
+    /// </summary>
+    public Task<List<float[]>> GetBatchEmbeddingsAsync(
+        IEnumerable<string> queries,
+        CancellationToken ct = default)
+    {
+        return embeddingClient.GetEmbeddingsAsync(queries, EmbeddingTask.RetrievalQuery, ct);
+    }
 
     #endregion
 }

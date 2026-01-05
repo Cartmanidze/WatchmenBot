@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Context embeddings infinite loop** — фоновая задача никогда не завершалась:
+  - **Problem** — `GetIndexingStatsAsync` использовала оценку `totalMessages / 4` для pending
+  - **Root cause** — Многие сообщения не могут сформировать окна (короткие диалоги < 5 сообщений)
+  - **Solution** — Теперь считаем РЕАЛЬНЫЕ pending чаты (где есть >= 5 unprocessed сообщений после последнего окна)
+  - **Result** — Когда все чаты обработаны, `Pending = 0` и сервис уходит в idle mode
+  - **File** — `ContextEmbeddingService.cs`
+
 - **Infinite webhook retry loop** — исправлен бесконечный цикл при ошибках:
   - **Проблема** — если сообщение удалено, бот не мог ответить на него, возвращал 500, Telegram ретраил бесконечно
   - **ProcessTelegramUpdate.cs** — теперь всегда возвращает 200 OK при ошибках обработки (логирует, но не ретраит)
@@ -28,6 +35,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Функционал можно получить через `/ask` с вопросом "что говорил @username?"
 
 ### Changed
+
+- **RAG Fusion batch embeddings optimization** — Major /ask performance improvement:
+  - **Problem** — RAG Fusion made 4 separate Jina API calls (original + 3 variations), each taking ~8s
+  - **Solution** — Batch all queries into a single `GetBatchEmbeddingsAsync` call
+  - **Expected improvement** — RAG Fusion time reduced from ~32s to ~8-12s
+  - **Files changed** — `EmbeddingService.cs` (added `GetBatchEmbeddingsAsync`, made `SearchByVectorAsync` public), `RagFusionService.cs`
+  - **Fallback** — If batch fails, automatically falls back to sequential calls
 
 - **HNSW vector indexes** — переход с IVFFlat на HNSW для быстрого поиска:
   - Поиск по 125K+ эмбеддингам: ~50сек → ~5сек (в 10 раз быстрее)
