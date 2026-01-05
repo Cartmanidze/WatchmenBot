@@ -8,6 +8,7 @@ using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Llm.Services;
 using WatchmenBot.Features.Admin.Services;
+using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Memory.Services;
 using WatchmenBot.Tests.Fixtures;
@@ -280,10 +281,21 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             embeddingService,
             NullLogger<RagFusionService>.Instance);
 
+        var userAliasService = new UserAliasService(
+            connectionFactory,
+            NullLogger<UserAliasService>.Instance);
+
+        var nicknameResolver = new NicknameResolverService(
+            connectionFactory,
+            userAliasService,
+            llmRouter,
+            NullLogger<NicknameResolverService>.Instance);
+
         var searchStrategy = new SearchStrategyService(
             embeddingService,
             contextEmbeddingService,
             ragFusionService,
+            nicknameResolver,
             NullLogger<SearchStrategyService>.Instance);
 
         var contextBuilder = new ContextBuilderService(

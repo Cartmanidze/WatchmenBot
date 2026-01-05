@@ -36,6 +36,7 @@ public class SaveMessageResponse
 
 public class SaveMessageHandler(
     MessageStore messageStore,
+    UserAliasService userAliasService,
     EmbeddingService embeddingService,
     ProfileQueueService profileQueueService,
     LogCollector logCollector,
@@ -55,6 +56,35 @@ public class SaveMessageHandler(
 
             var record = CreateMessageRecord(message);
             await messageStore.SaveAsync(record);
+
+            // Record user aliases for identity resolution (fire-and-forget, don't block)
+            // This allows searching by any name the user has ever used
+            if (record.FromUserId > 0)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        // Record display name (most common identifier)
+                        if (!string.IsNullOrWhiteSpace(record.DisplayName))
+                        {
+                            await userAliasService.RecordAliasAsync(
+                                record.ChatId, record.FromUserId, record.DisplayName, "display_name");
+                        }
+
+                        // Record username if present (@username)
+                        if (!string.IsNullOrWhiteSpace(record.Username))
+                        {
+                            await userAliasService.RecordAliasAsync(
+                                record.ChatId, record.FromUserId, record.Username, "username");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "[UserAlias] Failed to record aliases for user {UserId}", record.FromUserId);
+                    }
+                });
+            }
 
             // Save chat info (title, type)
             await messageStore.SaveChatAsync(

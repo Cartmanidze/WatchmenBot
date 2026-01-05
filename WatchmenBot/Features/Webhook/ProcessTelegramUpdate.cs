@@ -175,8 +175,11 @@ public class ProcessTelegramUpdateHandler(
         }
         catch (Exception ex)
         {
+            // IMPORTANT: Always return Success for processing errors!
+            // If we return an error, Telegram will retry the webhook infinitely.
+            // Errors are logged but don't cause webhook retries.
             logger.LogError(ex, "[Webhook] Error processing message {MessageId} in {Chat}", message.MessageId, chatName);
-            return ProcessTelegramUpdateResponse.InternalError("Internal server error");
+            return ProcessTelegramUpdateResponse.Success(); // Don't cause Telegram retry
         }
     }
 

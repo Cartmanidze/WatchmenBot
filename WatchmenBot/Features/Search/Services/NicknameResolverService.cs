@@ -2,15 +2,17 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Dapper;
 using WatchmenBot.Features.Llm.Services;
+using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Infrastructure.Database;
 
 namespace WatchmenBot.Features.Search.Services;
 
 /// <summary>
-/// Resolves nicknames/aliases to actual usernames using LLM.
+/// Resolves nicknames/aliases to actual usernames using user_aliases table and LLM fallback.
 /// </summary>
 public class NicknameResolverService(
     IDbConnectionFactory connectionFactory,
+    UserAliasService userAliasService,
     LlmRouter llmRouter,
     ILogger<NicknameResolverService> logger)
 {
@@ -48,7 +50,85 @@ public class NicknameResolverService(
         string? Reasoning);
 
     /// <summary>
-    /// Resolve a nickname to a real username from the chat
+    /// Result of user resolution (includes user_id for precise search)
+    /// </summary>
+    public record ResolvedUser(
+        string OriginalNick,
+        long? UserId,
+        string? ResolvedName,
+        double Confidence,
+        string? Reasoning);
+
+    /// <summary>
+    /// Resolve a nickname to user_id using user_aliases table first, then LLM fallback.
+    /// This is the preferred method for search - returns user_id for precise filtering.
+    /// </summary>
+    public async Task<ResolvedUser> ResolveToUserIdAsync(
+        long chatId,
+        string nickname,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(nickname))
+        {
+            return new ResolvedUser(nickname, null, null, 0, "Empty nickname");
+        }
+
+        try
+        {
+            // Step 1: Try user_aliases table first (fast and precise)
+            var userIds = await userAliasService.ResolveAliasAsync(chatId, nickname, ct);
+
+            if (userIds.Count > 0)
+            {
+                var userId = userIds[0]; // Most likely match (by usage_count)
+
+                // Get the primary display name for this user
+                var primaryName = await userAliasService.GetPrimaryNameAsync(chatId, userId, ct);
+
+                logger.LogInformation("[NicknameResolver] Alias match: '{Nick}' → user {UserId} ({Name})",
+                    nickname, userId, primaryName ?? "unknown");
+
+                return new ResolvedUser(nickname, userId, primaryName, 1.0, "Alias table match");
+            }
+
+            // Step 2: Fallback to LLM resolution
+            var llmResult = await ResolveNicknameAsync(chatId, nickname, ct);
+
+            if (llmResult.ResolvedName != null && llmResult.Confidence > 0.7)
+            {
+                // Try to find user_id for the resolved name
+                var resolvedUserIds = await userAliasService.ResolveAliasAsync(chatId, llmResult.ResolvedName, ct);
+
+                if (resolvedUserIds.Count > 0)
+                {
+                    return new ResolvedUser(
+                        nickname,
+                        resolvedUserIds[0],
+                        llmResult.ResolvedName,
+                        llmResult.Confidence,
+                        $"LLM resolved + alias lookup: {llmResult.Reasoning}");
+                }
+
+                // LLM found a name but we don't have user_id - still useful for text search
+                return new ResolvedUser(
+                    nickname,
+                    null,
+                    llmResult.ResolvedName,
+                    llmResult.Confidence * 0.8, // Lower confidence without user_id
+                    $"LLM resolved (no user_id): {llmResult.Reasoning}");
+            }
+
+            return new ResolvedUser(nickname, null, null, 0, "Could not resolve");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[NicknameResolver] Failed to resolve '{Nick}' to user_id", nickname);
+            return new ResolvedUser(nickname, null, null, 0, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Resolve a nickname to a real username from the chat (legacy method, use ResolveToUserIdAsync for search)
     /// </summary>
     public async Task<ResolvedNickname> ResolveNicknameAsync(
         long chatId,

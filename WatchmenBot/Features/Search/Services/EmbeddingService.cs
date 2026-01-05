@@ -83,6 +83,7 @@ public class EmbeddingService(
 
     /// <summary>
     /// Combined personal retrieval (delegates to PersonalSearchService)
+    /// Supports both user_id (preferred, stable) and name-based search (fallback)
     /// </summary>
     public Task<SearchResponse> GetPersonalContextAsync(
         long chatId,
@@ -90,8 +91,9 @@ public class EmbeddingService(
         string? displayName,
         string question,
         int days = 7,
+        long? userId = null,
         CancellationToken ct = default)
-        => personalSearchService.GetPersonalContextAsync(chatId, usernameOrName, displayName, question, days, ct);
+        => personalSearchService.GetPersonalContextAsync(chatId, usernameOrName, displayName, question, days, userId, ct);
 
     /// <summary>
     /// Get merged context windows (delegates to ContextWindowService)

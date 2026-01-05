@@ -46,6 +46,7 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddScoped<MessageStore>();
+        services.AddScoped<UserAliasService>();
         services.AddHostedService<DatabaseInitializer>();
 
         // Health checks

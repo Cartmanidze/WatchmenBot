@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Infinite webhook retry loop** — исправлен бесконечный цикл при ошибках:
+  - **Проблема** — если сообщение удалено, бот не мог ответить на него, возвращал 500, Telegram ретраил бесконечно
+  - **ProcessTelegramUpdate.cs** — теперь всегда возвращает 200 OK при ошибках обработки (логирует, но не ретраит)
+  - **FactCheckHandler.cs** — в catch блоке убран `replyParameters` и добавлен try-catch для отправки ошибки
+  - Best practice: webhook должен возвращать non-200 только для security ошибок (403)
+
 ### Removed
 
 - **`/recall` command** — команда удалена из бота:
@@ -34,6 +42,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Fixes issue where RAG found messages WITH the word but not messages that ANSWER the question
 
 ### Added
+
+- **User Identity Resolution System (Система резолвинга имён пользователей)** — отслеживание всех имён каждого пользователя:
+  - **Проблема** — если пользователь сменил имя (Бексултан → Beksultan Valiev), поиск по старому имени не работал
+  - **Таблица `user_aliases`** — хранит все имена каждого пользователя: display_name, username, с счётчиком использований
+  - **UserAliasService** — сервис для записи и резолвинга алиасов
+  - **Автоматический сбор** — при каждом сообщении записывается display_name и username
+  - **Миграция** — существующие имена из таблицы messages автоматически импортируются
+  - **Резолвинг** — `NicknameResolverService.ResolveToUserIdAsync()` сначала проверяет user_aliases, затем LLM fallback
+  - **Поиск по user_id** — `PersonalSearchService.GetPersonalMessagePoolByUserIdAsync()` ищет по стабильному user_id вместо строк имён
+  - **Интеграция** — `SearchStrategyService.SearchPersonalWithHybridAsync()` использует новый резолвинг
+  - Файлы: `UserAliasService.cs`, `NicknameResolverService.cs`, `PersonalSearchService.cs`, `SearchStrategyService.cs`, `DatabaseInitializer.cs`
+  - БД: новая таблица `user_aliases` (chat_id, user_id, alias, alias_type, usage_count, first_seen, last_seen)
 
 - **Per-Chat Modes System (Система режимов для чатов)** — настраиваемые режимы поведения бота для каждого чата:
   - **Business mode** (default for new chats) — профессиональный стиль, без мата и шуток

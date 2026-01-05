@@ -29,6 +29,7 @@ public class DatabaseInitializer(
             await CreateUserFactsTableAsync(connection);
             await CreateContextEmbeddingsTableAsync(connection);
             await CreateChatSettingsTableAsync(connection);
+            await CreateUserAliasesTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -382,6 +383,87 @@ public class DatabaseInitializer(
         if (migratedCount > 0)
         {
             logger.LogInformation("Migrated {Count} existing chats to 'funny' mode", migratedCount);
+        }
+    }
+
+    private async Task CreateUserAliasesTableAsync(System.Data.IDbConnection connection)
+    {
+        // Table to store all known names/aliases for each user in each chat
+        // This enables resolving "Бексултан" → user_id even if user changed name to "Beksultan Valiev"
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS user_aliases (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                alias VARCHAR(255) NOT NULL,
+                alias_type VARCHAR(20) NOT NULL DEFAULT 'display_name',
+                usage_count INT NOT NULL DEFAULT 1,
+                first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                last_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(chat_id, user_id, alias)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_aliases_chat_alias
+            ON user_aliases (chat_id, LOWER(alias));
+
+            CREATE INDEX IF NOT EXISTS idx_user_aliases_chat_user
+            ON user_aliases (chat_id, user_id);
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+
+        // Migration: populate from existing messages
+        const string migrationSql = """
+            INSERT INTO user_aliases (chat_id, user_id, alias, alias_type, usage_count, first_seen, last_seen)
+            SELECT
+                chat_id,
+                from_user_id,
+                display_name,
+                'display_name',
+                COUNT(*),
+                MIN(date_utc),
+                MAX(date_utc)
+            FROM messages
+            WHERE display_name IS NOT NULL
+              AND display_name != ''
+              AND from_user_id > 0
+            GROUP BY chat_id, from_user_id, display_name
+            ON CONFLICT (chat_id, user_id, alias) DO UPDATE SET
+                usage_count = user_aliases.usage_count + EXCLUDED.usage_count,
+                last_seen = GREATEST(user_aliases.last_seen, EXCLUDED.last_seen);
+            """;
+
+        var migratedCount = await connection.ExecuteAsync(migrationSql);
+        if (migratedCount > 0)
+        {
+            logger.LogInformation("Migrated {Count} user aliases from messages", migratedCount);
+        }
+
+        // Also add usernames as aliases
+        const string usernameMigrationSql = """
+            INSERT INTO user_aliases (chat_id, user_id, alias, alias_type, usage_count, first_seen, last_seen)
+            SELECT
+                chat_id,
+                from_user_id,
+                username,
+                'username',
+                COUNT(*),
+                MIN(date_utc),
+                MAX(date_utc)
+            FROM messages
+            WHERE username IS NOT NULL
+              AND username != ''
+              AND from_user_id > 0
+            GROUP BY chat_id, from_user_id, username
+            ON CONFLICT (chat_id, user_id, alias) DO UPDATE SET
+                usage_count = user_aliases.usage_count + EXCLUDED.usage_count,
+                last_seen = GREATEST(user_aliases.last_seen, EXCLUDED.last_seen);
+            """;
+
+        var usernameCount = await connection.ExecuteAsync(usernameMigrationSql);
+        if (usernameCount > 0)
+        {
+            logger.LogInformation("Migrated {Count} username aliases from messages", usernameCount);
         }
     }
 

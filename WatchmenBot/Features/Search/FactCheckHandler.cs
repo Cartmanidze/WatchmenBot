@@ -130,11 +130,19 @@ public class FactCheckHandler(
         {
             logger.LogError(ex, "[TRUTH] Failed to fact-check in chat {ChatId}", chatId);
 
-            await bot.SendMessage(
-                chatId: chatId,
-                text: "Произошла ошибка при проверке фактов. Попробуйте позже.",
-                replyParameters: new ReplyParameters { MessageId = message.MessageId },
-                cancellationToken: ct);
+            // Don't use replyParameters here - the original message might be deleted
+            // which would cause another exception and an infinite retry loop
+            try
+            {
+                await bot.SendMessage(
+                    chatId: chatId,
+                    text: "Произошла ошибка при проверке фактов. Попробуйте позже.",
+                    cancellationToken: ct);
+            }
+            catch
+            {
+                // Ignore - we can't even send an error message
+            }
         }
     }
 

@@ -147,6 +147,7 @@ public class PersonalSearchService(
     /// <summary>
     /// Combined personal retrieval: user's messages + mentions of user
     /// Now with proper vector search within the pool!
+    /// Supports both user_id (preferred, stable) and name-based search (fallback)
     /// </summary>
     public async Task<SearchResponse> GetPersonalContextAsync(
         long chatId,
@@ -154,6 +155,7 @@ public class PersonalSearchService(
         string? displayName,
         string question,  // The actual question to search for relevance
         int days = 7,
+        long? userId = null,  // If provided, uses stable user_id for search
         CancellationToken ct = default)
     {
         var response = new SearchResponse();
@@ -172,12 +174,14 @@ public class PersonalSearchService(
                 searchNames.Add(displayName);
 
             // Step 1: Collect pool of message IDs from user's messages + mentions
-            // OPTIMIZED: Single query instead of 2N queries (4x faster for 2 names)
-            var poolMessageIds = await GetPersonalMessagePoolAsync(chatId, searchNames, days, ct);
+            // If user_id is provided, use it for precise filtering (works across name changes)
+            var poolMessageIds = userId.HasValue
+                ? await GetPersonalMessagePoolByUserIdAsync(chatId, userId.Value, searchNames, days, ct)
+                : await GetPersonalMessagePoolAsync(chatId, searchNames, days, ct);
 
             logger.LogInformation(
-                "[Personal] User: {Names} | Pool size: {Count} messages (optimized single query)",
-                string.Join("/", searchNames), poolMessageIds.Count);
+                "[Personal] User: {UserId}/{Names} | Pool size: {Count} messages",
+                userId?.ToString() ?? "none", string.Join("/", searchNames), poolMessageIds.Count);
 
             if (poolMessageIds.Count == 0)
             {
@@ -298,6 +302,71 @@ public class PersonalSearchService(
         {
             logger.LogWarning(ex, "Failed to get personal message pool for: {Names}",
                 string.Join(", ", searchNames));
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Get pool of message IDs for personal search using stable user_id.
+    /// This works correctly even when user changes their display name.
+    /// </summary>
+    private async Task<List<long>> GetPersonalMessagePoolByUserIdAsync(
+        long chatId,
+        long userId,
+        List<string> searchNames,
+        int days = 7,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            var startDate = DateTime.UtcNow.AddDays(-days);
+            var cleanNames = searchNames.Select(n => n.TrimStart('@')).ToArray();
+
+            // Search by user_id (stable) for user's own messages
+            // Plus mentions by name patterns in other messages
+            var messageIds = await connection.QueryAsync<long>(
+                """
+                -- User's own messages (by stable user_id)
+                SELECT DISTINCT me.message_id
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND m.date_utc >= @StartDate
+                  AND m.from_user_id = @UserId
+                LIMIT 100
+
+                UNION
+
+                -- Mentions of user (text contains any known name, but NOT from user themselves)
+                SELECT DISTINCT me.message_id
+                FROM message_embeddings me
+                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                WHERE me.chat_id = @ChatId
+                  AND m.date_utc >= @StartDate
+                  AND me.chunk_text ILIKE ANY(@MentionPatterns)
+                  AND m.from_user_id != @UserId
+                LIMIT 50
+                """,
+                new
+                {
+                    ChatId = chatId,
+                    StartDate = startDate,
+                    UserId = userId,
+                    MentionPatterns = cleanNames.Select(n => $"%{n}%").ToArray()
+                });
+
+            var enumerable = messageIds as long[] ?? messageIds.ToArray();
+
+            logger.LogDebug("[Personal] Found {Count} message IDs for user_id: {UserId} (names: {Names})",
+                enumerable.Length, userId, string.Join(", ", cleanNames));
+
+            return enumerable.Distinct().ToList();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to get personal message pool for user_id: {UserId}", userId);
             return [];
         }
     }

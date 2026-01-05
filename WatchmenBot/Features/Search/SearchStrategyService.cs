@@ -12,6 +12,7 @@ public class SearchStrategyService(
     EmbeddingService embeddingService,
     ContextEmbeddingService contextEmbeddingService,
     RagFusionService ragFusionService,
+    NicknameResolverService nicknameResolverService,
     ILogger<SearchStrategyService> logger)
 {
     /// <summary>
@@ -276,9 +277,10 @@ public class SearchStrategyService(
 
     /// <summary>
     /// Hybrid search for personal questions:
-    /// 1. Try finding user's messages via message_embeddings (precise targeting)
-    /// 2. Expand with context windows via context_embeddings (full dialog context)
-    /// 3. If no personal messages found, fallback to context-only search (user might have participated in dialogs)
+    /// 1. Resolve nickname/name to stable user_id via user_aliases table
+    /// 2. Try finding user's messages via message_embeddings (precise targeting by user_id)
+    /// 3. Expand with context windows via context_embeddings (full dialog context)
+    /// 4. If no personal messages found, fallback to context-only search (user might have participated in dialogs)
     /// </summary>
     public async Task<SearchResponse> SearchPersonalWithHybridAsync(
         long chatId,
@@ -290,9 +292,19 @@ public class SearchStrategyService(
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        // Step 0: Resolve nickname/name to user_id via user_aliases table
+        // This allows finding messages even when user changed their display name
+        var resolved = await nicknameResolverService.ResolveToUserIdAsync(chatId, usernameOrName, ct);
+        var resolvedUserId = resolved.UserId;
+        var resolvedName = resolved.ResolvedName ?? displayName ?? usernameOrName;
+
+        logger.LogInformation("[HybridPersonal] Resolved '{Name}' → user_id={UserId} ({ResolvedName}), confidence={Conf:F2}",
+            usernameOrName, resolvedUserId?.ToString() ?? "null", resolvedName, resolved.Confidence);
+
         // Step 1: Try finding user's relevant messages using message_embeddings
+        // Pass user_id for precise filtering that works across name changes
         var personalTask = embeddingService.GetPersonalContextAsync(
-            chatId, usernameOrName, displayName, query, days, ct);
+            chatId, usernameOrName, resolvedName, query, days, resolvedUserId, ct);
 
         // Step 2: Parallel search in context embeddings (user might be in dialogs)
         var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
