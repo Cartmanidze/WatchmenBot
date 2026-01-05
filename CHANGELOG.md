@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Improved RAG search for "who is X" questions** — Better handling of identity questions:
+  - **Answer-pattern variations** — For questions like "кто гомик", generates search patterns like "Вася гомик", "гомик это Петя" instead of question synonyms
+  - **Entity-aware fallback** — If LLM doesn't generate name-based variations, automatically adds them from participant list
+  - **Entity boost scoring** — Results containing both a participant name AND the entity word get 50% score boost
+  - **Helper methods** — Added `IsWhoQuestion()`, `ExtractEntityWord()`, `GenerateEntityVariations()`, `ApplyEntityBoost()`
+  - Fixes issue where RAG found messages WITH the word but not messages that ANSWER the question
+
 ### Added
 
 - **Enhanced CLAUDE.md with LSP Workflow** — обновлена документация по работе с кодом:

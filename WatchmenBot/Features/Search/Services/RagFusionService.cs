@@ -57,7 +57,19 @@ public class RagFusionService(
             // Step 3: Apply Reciprocal Rank Fusion
             var fusedResults = ApplyRrfFusion(allResults);
 
-            // Step 3.5: Filter out near-exact matches (likely the query itself or similar previous queries)
+            // Step 3.5: For "who is X" questions, boost results containing name + entity word
+            if (IsWhoQuestion(query) && participantNames is { Count: > 0 })
+            {
+                var entityWord = ExtractEntityWord(query);
+                if (!string.IsNullOrEmpty(entityWord))
+                {
+                    ApplyEntityBoost(fusedResults, entityWord, participantNames);
+                    // Re-sort after boost
+                    fusedResults = fusedResults.OrderByDescending(r => r.FusedScore).ToList();
+                }
+            }
+
+            // Step 3.6: Filter out near-exact matches (likely the query itself or similar previous queries)
             var filteredResults = fusedResults
                 .Where(r => r.Similarity < 0.98)
                 .ToList();
@@ -147,6 +159,12 @@ public class RagFusionService(
                    - Согласие: "да" → "ага", "угу", "+", "ок"
                    - Удивление: → "ого", "воу", "wtf", "бля"
                 5. Используй и русский, и английский если уместно
+                6. КРИТИЧНО для вопросов "кто X" / "who is X":
+                   - Ищем НЕ вопрос, а ОТВЕТ — утверждение что кто-то является X
+                   - Генерируй ПАТТЕРНЫ ОТВЕТОВ с именами участников:
+                     • "[имя] X", "[имя] это X", "X это [имя]", "[имя] — X"
+                   - Пример: "кто гомик" → ["Вася гомик", "гомик это Петя", "Женя пидор"]
+                   - Используй реальные имена из списка участников!
 
                 Отвечай ТОЛЬКО JSON массивом строк, без пояснений:
                 ["вариация 1", "вариация 2", "вариация 3"]
@@ -177,30 +195,62 @@ public class RagFusionService(
             if (variations == null || variations.Count == 0)
             {
                 logger.LogWarning("[RAG Fusion] LLM returned empty variations, using fallback");
-                return GenerateFallbackVariations(query);
+                return GenerateFallbackVariations(query, participantNames);
             }
 
-            // Limit to requested count and filter empty
-            return variations
+            // Filter and limit LLM variations
+            var llmVariations = variations
                 .Where(v => !string.IsNullOrWhiteSpace(v))
                 .Take(count)
                 .ToList();
+
+            // For "who is X" questions, ensure we have entity-based variations as fallback
+            // (in case LLM didn't follow the prompt correctly)
+            if (IsWhoQuestion(query) && participantNames is { Count: > 0 })
+            {
+                var entityWord = ExtractEntityWord(query);
+                if (!string.IsNullOrEmpty(entityWord))
+                {
+                    // Check if LLM variations contain any participant names
+                    var hasNameVariations = llmVariations.Any(v =>
+                        participantNames.Any(n => v.Contains(n, StringComparison.OrdinalIgnoreCase)));
+
+                    if (!hasNameVariations)
+                    {
+                        logger.LogInformation("[RAG Fusion] Adding entity variations for 'who is X' question");
+                        var entityVariations = GenerateEntityVariations(entityWord, participantNames);
+                        llmVariations.AddRange(entityVariations.Take(count)); // Add up to 'count' entity variations
+                    }
+                }
+            }
+
+            return llmVariations.Distinct().ToList();
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "[RAG Fusion] Failed to generate variations, using fallback");
-            return GenerateFallbackVariations(query);
+            return GenerateFallbackVariations(query, participantNames);
         }
     }
 
     /// <summary>
     /// Fallback variations when LLM fails
     /// </summary>
-    private static List<string> GenerateFallbackVariations(string query)
+    private static List<string> GenerateFallbackVariations(string query, List<string>? participantNames = null)
     {
         var variations = new List<string>();
 
-        // Simple keyword extraction
+        // For "who is X" questions, generate entity-based variations
+        if (IsWhoQuestion(query) && participantNames is { Count: > 0 })
+        {
+            var entityWord = ExtractEntityWord(query);
+            if (!string.IsNullOrEmpty(entityWord))
+            {
+                variations.AddRange(GenerateEntityVariations(entityWord, participantNames));
+            }
+        }
+
+        // Simple keyword extraction as additional fallback
         var words = query.Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Where(w => w.Length > 3)
             .ToList();
@@ -212,6 +262,63 @@ public class RagFusionService(
 
             // Variation 2: reverse order
             variations.Add(string.Join(" ", words.Take(3).Reverse()));
+        }
+
+        return variations.Distinct().ToList();
+    }
+
+    /// <summary>
+    /// Check if query is a "who is X" type question
+    /// </summary>
+    private static bool IsWhoQuestion(string query)
+    {
+        var normalized = query.ToLowerInvariant().Trim();
+
+        // Russian patterns: "кто", "кого", "кому"
+        // English patterns: "who", "who's", "who is"
+        var whoPatterns = new[] { "кто ", "кто?", "а кто", "кого ", "кому ", "who ", "who's ", "who is " };
+
+        return whoPatterns.Any(p => normalized.StartsWith(p) || normalized.Contains($" {p.Trim()}"));
+    }
+
+    /// <summary>
+    /// Extract the entity/attribute word from a "who is X" question
+    /// Example: "кто гомик" -> "гомик", "who is the leader" -> "leader"
+    /// </summary>
+    private static string? ExtractEntityWord(string query)
+    {
+        var normalized = query.ToLowerInvariant().Trim();
+
+        // Remove question words and common fillers
+        var stopWords = new[] { "кто", "а", "же", "тут", "здесь", "у", "нас", "из", "них", "там", "who", "is", "the", "a", "an" };
+
+        var words = normalized
+            .Split([' ', '?', '!', ',', '.'], StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length > 2 && !stopWords.Contains(w))
+            .ToList();
+
+        // Return the most likely entity word (usually last significant word)
+        return words.LastOrDefault();
+    }
+
+    /// <summary>
+    /// Generate variations combining entity word with participant names
+    /// </summary>
+    private static List<string> GenerateEntityVariations(string entityWord, List<string> participantNames)
+    {
+        var variations = new List<string>();
+
+        // Take top 5 participants to avoid too many queries
+        foreach (var name in participantNames.Take(5))
+        {
+            // Pattern: "[name] [entity]" - e.g., "Вася гомик"
+            variations.Add($"{name} {entityWord}");
+
+            // Pattern: "[entity] [name]" - e.g., "гомик Вася"
+            variations.Add($"{entityWord} {name}");
+
+            // Pattern: "[name] это [entity]" - e.g., "Вася это гомик"
+            variations.Add($"{name} это {entityWord}");
         }
 
         return variations;
@@ -292,6 +399,44 @@ public class RagFusionService(
         }
 
         return fusedResults;
+    }
+
+    /// <summary>
+    /// Boost results that contain both a participant name and the entity word
+    /// This helps surface "X is Y" statements for "who is Y" questions
+    /// </summary>
+    private void ApplyEntityBoost(List<FusedSearchResult> results, string entityWord, List<string> participantNames)
+    {
+        const double entityBoostMultiplier = 1.5; // 50% boost
+        var boostedCount = 0;
+
+        foreach (var result in results)
+        {
+            var text = result.ChunkText?.ToLowerInvariant() ?? "";
+
+            // Check if text contains the entity word
+            var hasEntity = text.Contains(entityWord.ToLowerInvariant());
+            if (!hasEntity) continue;
+
+            // Check if text contains any participant name
+            var matchedName = participantNames.FirstOrDefault(n =>
+                text.Contains(n.ToLowerInvariant()));
+
+            if (matchedName != null)
+            {
+                result.FusedScore *= entityBoostMultiplier;
+                boostedCount++;
+
+                logger.LogDebug("[Entity Boost] MsgId={Id} boosted (name={Name}, entity={Entity})",
+                    result.MessageId, matchedName, entityWord);
+            }
+        }
+
+        if (boostedCount > 0)
+        {
+            logger.LogInformation("[Entity Boost] Boosted {Count} results for entity '{Entity}'",
+                boostedCount, entityWord);
+        }
     }
 
     /// <summary>
