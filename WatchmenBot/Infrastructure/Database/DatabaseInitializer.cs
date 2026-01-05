@@ -420,13 +420,12 @@ public class DatabaseInitializer(
                 // Full-text search index for Russian text
                 "CREATE INDEX IF NOT EXISTS idx_message_embeddings_text_search ON message_embeddings USING GIN (to_tsvector('russian', chunk_text));",
 
-                // Vector similarity search index (IVFFlat for approximate nearest neighbors)
-                // lists = sqrt(n) where n is expected number of rows, 100 is good for up to 10K rows
+                // Vector similarity search index (HNSW for fast approximate nearest neighbors)
+                // HNSW provides O(log n) search time, optimal for large datasets (100K+ vectors)
                 """
                 CREATE INDEX IF NOT EXISTS idx_embeddings_vector
                 ON message_embeddings
-                USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 100);
+                USING hnsw (embedding vector_cosine_ops);
                 """
             };
 
@@ -454,12 +453,11 @@ public class DatabaseInitializer(
                 // Full-text search index for Russian text (for hybrid BM25 + vector search)
                 "CREATE INDEX IF NOT EXISTS idx_context_embeddings_text_search ON context_embeddings USING GIN (to_tsvector('russian', context_text));",
 
-                // Vector similarity search index (IVFFlat)
+                // Vector similarity search index (HNSW for fast approximate nearest neighbors)
                 """
                 CREATE INDEX IF NOT EXISTS idx_context_embeddings_vector
                 ON context_embeddings
-                USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 100);
+                USING hnsw (embedding vector_cosine_ops);
                 """
             };
 

@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **HNSW vector indexes** — переход с IVFFlat на HNSW для быстрого поиска:
+  - Поиск по 125K+ эмбеддингам: ~50сек → ~5сек (в 10 раз быстрее)
+  - HNSW обеспечивает O(log n) время поиска вместо O(n)
+  - Добавлен `shm_size: 2g` в docker-compose для PostgreSQL
+  - Обновлён `DatabaseInitializer.cs` для создания HNSW индексов
+
 - **Menu button in group chats** — добавлена кнопка меню (☰) слева от поля ввода:
   - Вызов `SetChatMenuButton` с типом `MenuButtonCommands`
   - Теперь команды видны не только по `/`, но и через кнопку меню
