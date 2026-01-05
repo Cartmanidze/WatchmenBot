@@ -267,8 +267,7 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             NullLogger<EmbeddingService>.Instance,
             embeddingStorage,
             personalSearch,
-            contextWindowService,
-            confidenceEvaluator);
+            contextWindowService);
 
         var contextEmbeddingService = new ContextEmbeddingService(
             embeddingClient,

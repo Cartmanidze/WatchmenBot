@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **SearchComparisonAsync ignoring Topic entities** — сравнение стран/топиков не работало:
+  - **Проблема** — метод фильтровал сущности по `EntityType.Person`, игнорируя Topic, Location, Organization
+  - **Пример** — вопрос "Тайланд и Китай одно и тоже?" возвращал `Confidence: None` несмотря на наличие сообщений
+  - **Решение** — теперь поиск работает для всех типов сущностей (Person, Topic, Location, etc.)
+  - **Файл** — `SearchStrategyService.cs:SearchComparisonAsync()`
+
 - **Context embeddings infinite loop** — фоновая задача никогда не завершалась:
   - **Problem** — `GetIndexingStatsAsync` использовала оценку `totalMessages / 4` для pending
   - **Root cause** — Многие сообщения не могут сформировать окна (короткие диалоги < 5 сообщений)
@@ -27,6 +33,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Результат** — бот отправит ответ как обычное сообщение, если reply-to недоступен
 
 ### Removed
+
+- **Dead code cleanup in EmbeddingService & PersonalSearchService** — удалён неиспользуемый код:
+  - `SearchWithConfidenceAsync` — заменён на `VectorSearchBase` hybrid scoring
+  - `FullTextSearchAsync` — интегрирован в `BuildSimilaritySql` (BM25 component)
+  - `SimpleTextSearchAsync` — интегрирован в exact match boost
+  - `GetUserMessagesAsync`, `GetMentionsOfUserAsync` — заменены на `GetPersonalMessagePoolAsync`
+  - Удалены delegate-методы в EmbeddingService для неиспользуемых PersonalSearchService методов
+  - Убран `SearchConfidenceEvaluator` из конструктора `EmbeddingService` (теперь только в PersonalSearchService)
+  - **Итого**: ~350 строк мёртвого кода удалено, функционал сохранён в новой архитектуре
 
 - **`/recall` command** — команда удалена из бота:
   - Удалён `RecallHandler.cs`
