@@ -51,7 +51,7 @@ public class FactCheckHandler(
                 await bot.SendMessage(
                     chatId: chatId,
                     text: "Не нашёл сообщений для проверки.",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: ct);
                 return;
             }
@@ -113,12 +113,17 @@ public class FactCheckHandler(
             var sanitizedResponse = TelegramHtmlSanitizer.Sanitize(response.Content);
 
             // Send response
+            // AllowSendingWithoutReply = true prevents errors if original message was deleted
             await bot.SendMessage(
                 chatId: chatId,
                 text: sanitizedResponse,
                 parseMode: ParseMode.Html,
                 linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                replyParameters: new ReplyParameters
+                {
+                    MessageId = message.MessageId,
+                    AllowSendingWithoutReply = true
+                },
                 cancellationToken: ct);
 
             logger.LogInformation("[TRUTH] Completed fact-check for {Count} messages", messages.Count);

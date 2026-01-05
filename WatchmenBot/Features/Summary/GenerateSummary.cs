@@ -60,7 +60,7 @@ public partial class GenerateSummaryHandler(
                 await bot.SendMessage(
                     chatId: chatId,
                     text: $"За последние {hours} часов сообщений не найдено.",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: ct);
 
                 return GenerateSummaryResponse.Success(0);
@@ -79,7 +79,7 @@ public partial class GenerateSummaryHandler(
                     text: report,
                     parseMode: ParseMode.Html,
                     linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: ct);
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
@@ -91,7 +91,7 @@ public partial class GenerateSummaryHandler(
                     chatId: chatId,
                     text: plainText,
                     linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: ct);
             }
 
@@ -108,7 +108,7 @@ public partial class GenerateSummaryHandler(
                 await bot.SendMessage(
                     chatId: chatId,
                     text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: ct);
             }
             catch

@@ -115,7 +115,7 @@ public class ProcessTelegramUpdateHandler(
                 await bot.SendMessage(
                     chatId: message.Chat.Id,
                     text: "Генерирую выжимку, подождите...",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: cancellationToken);
 
                 // Добавляем в очередь для фоновой обработки

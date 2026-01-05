@@ -53,7 +53,7 @@ public class AskHandler(
             await bot.SendMessage(
                 chatId: chatId,
                 text: "Слишком много запросов, попробуй через минуту.",
-                replyParameters: new ReplyParameters { MessageId = message.MessageId },
+                replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                 cancellationToken: ct);
         }
     }

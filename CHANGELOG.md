@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **FactCheckHandler.cs** — в catch блоке убран `replyParameters` и добавлен try-catch для отправки ошибки
   - Best practice: webhook должен возвращать non-200 только для security ошибок (403)
 
+- **"Message to be replied not found" errors** — добавлен `AllowSendingWithoutReply = true` во все SendMessage:
+  - **Проблема** — даже успешный ответ падал, если оригинальное сообщение было удалено пользователем
+  - **Файлы** — FactCheckHandler.cs, ProcessTelegramUpdate.cs, AskHandler.cs, GenerateSummary.cs
+  - **Результат** — бот отправит ответ как обычное сообщение, если reply-to недоступен
+
 ### Removed
 
 - **`/recall` command** — команда удалена из бота:
