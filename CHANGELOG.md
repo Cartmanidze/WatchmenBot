@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Menu button in group chats** — добавлена кнопка меню (☰) слева от поля ввода:
+  - Вызов `SetChatMenuButton` с типом `MenuButtonCommands`
+  - Теперь команды видны не только по `/`, но и через кнопку меню
+
 - **Improved RAG search for "who is X" questions** — Better handling of identity questions:
   - **Answer-pattern variations** — For questions like "кто гомик", generates search patterns like "Вася гомик", "гомик это Петя" instead of question synonyms
   - **Entity-aware fallback** — If LLM doesn't generate name-based variations, automatically adds them from participant list
