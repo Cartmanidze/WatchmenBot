@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`/recall` command** — команда удалена из бота:
+  - Удалён `RecallHandler.cs`
+  - Удалены промпты `recall:*` из `PromptSettingsStore.cs`
+  - Удалена регистрация команды в меню бота
+  - Функционал можно получить через `/ask` с вопросом "что говорил @username?"
+
 ### Changed
 
 - **Improved RAG search for "who is X" questions** — Better handling of identity questions:
@@ -20,12 +28,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Per-Chat Modes System (Система режимов для чатов)** — настраиваемые режимы поведения бота для каждого чата:
   - **Business mode** (default for new chats) — профессиональный стиль, без мата и шуток
   - **Funny mode** (default for existing chats) — текущее поведение с подколками, сарказмом, матом
-  - **Команда `/mode`** — доступна только для `@gleb_bezrukov` (и просмотр, и изменение)
+  - **Команда `/admin mode`** — управление режимами через админ-панель (список чатов, просмотр, изменение)
   - **Архитектура** — гибкая система с enum'ами для лёгкого добавления новых режимов
   - **Подготовка к i18n** — заложена поддержка английского языка (`ChatLanguage` enum)
   - **Миграция** — существующие чаты автоматически получают `funny` режим
-  - **Интеграция** — режимы применяются в `/ask`, `/summary`, `/smart`, `/recall`, `/truth`
-  - Файлы: `ChatMode.cs`, `ChatSettingsStore.cs`, `ModeHandler.cs`
+  - **Интеграция** — режимы применяются в `/ask`, `/summary`, `/smart`, `/truth`
+  - Файлы: `ChatMode.cs`, `ChatSettingsStore.cs`, `ModeCommand.cs`
   - БД: новая таблица `chat_settings` (chat_id, mode, language)
 
 - **Enhanced CLAUDE.md with LSP Workflow** — обновлена документация по работе с кодом:
@@ -35,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Обновлён глобальный `~/.claude/CLAUDE.md` и проектный `.claude/CLAUDE.md`
 
 - **User Guide Documentation** — полное руководство пользователя на русском языке (`docs/USER_GUIDE.md`):
-  - Описание всех команд бота (`/summary`, `/ask`, `/smart`, `/recall`, `/truth`)
+  - Описание всех команд бота (`/summary`, `/ask`, `/smart`, `/truth`)
   - Объяснение системы памяти и профилей пользователей
   - Примеры использования для разных сценариев
   - Раздел FAQ с частыми вопросами

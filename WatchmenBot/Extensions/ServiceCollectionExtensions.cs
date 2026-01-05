@@ -9,7 +9,6 @@ using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
-using WatchmenBot.Features.Settings;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Infrastructure.Settings;
@@ -239,6 +238,7 @@ public static class ServiceCollectionExtensions
             registry.Register<SetSummaryTimeCommand>("set_summary_time");
             registry.Register<SetReportTimeCommand>("set_report_time");
             registry.Register<SetTimezoneCommand>("set_timezone");
+            registry.Register<ModeCommand>("mode");
 
             // LLM commands
             registry.Register<LlmListCommand>("llm");
@@ -289,6 +289,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SetSummaryTimeCommand>();
         services.AddScoped<SetReportTimeCommand>();
         services.AddScoped<SetTimezoneCommand>();
+        services.AddScoped<ModeCommand>();
         services.AddScoped<LlmListCommand>();
         services.AddScoped<LlmTestCommand>();
         services.AddScoped<LlmSetCommand>();
@@ -312,7 +313,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SetWebhookHandler>();
         services.AddScoped<DeleteWebhookHandler>();
         services.AddScoped<GetWebhookInfoHandler>();
-        services.AddScoped<ModeHandler>();
 
         // Search Services (extracted from AskHandler refactoring)
         services.AddScoped<SearchStrategyService>();
@@ -325,7 +325,6 @@ public static class ServiceCollectionExtensions
 
         // Search Handlers (embedding-based)
         services.AddScoped<AskHandler>();
-        services.AddScoped<RecallHandler>();
         services.AddScoped<FactCheckHandler>();
 
         // Controllers with Telegram.Bot JSON support (snake_case)

@@ -137,13 +137,6 @@ public class TelegramPollingService(
                 return;
             }
 
-            // Check for /recall command
-            if (IsRecallCommand(message.Text))
-            {
-                await HandleRecallCommand(scope.ServiceProvider, message, ct);
-                return;
-            }
-
             // Log message receipt
             var msgType = string.IsNullOrWhiteSpace(message.Text) ? $"[{message.Type}]" : "text";
             var preview = message.Text?.Length > 40 ? message.Text.Substring(0, 40) + "..." : message.Text ?? "";
@@ -195,14 +188,6 @@ public class TelegramPollingService(
             return false;
 
         return text.StartsWith("/ask", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsRecallCommand(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        return text.StartsWith("/recall", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsQuestionCommand(string? text)
@@ -268,17 +253,6 @@ public class TelegramPollingService(
         await askHandler.HandleAsync(message, ct);
     }
 
-    private async Task HandleRecallCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
-    {
-        var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
-        var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
-
-        logger.LogInformation("[Telegram] [{Chat}] @{User} requested /recall", chatName, userName);
-
-        var recallHandler = serviceProvider.GetRequiredService<RecallHandler>();
-        await recallHandler.HandleAsync(message, ct);
-    }
-
     private async Task HandleQuestionCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
     {
         var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
@@ -300,7 +274,6 @@ public class TelegramPollingService(
                 new() { Command = "ask", Description = "Вопрос по истории чата (RAG)" },
                 new() { Command = "smart", Description = "Поиск в интернете (Perplexity)" },
                 new() { Command = "summary", Description = "Саммари за N часов" },
-                new() { Command = "recall", Description = "Сообщения пользователя за неделю" },
                 new() { Command = "truth", Description = "Фактчек последних сообщений" },
             };
 

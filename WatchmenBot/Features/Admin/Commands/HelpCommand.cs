@@ -54,6 +54,12 @@ public class HelpCommand(ITelegramBotClient bot, ILogger<HelpCommand> logger) : 
                             /admin context_reindex &lt;chat_id&gt; — инфо + подтверждение
                             /admin context_reindex all confirm — пересоздать ВСЕ
 
+                            <b>🎭 Режимы чатов:</b>
+                            /admin mode — список чатов с режимами
+                            /admin mode &lt;chat_id&gt; — режим конкретного чата
+                            /admin mode &lt;chat_id&gt; business — деловой режим
+                            /admin mode &lt;chat_id&gt; funny — весёлый режим
+
                             <b>Настройки:</b>
                             /admin set_summary_time HH:mm — время саммари
                             /admin set_report_time HH:mm — время отчёта

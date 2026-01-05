@@ -6,7 +6,6 @@ using WatchmenBot.Extensions;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Search;
-using WatchmenBot.Features.Settings;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Admin.Services;
@@ -106,14 +105,6 @@ public class ProcessTelegramUpdateHandler(
                 return ProcessTelegramUpdateResponse.Success();
             }
 
-            if (IsCommand(message.Text, "/mode"))
-            {
-                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /mode", chatName, userName);
-                var modeHandler = scope.ServiceProvider.GetRequiredService<ModeHandler>();
-                await modeHandler.HandleAsync(message, cancellationToken);
-                return ProcessTelegramUpdateResponse.Success();
-            }
-
             if (IsCommand(message.Text, "/summary"))
             {
                 var hours = GenerateSummaryHandler.ParseHoursFromCommand(message.Text);
@@ -146,14 +137,6 @@ public class ProcessTelegramUpdateHandler(
                 logger.LogInformation("[Webhook] [{Chat}] @{User} requested /smart", chatName, userName);
                 var askHandler = scope.ServiceProvider.GetRequiredService<AskHandler>();
                 await askHandler.HandleQuestionAsync(message, cancellationToken);
-                return ProcessTelegramUpdateResponse.Success();
-            }
-
-            if (IsCommand(message.Text, "/recall"))
-            {
-                logger.LogInformation("[Webhook] [{Chat}] @{User} requested /recall", chatName, userName);
-                var recallHandler = scope.ServiceProvider.GetRequiredService<RecallHandler>();
-                await recallHandler.HandleAsync(message, cancellationToken);
                 return ProcessTelegramUpdateResponse.Success();
             }
 
