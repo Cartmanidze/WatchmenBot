@@ -146,6 +146,9 @@ public class SearchStrategyService(
             .Take(3)
             .ToList();
 
+        logger.LogInformation("[ComparisonSearch] Starting search for {Count} entities: [{Entities}]",
+            searchEntities.Count, string.Join(", ", searchEntities.Select(e => $"{e.Type}:{e.Text}")));
+
         if (searchEntities.Count == 0)
         {
             return new SearchResponse
@@ -156,10 +159,17 @@ public class SearchStrategyService(
             };
         }
 
-        var searchTasks = searchEntities.Select(e =>
-            embeddingService.SearchSimilarAsync(chatId, $"{query} {e.Text}", limit: 5, ct));
+        var searchQueries = searchEntities.Select(e => $"{query} {e.Text}").ToList();
+        logger.LogInformation("[ComparisonSearch] Queries: [{Queries}]", string.Join(" | ", searchQueries));
+
+        var searchTasks = searchQueries.Select(q =>
+            embeddingService.SearchSimilarAsync(chatId, q, limit: 5, ct));
 
         var searchResults = await Task.WhenAll(searchTasks);
+
+        logger.LogInformation("[ComparisonSearch] Search returned {Count} result sets: [{Counts}]",
+            searchResults.Length, string.Join(", ", searchResults.Select(r => r.Count)));
+
         var allResults = searchResults.SelectMany(r => r).ToList();
 
         // Deduplicate and sort
