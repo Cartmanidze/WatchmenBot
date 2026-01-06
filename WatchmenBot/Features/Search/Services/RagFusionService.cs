@@ -56,28 +56,37 @@ public class RagFusionService(
             variationsSw.Stop();
             response.QueryVariations = variations;
 
-            // Log both variations and HyDE
+            // Log variations, HyDE answer, and patterns
             logger.LogInformation("[RAG Fusion] Generated {Count} variations + HyDE in {Ms}ms for: {Query}",
                 variations.Count, variationsSw.ElapsedMilliseconds, TruncateForLog(query, 50));
 
-            if (hydeResult.Success && !string.IsNullOrWhiteSpace(hydeResult.HypotheticalAnswer))
+            if (hydeResult.Success)
             {
-                logger.LogInformation("[RAG Fusion] HyDE: '{Hypo}'",
-                    TruncateForLog(hydeResult.HypotheticalAnswer, 60));
+                logger.LogInformation("[RAG Fusion] HyDE: '{Answer}', Patterns: [{Patterns}]",
+                    TruncateForLog(hydeResult.HypotheticalAnswer ?? "", 50),
+                    string.Join(", ", hydeResult.SearchPatterns.Take(3)));
             }
 
             // Step 2: Get embeddings for all queries in a SINGLE batch API call
-            // Include: original query + variations + HyDE hypothetical answer
+            // Include: original query + variations + HyDE answer + HyDE patterns
             var allQueries = new List<string> { query };
             allQueries.AddRange(variations);
 
-            // Add HyDE to queries if successful
-            var hydeIndex = -1;
-            if (hydeResult.Success && !string.IsNullOrWhiteSpace(hydeResult.HypotheticalAnswer))
+            // Add HyDE answer and patterns if successful
+            if (hydeResult.Success)
             {
-                hydeIndex = allQueries.Count;
-                allQueries.Add(hydeResult.HypotheticalAnswer);
-                response.HypotheticalAnswer = hydeResult.HypotheticalAnswer;
+                if (!string.IsNullOrWhiteSpace(hydeResult.HypotheticalAnswer))
+                {
+                    allQueries.Add(hydeResult.HypotheticalAnswer);
+                    response.HypotheticalAnswer = hydeResult.HypotheticalAnswer;
+                }
+
+                // Add search patterns (Q→A Transformation)
+                foreach (var pattern in hydeResult.SearchPatterns.Where(p => !string.IsNullOrWhiteSpace(p)))
+                {
+                    allQueries.Add(pattern);
+                }
+                response.SearchPatterns = hydeResult.SearchPatterns;
             }
 
             var embeddingsSw = System.Diagnostics.Stopwatch.StartNew();
@@ -678,6 +687,11 @@ public class RagFusionResponse
     /// Used for better Q→A retrieval by searching in "answer space" instead of "question space".
     /// </summary>
     public string? HypotheticalAnswer { get; set; }
+
+    /// <summary>
+    /// Q→A Transformation patterns - structural phrases that would appear in real answers.
+    /// </summary>
+    public List<string> SearchPatterns { get; set; } = [];
 
     public List<FusedSearchResult> Results { get; set; } = [];
 
