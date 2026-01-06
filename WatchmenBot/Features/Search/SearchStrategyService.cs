@@ -565,12 +565,16 @@ public class SearchStrategyService(
             ? $"vars=[{string.Join(", ", fusionResponse.QueryVariations.Take(2))}]"
             : "no vars";
 
+        var hydeSummary = !string.IsNullOrWhiteSpace(fusionResponse.HypotheticalAnswer)
+            ? $", hyde=\"{(fusionResponse.HypotheticalAnswer.Length > 60 ? fusionResponse.HypotheticalAnswer[..60] + "..." : fusionResponse.HypotheticalAnswer)}\""
+            : "";
+
         return new SearchResponse
         {
             Results = allResults,
             Confidence = confidence,
             ConfidenceReason = $"[RAG Fusion: {fusionResponse.Results.Count} + Context: {contextResults.Count}] " +
-                             $"(sim={bestSim:F3}, {varSummary})",
+                             $"(sim={bestSim:F3}, {varSummary}{hydeSummary})",
             BestScore = bestSim,
             ScoreGap = fusionResponse.ScoreGap
         };
