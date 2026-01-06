@@ -431,13 +431,15 @@ public class SearchStrategyService(
         }
 
         var bestSim = mergedResults[0].Similarity;
-        var confidence = personalCount > 0 ? personalResponse.Confidence : (bestSim switch
+        // Always calculate confidence from post-rerank similarity
+        // (Cohere cross-encoder may significantly change scores)
+        var confidence = bestSim switch
         {
             > 0.5 => SearchConfidence.High,
             > 0.35 => SearchConfidence.Medium,
             > 0.25 => SearchConfidence.Low,
             _ => SearchConfidence.None
-        });
+        };
 
         return new SearchResponse
         {

@@ -196,15 +196,17 @@ public class PersonalSearchService(
 
             // Search by user_id (stable) for user's own messages
             // Plus mentions by name patterns in other messages
+            // ORDER BY date DESC to get most recent messages first
             var messageIds = await connection.QueryAsync<long>(
                 """
-                -- User's own messages (by stable user_id)
+                -- User's own messages (by stable user_id) - most recent first
                 (SELECT DISTINCT me.message_id
                 FROM message_embeddings me
                 JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
                 WHERE me.chat_id = @ChatId
                   AND m.date_utc >= @StartDate
                   AND m.from_user_id = @UserId
+                ORDER BY m.date_utc DESC
                 LIMIT 100)
 
                 UNION
@@ -217,6 +219,7 @@ public class PersonalSearchService(
                   AND m.date_utc >= @StartDate
                   AND me.chunk_text ILIKE ANY(@MentionPatterns)
                   AND m.from_user_id != @UserId
+                ORDER BY m.date_utc DESC
                 LIMIT 50)
                 """,
                 new
