@@ -249,7 +249,7 @@ public class EmbeddingService(
 
     /// <summary>
     /// Search using a pre-computed embedding vector.
-    /// Use this for batch operations where embeddings are already available.
+    /// Uses two-stage retrieval: HNSW index for candidates, then hybrid re-ranking.
     /// </summary>
     public async Task<List<SearchResult>> SearchByVectorAsync(
         long chatId,
@@ -262,17 +262,14 @@ public class EmbeddingService(
 
         // Parse query for hybrid search components
         var (searchTerms, exactMatchWords, useHybrid) = VectorSearchBase.ParseQuery(queryText);
+        var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
 
-        // Build SQL components using base class helpers
-        var exactMatchSql = VectorSearchBase.BuildExactMatchSql("me.chunk_text", exactMatchWords);
-        var similaritySql = VectorSearchBase.BuildSimilaritySql(
-            embeddingColumn: "me.embedding",
-            textColumn: "me.chunk_text",
-            dateColumn: "m.date_utc",
-            exactMatchSql: exactMatchSql,
-            useHybrid: useHybrid);
+        // Stage 1: Get candidates using HNSW index (fast O(log n) search)
+        // Fetch more candidates than needed for better re-ranking quality
+        var candidateMultiplier = useHybrid ? 10 : 5; // More candidates for hybrid to improve BM25 recall
+        var candidateLimit = Math.Min(limit * candidateMultiplier, 200);
 
-        var sql = $"""
+        var candidatesSql = """
             SELECT
                 me.chat_id as ChatId,
                 me.message_id as MessageId,
@@ -280,25 +277,97 @@ public class EmbeddingService(
                 me.chunk_text as ChunkText,
                 me.metadata as MetadataJson,
                 me.embedding <=> @Embedding::vector as Distance,
-                {similaritySql} as Similarity
+                m.date_utc as DateUtc
             FROM message_embeddings me
             JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
             WHERE me.chat_id = @ChatId
-            ORDER BY Similarity DESC
-            LIMIT @Limit
+            ORDER BY me.embedding <=> @Embedding::vector
+            LIMIT @CandidateLimit
             """;
 
-        var parameters = VectorSearchBase.BuildSearchParameters(chatId, queryEmbedding, searchTerms, exactMatchWords, limit);
-        var results = await connection.QueryAsync<SearchResult>(sql, parameters);
+        var candidates = (await connection.QueryAsync<SearchResultWithDate>(
+            candidatesSql,
+            new { ChatId = chatId, Embedding = embeddingString, CandidateLimit = candidateLimit }))
+            .ToList();
 
-        logger.LogDebug("[Search] Hybrid={Hybrid}, Terms='{Terms}', ExactWords=[{Words}]",
-            useHybrid, searchTerms ?? "none", string.Join(",", exactMatchWords));
-
-        return results.Select(r =>
+        if (candidates.Count == 0)
         {
-            r.IsNewsDump = NewsDumpDetector.IsNewsDump(r.ChunkText);
-            return r;
-        }).ToList();
+            return [];
+        }
+
+        // Stage 2: Re-rank candidates using hybrid scoring in memory
+        var now = DateTime.UtcNow;
+        var searchTermsLower = searchTerms?.ToLowerInvariant();
+        var exactWordsLower = exactMatchWords.Select(w => w.ToLowerInvariant()).ToList();
+
+        foreach (var c in candidates)
+        {
+            var vectorScore = 1.0 - c.Distance;
+            var textLower = c.ChunkText?.ToLowerInvariant() ?? "";
+
+            // BM25-like text score (simplified for in-memory)
+            double textScore = 0;
+            if (useHybrid && !string.IsNullOrEmpty(searchTermsLower))
+            {
+                var terms = searchTermsLower.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var matchCount = terms.Count(t => textLower.Contains(t));
+                textScore = terms.Length > 0 ? (double)matchCount / terms.Length : 0;
+            }
+
+            // Exact match boost
+            double exactBoost = exactWordsLower.Any(w => textLower.Contains(w))
+                ? SearchConstants.ExactMatchBoost : 0;
+
+            // Time decay
+            var daysSince = (now - c.DateUtc).TotalDays;
+            var timeDecay = SearchConstants.TimeDecayWeight *
+                Math.Exp(-Math.Max(0, daysSince) * Math.Log(2) / SearchConstants.TimeDecayHalfLifeDays);
+
+            // Combined score
+            c.Similarity = useHybrid
+                ? SearchConstants.DenseWeight * vectorScore
+                  + SearchConstants.SparseWeight * textScore
+                  + exactBoost
+                  + timeDecay
+                : vectorScore + exactBoost + timeDecay;
+        }
+
+        // Sort by hybrid score and take top results
+        var results = candidates
+            .OrderByDescending(c => c.Similarity)
+            .Take(limit)
+            .Select(c => new SearchResult
+            {
+                ChatId = c.ChatId,
+                MessageId = c.MessageId,
+                ChunkIndex = c.ChunkIndex,
+                ChunkText = c.ChunkText,
+                MetadataJson = c.MetadataJson,
+                Distance = c.Distance,
+                Similarity = c.Similarity,
+                IsNewsDump = NewsDumpDetector.IsNewsDump(c.ChunkText)
+            })
+            .ToList();
+
+        logger.LogDebug("[Search] Two-stage: {Candidates} candidates → {Results} results, Hybrid={Hybrid}, Terms='{Terms}'",
+            candidates.Count, results.Count, useHybrid, searchTerms ?? "none");
+
+        return results;
+    }
+
+    /// <summary>
+    /// Internal model for two-stage retrieval with date for time decay calculation
+    /// </summary>
+    private class SearchResultWithDate
+    {
+        public long ChatId { get; set; }
+        public long MessageId { get; set; }
+        public int ChunkIndex { get; set; }
+        public string ChunkText { get; set; } = "";
+        public string? MetadataJson { get; set; }
+        public double Distance { get; set; }
+        public double Similarity { get; set; }
+        public DateTime DateUtc { get; set; }
     }
 
     /// <summary>

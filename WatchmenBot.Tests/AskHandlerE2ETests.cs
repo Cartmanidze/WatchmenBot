@@ -295,11 +295,19 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             llmRouter,
             NullLogger<NicknameResolverService>.Instance);
 
+        // Cohere reranker with empty API key (disabled in tests)
+        var cohereReranker = new CohereRerankService(
+            new HttpClient(),
+            apiKey: "", // Disabled - will gracefully skip reranking
+            model: "rerank-v4.0-pro",
+            NullLogger<CohereRerankService>.Instance);
+
         var searchStrategy = new SearchStrategyService(
             embeddingService,
             contextEmbeddingService,
             ragFusionService,
             nicknameResolver,
+            cohereReranker,
             NullLogger<SearchStrategyService>.Instance);
 
         var contextBuilder = new ContextBuilderService(

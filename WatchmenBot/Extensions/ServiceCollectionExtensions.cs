@@ -164,6 +164,29 @@ public static class ServiceCollectionExtensions
         // Rerank Service (LLM-based reranking)
         services.AddScoped<RerankService>();
 
+        // Cohere Rerank Service (cross-encoder reranking)
+        services.AddHttpClient<CohereRerankService>()
+            .ConfigureHttpClient(client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(30);
+            })
+            .AddTypedClient<CohereRerankService>((httpClient, serviceProvider) =>
+            {
+                var apiKey = configuration["Reranker:ApiKey"] ?? "";
+                var model = configuration["Reranker:Model"] ?? "rerank-v4.0-pro";
+                var enabled = configuration.GetValue("Reranker:Enabled", true);
+                var logger = serviceProvider.GetRequiredService<ILogger<CohereRerankService>>();
+
+                // If disabled or no API key, service will gracefully skip reranking
+                if (!enabled)
+                {
+                    logger.LogInformation("[Rerank] Cohere reranker disabled in configuration");
+                    apiKey = ""; // Force disabled
+                }
+
+                return new CohereRerankService(httpClient, apiKey, model, logger);
+            });
+
         // LLM Memory Services (refactored architecture)
         services.AddSingleton<GenderDetectionService>(); // Stateless, can be singleton
         services.AddScoped<ProfileManagementService>();

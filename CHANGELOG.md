@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Cross-encoder reranking via Cohere API** — улучшение качества поиска через реранкинг с помощью cross-encoder:
+  - **Проблема** — bi-encoder эмбеддинги плохо связывают вопросы с ответами:
+    - "для чего ты создан?" → "ты создан чтобы..." давало similarity ~0.30 вместо 0.70+
+    - Причина: bi-encoder кодирует query и document отдельно, не видит их взаимодействие
+  - **Решение** — Two-stage retrieval с cross-encoder:
+    ```
+    Stage 1: Bi-encoder (HNSW) → 50 кандидатов (~150ms)
+    Stage 2: Cross-encoder (Cohere) → re-rank top 15 (~200ms)
+    ```
+  - **Cross-encoder vs Bi-encoder**:
+    | | Bi-encoder | Cross-encoder |
+    |---|---|---|
+    | Как работает | Query и Doc отдельно | Query+Doc вместе через BERT |
+    | Видит взаимодействие | ❌ | ✅ |
+    | Скорость | ~1ms (HNSW) | ~200ms (API) |
+    | Use case | Retrieval (много) | Reranking (мало) |
+  - **Интеграция**:
+    - `CohereRerankService` — HTTP клиент для Cohere Rerank v2 API
+    - Интегрирован в `SearchPersonalWithHybridAsync` и `SearchContextOnlyAsync`
+    - Graceful degradation — если API key не настроен, реранкинг пропускается
+  - **Модель**: `rerank-v4.0-pro` (latest, январь 2026) — 32K context, 100+ языков, self-learning
+  - **Конфигурация** в `appsettings.json`:
+    ```json
+    "Reranker": {
+      "Provider": "cohere",
+      "ApiKey": "",
+      "Model": "rerank-v4.0-pro",
+      "Enabled": true
+    }
+    ```
+  - **Файлы** — `CohereRerankService.cs`, `SearchStrategyService.cs`, `ServiceCollectionExtensions.cs`, `appsettings.json`
+
 - **Relationship detection between chat participants** — автоматическое определение отношений между участниками чата:
   - **Цель** — улучшить контекст бота, зная кто кому кем приходится (жена, муж, брат, друг и т.д.)
   - **Подход** — гибридный (Regex + LLM):
@@ -28,11 +60,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Two-stage retrieval for vector search (critical performance fix)** — исправлена критическая проблема с vector search:
+  - **Проблема** — HNSW индекс **не использовался** из-за сложного `ORDER BY Similarity DESC`
+  - **Root cause** — hybrid scoring формула (BM25 + time decay + exact match) вычислялась **для всех 125K строк**
+  - **Симптомы** — vector search занимал ~6 сек вместо ~200ms, 4 параллельных запроса = ~20 сек
+  - **Решение** — Two-stage retrieval pattern:
+    1. **Stage 1 (DB)**: `ORDER BY embedding <=> vector LIMIT 200` → HNSW Index → ~150ms
+    2. **Stage 2 (Memory)**: Re-rank 200 кандидатов по hybrid формуле → ~1ms
+  - **Результат**:
+    | Метрика | До | После | Улучшение |
+    |---------|------|--------|-----------|
+    | Query Plan | Seq Scan | Index Scan | ✅ |
+    | Execution Time | 5,819 ms | 150 ms | **~39x** |
+    | Buffers read | 86,493 | 998 | ~87x меньше I/O |
+  - **Ожидаемое ускорение RAG Fusion** — 4 parallel × 150ms = ~600ms вместо ~20 сек
+  - **Файл** — `EmbeddingService.cs:SearchByVectorAsync`
+
 - **RAG Fusion parallel vector search** — ускорение vector search в RAG Fusion:
   - **Было** — 4 vector searches выполнялись последовательно (~4-8 сек)
   - **Стало** — параллельное выполнение через `Task.WhenAll` (~1-2 сек)
   - **Анализ** — connection pool имеет ~95 свободных соединений из 100, параллелизм безопасен
-  - **Ожидаемое ускорение** — RAG Fusion: ~10-20 сек → ~5-12 сек
   - **Файл** — `RagFusionService.cs`
 
 - **Persistent message queues with LISTEN/NOTIFY** — очереди `/ask`, `/summary` и `/truth` теперь персистентные с real-time уведомлениями:

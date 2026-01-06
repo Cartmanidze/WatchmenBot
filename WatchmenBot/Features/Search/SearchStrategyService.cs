@@ -7,12 +7,14 @@ namespace WatchmenBot.Features.Search;
 /// Search strategy service for /ask command
 /// Handles personal (hybrid) and context-only search strategies
 /// Enhanced with RAG Fusion for better recall on ambiguous queries
+/// Now includes cross-encoder reranking via Cohere for improved question→answer matching
 /// </summary>
 public class SearchStrategyService(
     EmbeddingService embeddingService,
     ContextEmbeddingService contextEmbeddingService,
     RagFusionService ragFusionService,
     NicknameResolverService nicknameResolverService,
+    CohereRerankService cohereReranker,
     ILogger<SearchStrategyService> logger)
 {
     /// <summary>
@@ -331,14 +333,14 @@ public class SearchStrategyService(
             chatId, usernameOrName, resolvedName, query, days, resolvedUserId, ct);
 
         // Step 2: Parallel search in context embeddings (user might be in dialogs)
-        var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
+        // Fetch more candidates for reranking - cross-encoder will improve relevance
+        var contextLimit = cohereReranker.IsConfigured ? 50 : 10;
+        var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: contextLimit, ct);
 
         await Task.WhenAll(personalTask, contextTask);
 
         var personalResponse = await personalTask;
         var contextWindows = await contextTask;
-
-        sw.Stop();
 
         // Step 3: Merge results based on what we found
         var allResults = new List<SearchResult>();
@@ -401,6 +403,19 @@ public class SearchStrategyService(
             .OrderByDescending(r => r.Similarity)
             .ToList();
 
+        // Step 4: Cross-encoder reranking (if configured)
+        // This dramatically improves question→answer matching that bi-encoders miss
+        if (cohereReranker.IsConfigured && mergedResults.Count > 0)
+        {
+            var beforeRerank = sw.ElapsedMilliseconds;
+            mergedResults = await cohereReranker.RerankAsync(query, mergedResults, topN: 15, ct);
+            logger.LogInformation(
+                "[HybridPersonal] Reranked {Count} results in {Ms}ms",
+                mergedResults.Count, sw.ElapsedMilliseconds - beforeRerank);
+        }
+
+        sw.Stop();
+
         logger.LogInformation(
             "[HybridPersonal] User: {User} | Found {Total} results in {Ms}ms ({Personal} personal + {Context} context)",
             usernameOrName, mergedResults.Count, sw.ElapsedMilliseconds, personalCount, contextCount);
@@ -459,9 +474,9 @@ public class SearchStrategyService(
             ct);
 
         // Step 2: Context embeddings search (for dialog context)
-        var contextResults = await contextEmbeddingService.SearchContextAsync(chatId, query, limit: 10, ct);
-
-        sw.Stop();
+        // Fetch more candidates for reranking if cross-encoder is configured
+        var contextLimit = cohereReranker.IsConfigured ? 50 : 10;
+        var contextResults = await contextEmbeddingService.SearchContextAsync(chatId, query, limit: contextLimit, ct);
 
         logger.LogInformation(
             "[RAG+Context] Query: '{Query}' | Variations: [{Vars}] | Fusion: {FusionCount} | Context: {ContextCount} | {Ms}ms",
@@ -506,9 +521,22 @@ public class SearchStrategyService(
             .OrderByDescending(r => r.Similarity)
             .ToList();
 
+        // Step 3: Cross-encoder reranking (if configured)
+        // This dramatically improves question→answer matching that bi-encoders miss
+        if (cohereReranker.IsConfigured && allResults.Count > 0)
+        {
+            var beforeRerank = sw.ElapsedMilliseconds;
+            allResults = await cohereReranker.RerankAsync(query, allResults, topN: 15, ct);
+            logger.LogInformation(
+                "[RAG+Context] Reranked {Count} results in {Ms}ms",
+                allResults.Count, sw.ElapsedMilliseconds - beforeRerank);
+        }
+
+        sw.Stop();
+
         logger.LogInformation(
-            "[RAG+Context] Merged {Total} results ({Fusion} fusion + {Context} context)",
-            allResults.Count, fusionResponse.Results.Count, contextResults.Count);
+            "[RAG+Context] Merged {Total} results ({Fusion} fusion + {Context} context) in {Ms}ms",
+            allResults.Count, fusionResponse.Results.Count, contextResults.Count, sw.ElapsedMilliseconds);
 
         if (allResults.Count == 0)
         {
