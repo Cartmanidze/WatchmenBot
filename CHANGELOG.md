@@ -49,6 +49,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **PostgresNotificationService crash on startup** — приложение падало при старте с "Connection string not configured":
+  - **Root cause** — использовалось `GetConnectionString("DefaultConnection")` вместо `"Default"`
+  - **Файл** — `PostgresNotificationService.cs:43`
+
 - **Exact match not working for short words** — точное совпадение не работало для коротких слов:
   - **Проблема** — запрос "где ням няма делают" не находил сообщение "ням ням делать"
   - **Root cause** — `ExtractIlikeWords` фильтровал слова `length > 3`, "ням" (3 символа) исключался

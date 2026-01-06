@@ -40,7 +40,8 @@ public class PostgresNotificationService : IHostedService, IDisposable
         IConfiguration configuration,
         ILogger<PostgresNotificationService> logger)
     {
-        _connectionString = configuration.GetConnectionString("DefaultConnection")
+        _connectionString = configuration.GetConnectionString("Default")
+            ?? configuration["Database:ConnectionString"]
             ?? throw new InvalidOperationException("Connection string not configured");
         _logger = logger;
     }
