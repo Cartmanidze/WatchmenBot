@@ -199,25 +199,25 @@ public class PersonalSearchService(
             var messageIds = await connection.QueryAsync<long>(
                 """
                 -- User's own messages (by stable user_id)
-                SELECT DISTINCT me.message_id
+                (SELECT DISTINCT me.message_id
                 FROM message_embeddings me
                 JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
                 WHERE me.chat_id = @ChatId
                   AND m.date_utc >= @StartDate
                   AND m.from_user_id = @UserId
-                LIMIT 100
+                LIMIT 100)
 
                 UNION
 
                 -- Mentions of user (text contains any known name, but NOT from user themselves)
-                SELECT DISTINCT me.message_id
+                (SELECT DISTINCT me.message_id
                 FROM message_embeddings me
                 JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
                 WHERE me.chat_id = @ChatId
                   AND m.date_utc >= @StartDate
                   AND me.chunk_text ILIKE ANY(@MentionPatterns)
                   AND m.from_user_id != @UserId
-                LIMIT 50
+                LIMIT 50)
                 """,
                 new
                 {
