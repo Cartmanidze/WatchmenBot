@@ -38,12 +38,14 @@ public class RagFusionService(
 
         try
         {
-            // Step 1: Generate query variations
+            // Step 1: Generate query variations via LLM
+            var variationsSw = System.Diagnostics.Stopwatch.StartNew();
             var variations = await GenerateQueryVariationsAsync(query, variationCount, participantNames, ct);
+            variationsSw.Stop();
             response.QueryVariations = variations;
 
-            logger.LogInformation("[RAG Fusion] Generated {Count} variations for: {Query}",
-                variations.Count, TruncateForLog(query, 50));
+            logger.LogInformation("[RAG Fusion] Generated {Count} variations in {Ms}ms for: {Query}",
+                variations.Count, variationsSw.ElapsedMilliseconds, TruncateForLog(query, 50));
 
             // Step 2: Get embeddings for all queries in a SINGLE batch API call
             // This reduces 4 separate Jina API calls to just 1, saving ~20-25 seconds
@@ -68,13 +70,59 @@ public class RagFusionService(
                 return ProcessSearchResults(fallbackResults, allQueries, variations, query, sw);
             }
 
-            // Step 3: Search by vector for each embedding SEQUENTIALLY to prevent DB connection contention
-            // (Parallel queries caused PostgreSQL timeouts when combined with other parallel operations)
+            // Step 3: Search by vector for each embedding in PARALLEL
+            // Connection pool has ~95 free connections, safe for controlled parallelism
             var allResults = new List<SearchResult>[allQueries.Count];
-            for (var i = 0; i < allQueries.Count; i++)
+            var searchTimings = new long[allQueries.Count];
+            var searchErrors = new Exception?[allQueries.Count];
+            var searchSw = System.Diagnostics.Stopwatch.StartNew();
+
+            var parallelSearchTasks = allQueries.Select((_, i) => Task.Run(async () =>
             {
-                allResults[i] = await embeddingService.SearchByVectorAsync(
-                    chatId, allEmbeddings[i], resultsPerQuery, ct, queryText: allQueries[i]);
+                var taskSw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    allResults[i] = await embeddingService.SearchByVectorAsync(
+                        chatId, allEmbeddings[i], resultsPerQuery, ct, queryText: allQueries[i]);
+                    taskSw.Stop();
+                    searchTimings[i] = taskSw.ElapsedMilliseconds;
+                }
+                catch (Exception ex)
+                {
+                    taskSw.Stop();
+                    searchTimings[i] = taskSw.ElapsedMilliseconds;
+                    searchErrors[i] = ex;
+                    allResults[i] = []; // Empty result on error
+                    logger.LogWarning(ex,
+                        "[RAG Fusion] Vector search {Index} failed after {Ms}ms: {Query}",
+                        i, taskSw.ElapsedMilliseconds, TruncateForLog(allQueries[i], 50));
+                }
+            }, ct));
+
+            await Task.WhenAll(parallelSearchTasks);
+            searchSw.Stop();
+
+            // Log detailed timing for each search
+            var successCount = searchErrors.Count(e => e == null);
+            var errorCount = searchErrors.Count(e => e != null);
+            var resultCounts = allResults.Select(r => r?.Count ?? 0).ToArray();
+
+            logger.LogInformation(
+                "[RAG Fusion] Parallel vector search completed: {Success}/{Total} succeeded in {TotalMs}ms | " +
+                "Individual times: [{Times}]ms | Results: [{Counts}]",
+                successCount, allQueries.Count, searchSw.ElapsedMilliseconds,
+                string.Join(", ", searchTimings),
+                string.Join(", ", resultCounts));
+
+            // Log errors summary if any
+            if (errorCount > 0)
+            {
+                var errorTypes = searchErrors
+                    .Where(e => e != null)
+                    .GroupBy(e => e!.GetType().Name)
+                    .Select(g => $"{g.Key}:{g.Count()}");
+                logger.LogWarning("[RAG Fusion] {ErrorCount} searches failed: {ErrorTypes}",
+                    errorCount, string.Join(", ", errorTypes));
             }
 
             // Step 3: Apply Reciprocal Rank Fusion

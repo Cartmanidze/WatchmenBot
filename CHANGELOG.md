@@ -28,6 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **RAG Fusion parallel vector search** — ускорение vector search в RAG Fusion:
+  - **Было** — 4 vector searches выполнялись последовательно (~4-8 сек)
+  - **Стало** — параллельное выполнение через `Task.WhenAll` (~1-2 сек)
+  - **Анализ** — connection pool имеет ~95 свободных соединений из 100, параллелизм безопасен
+  - **Ожидаемое ускорение** — RAG Fusion: ~10-20 сек → ~5-12 сек
+  - **Файл** — `RagFusionService.cs`
+
 - **Persistent message queues with LISTEN/NOTIFY** — очереди `/ask`, `/summary` и `/truth` теперь персистентные с real-time уведомлениями:
   - **Проблема** — in-memory Channel очереди терялись при рестарте/деплое, polling добавлял 2-5 сек latency
   - **Было** — `System.Threading.Channels` (in-memory) с polling
