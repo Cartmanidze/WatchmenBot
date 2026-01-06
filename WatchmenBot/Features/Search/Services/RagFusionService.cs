@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Llm.Services;
 
@@ -10,7 +11,7 @@ namespace WatchmenBot.Features.Search.Services;
 /// Based on: https://habr.com/ru/companies/postgrespro/articles/979820/
 /// HyDE paper: https://arxiv.org/abs/2212.10496
 /// </summary>
-public class RagFusionService(
+public partial class RagFusionService(
     LlmRouter llmRouter,
     EmbeddingService embeddingService,
     HydeService hydeService,
@@ -178,8 +179,33 @@ public class RagFusionService(
                     errorCount, string.Join(", ", errorTypes));
             }
 
-            // Step 3: Apply Reciprocal Rank Fusion
-            var fusedResults = ApplyRrfFusion(allResults);
+            // Step 3.1: For bot-directed questions, add HYBRID search (Vector + Keywords)
+            // This uses PostgreSQL full-text search with GIN index for exact keyword matches
+            var allResultsForFusion = allResults.ToList();
+            var isBotDirected = IsBotDirectedQuestion(query);
+
+            if (isBotDirected)
+            {
+                var hybridSw = System.Diagnostics.Stopwatch.StartNew();
+
+                // Use the original query embedding with bot-specific keywords
+                var botKeywords = "бот | создан | чтобы | умеет | нужен | цель";
+                var hybridResults = await embeddingService.HybridSearchAsync(
+                    chatId, allEmbeddings[0], botKeywords, resultsPerQuery, ct);
+
+                hybridSw.Stop();
+
+                if (hybridResults.Count > 0)
+                {
+                    allResultsForFusion.Add(hybridResults);
+                    logger.LogInformation(
+                        "[RAG Fusion] Bot-directed HYBRID search: {Count} results in {Ms}ms (keywords: '{Keywords}')",
+                        hybridResults.Count, hybridSw.ElapsedMilliseconds, botKeywords);
+                }
+            }
+
+            // Step 3.2: Apply Reciprocal Rank Fusion
+            var fusedResults = ApplyRrfFusion(allResultsForFusion.ToArray());
 
             // Step 3.5: For "who is X" questions, boost results containing name + entity word
             if (IsWhoQuestion(query) && participantNames is { Count: > 0 })
@@ -669,33 +695,38 @@ public class RagFusionService(
 
     /// <summary>
     /// Detect if question is directed at the bot (using "ты", "бот", etc.)
+    /// Uses regex to catch "ты + любой глагол" pattern.
     /// </summary>
     private static bool IsBotDirectedQuestion(string query)
     {
         var q = query.ToLowerInvariant();
 
-        // Direct bot address patterns
+        // Pattern 1: "ты" as subject at the start of question (ты + глагол)
+        // Matches: "ты создан", "ты разочарован", "ты думаешь", etc.
+        if (BotAddressRegex().IsMatch(q))
+            return true;
+
+        // Pattern 2: Explicit bot references
         var botPatterns = new[]
         {
-            "ты создан",
-            "ты умеешь",
-            "ты можешь",
-            "ты знаешь",
-            "ты думаешь",
-            "зачем ты",
-            "для чего ты",
-            "кто ты",
-            "что ты",
-            "как ты",
-            "почему ты",
             "твоя цель",
             "твоё назначение",
+            "твоей цели",
+            "твою цель",
             "бот ",
             "ботик",
+            "chat norris",
         };
 
         return botPatterns.Any(p => q.Contains(p));
     }
+
+    /// <summary>
+    /// Regex to detect "ты" as subject addressing the bot.
+    /// Matches: "ты создан", "ты разочарован", "зачем ты", "для чего ты", etc.
+    /// </summary>
+    [GeneratedRegex(@"^ты\s+\w+|(?:зачем|для чего|кто|что|как|почему|когда)\s+ты\b", RegexOptions.IgnoreCase)]
+    private static partial Regex BotAddressRegex();
 }
 
 /// <summary>

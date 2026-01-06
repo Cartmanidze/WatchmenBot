@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **True Hybrid Search (Vector + Keywords with RRF)** — настоящий гибридный поиск с PostgreSQL full-text:
+  - **Проблема** — семантический поиск не различает бота от человека:
+    - Embedding "бот создан" ≈ "человек создан" (семантически похожи!)
+    - Вопрос "ты разочарован своей целью?" находил философию о людях
+  - **Решение** — Hybrid Search объединяет:
+    | Метод | Что находит | Индекс |
+    |-------|-------------|--------|
+    | **Vector (HNSW)** | Семантически похожее | `vector_cosine_ops` |
+    | **Keyword (BM25)** | Точные совпадения слов | GIN `to_tsvector('russian')` |
+  - **Архитектура**:
+    ```
+    Query → ┬─► Vector Search ──► Candidates ─┐
+            │                                  │
+            └─► Keyword Search ─► Candidates ─┴─► RRF Fusion ─► Results
+    ```
+  - **RRF (Reciprocal Rank Fusion)** в SQL:
+    ```sql
+    COALESCE(1.0 / (60 + v.vector_rank), 0) +
+    COALESCE(1.0 / (60 + k.keyword_rank), 0) as rrf_score
+    ```
+  - **Интеграция**:
+    - `HybridSearchAsync()` в EmbeddingService — единый SQL запрос
+    - Bot-directed detection через regex `^ты\s+\w+`
+    - При bot-directed добавляется hybrid search с keywords "бот | создан | чтобы | умеет"
+    - GIN индексы уже были в схеме, теперь используются!
+  - **Файлы** — `EmbeddingService.cs`, `RagFusionService.cs`
+
 - **HyDE (Hypothetical Document Embeddings)** — улучшение Q→A retrieval через генерацию гипотетических ответов:
   - **Проблема** — bi-encoder плохо связывает вопросы с ответами:
     - Вопрос "для чего ты создан?" в "question space"
@@ -29,6 +56,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - HyDE генерируется параллельно с query variations
     - Embedding HyDE добавляется к batch запросу
     - Результаты HyDE поиска мержатся через RRF
+  - **Q→A Transformation** — генерация структурных паттернов:
+    - LLM генерирует не только ответ, но и паттерны: `["создан чтобы", "бот для", "цель бота"]`
+    - Паттерны добавляются как отдельные queries в RAG Fusion
   - **Paper**: https://arxiv.org/abs/2212.10496
   - **Файлы** — `HydeService.cs`, `RagFusionService.cs`, `ServiceCollectionExtensions.cs`
 

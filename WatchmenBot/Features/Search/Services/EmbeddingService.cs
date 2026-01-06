@@ -248,6 +248,166 @@ public class EmbeddingService(
     #region Vector Search Helpers
 
     /// <summary>
+    /// True hybrid search: Vector (HNSW) + Full-Text (GIN) with RRF fusion in PostgreSQL.
+    /// Uses the GIN index on to_tsvector('russian', chunk_text) for keyword matching.
+    /// </summary>
+    public async Task<List<SearchResult>> HybridSearchAsync(
+        long chatId,
+        float[] queryEmbedding,
+        string keywordQuery,
+        int limit,
+        CancellationToken ct = default)
+    {
+        using var connection = await connectionFactory.CreateConnectionAsync();
+        var embeddingString = "[" + string.Join(",", queryEmbedding) + "]";
+
+        // Clean keyword query for tsquery (remove special characters)
+        var cleanedKeywords = CleanForTsQuery(keywordQuery);
+
+        if (string.IsNullOrWhiteSpace(cleanedKeywords))
+        {
+            // Fallback to pure vector search if no valid keywords
+            return await SearchByVectorAsync(chatId, queryEmbedding, limit, ct, keywordQuery);
+        }
+
+        const int rrfK = 60; // RRF constant
+        var candidateLimit = Math.Min(limit * 5, 150);
+
+        // True hybrid search with RRF fusion in SQL
+        // Both vector and keyword searches run in parallel, then combined
+        var hybridSql = $"""
+            WITH vector_search AS (
+                SELECT
+                    me.chat_id,
+                    me.message_id,
+                    me.chunk_index,
+                    me.chunk_text,
+                    me.metadata,
+                    me.embedding <=> @Embedding::vector as distance,
+                    ROW_NUMBER() OVER (ORDER BY me.embedding <=> @Embedding::vector) as vector_rank
+                FROM message_embeddings me
+                WHERE me.chat_id = @ChatId
+                ORDER BY me.embedding <=> @Embedding::vector
+                LIMIT @CandidateLimit
+            ),
+            keyword_search AS (
+                SELECT
+                    me.chat_id,
+                    me.message_id,
+                    me.chunk_index,
+                    me.chunk_text,
+                    me.metadata,
+                    ts_rank_cd(to_tsvector('russian', me.chunk_text), query) as text_rank,
+                    ROW_NUMBER() OVER (ORDER BY ts_rank_cd(to_tsvector('russian', me.chunk_text), query) DESC) as keyword_rank
+                FROM message_embeddings me,
+                     to_tsquery('russian', @Keywords) query
+                WHERE me.chat_id = @ChatId
+                  AND to_tsvector('russian', me.chunk_text) @@ query
+                ORDER BY ts_rank_cd(to_tsvector('russian', me.chunk_text), query) DESC
+                LIMIT @CandidateLimit
+            )
+            SELECT
+                COALESCE(v.chat_id, k.chat_id) as ChatId,
+                COALESCE(v.message_id, k.message_id) as MessageId,
+                COALESCE(v.chunk_index, k.chunk_index) as ChunkIndex,
+                COALESCE(v.chunk_text, k.chunk_text) as ChunkText,
+                COALESCE(v.metadata, k.metadata) as MetadataJson,
+                COALESCE(v.distance, 1.0) as Distance,
+                -- RRF fusion: sum of reciprocal ranks
+                COALESCE(1.0 / ({rrfK} + v.vector_rank), 0) +
+                COALESCE(1.0 / ({rrfK} + k.keyword_rank), 0) as Similarity,
+                -- Debug info
+                v.vector_rank,
+                k.keyword_rank,
+                k.text_rank
+            FROM vector_search v
+            FULL OUTER JOIN keyword_search k
+                ON v.chat_id = k.chat_id
+                AND v.message_id = k.message_id
+                AND v.chunk_index = k.chunk_index
+            ORDER BY
+                COALESCE(1.0 / ({rrfK} + v.vector_rank), 0) +
+                COALESCE(1.0 / ({rrfK} + k.keyword_rank), 0) DESC
+            LIMIT @Limit
+            """;
+
+        try
+        {
+            var results = await connection.QueryAsync<HybridSearchResult>(
+                hybridSql,
+                new { ChatId = chatId, Embedding = embeddingString, Keywords = cleanedKeywords, CandidateLimit = candidateLimit, Limit = limit });
+
+            var resultList = results.ToList();
+
+            // Log hybrid search effectiveness
+            var vectorOnly = resultList.Count(r => r.KeywordRank == null);
+            var keywordOnly = resultList.Count(r => r.VectorRank == null);
+            var both = resultList.Count(r => r.VectorRank != null && r.KeywordRank != null);
+
+            logger.LogInformation(
+                "[HybridSearch] Query: '{Query}' → {Total} results (vector-only: {VectorOnly}, keyword-only: {KeywordOnly}, both: {Both})",
+                keywordQuery.Length > 40 ? keywordQuery[..40] + "..." : keywordQuery,
+                resultList.Count, vectorOnly, keywordOnly, both);
+
+            return resultList.Select(r => new SearchResult
+            {
+                ChatId = r.ChatId,
+                MessageId = r.MessageId,
+                ChunkIndex = r.ChunkIndex,
+                ChunkText = r.ChunkText,
+                MetadataJson = r.MetadataJson,
+                Distance = r.Distance,
+                Similarity = r.Similarity,
+                IsNewsDump = NewsDumpDetector.IsNewsDump(r.ChunkText)
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[HybridSearch] Failed for keywords '{Keywords}', falling back to vector search", cleanedKeywords);
+            return await SearchByVectorAsync(chatId, queryEmbedding, limit, ct, keywordQuery);
+        }
+    }
+
+    /// <summary>
+    /// Clean text for PostgreSQL tsquery (removes special characters, creates OR query)
+    /// </summary>
+    private static string CleanForTsQuery(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "";
+
+        // Extract words (Russian and English letters, digits)
+        var words = System.Text.RegularExpressions.Regex.Matches(text.ToLowerInvariant(), @"[\p{L}\d]+")
+            .Select(m => m.Value)
+            .Where(w => w.Length >= 2) // Skip single chars
+            .Distinct()
+            .ToList();
+
+        if (words.Count == 0)
+            return "";
+
+        // Join with | for OR query (more permissive than AND)
+        return string.Join(" | ", words);
+    }
+
+    /// <summary>
+    /// Internal model for hybrid search results with debug info
+    /// </summary>
+    private class HybridSearchResult
+    {
+        public long ChatId { get; set; }
+        public long MessageId { get; set; }
+        public int ChunkIndex { get; set; }
+        public string ChunkText { get; set; } = "";
+        public string? MetadataJson { get; set; }
+        public double Distance { get; set; }
+        public double Similarity { get; set; }
+        public int? VectorRank { get; set; }
+        public int? KeywordRank { get; set; }
+        public double? TextRank { get; set; }
+    }
+
+    /// <summary>
     /// Search using a pre-computed embedding vector.
     /// Uses two-stage retrieval: HNSW index for candidates, then hybrid re-ranking.
     /// </summary>
