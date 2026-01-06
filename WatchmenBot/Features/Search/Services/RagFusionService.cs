@@ -89,6 +89,22 @@ public class RagFusionService(
                 response.SearchPatterns = hydeResult.SearchPatterns;
             }
 
+            // Detect bot-directed questions and add specific search patterns
+            if (IsBotDirectedQuestion(query))
+            {
+                logger.LogInformation("[RAG Fusion] Detected bot-directed question, adding bot-specific patterns");
+                var botPatterns = new[]
+                {
+                    "бот создан",
+                    "ты создан чтобы",
+                    "создан обрабатывать",
+                    "бот нужен для",
+                    "бот умеет"
+                };
+                allQueries.AddRange(botPatterns);
+                response.SearchPatterns.AddRange(botPatterns);
+            }
+
             var embeddingsSw = System.Diagnostics.Stopwatch.StartNew();
             var allEmbeddings = await embeddingService.GetBatchEmbeddingsAsync(allQueries, ct);
             embeddingsSw.Stop();
@@ -649,6 +665,37 @@ public class RagFusionService(
         }
 
         return cleaned.Trim();
+    }
+
+    /// <summary>
+    /// Detect if question is directed at the bot (using "ты", "бот", etc.)
+    /// </summary>
+    private static bool IsBotDirectedQuestion(string query)
+    {
+        var q = query.ToLowerInvariant();
+
+        // Direct bot address patterns
+        var botPatterns = new[]
+        {
+            "ты создан",
+            "ты умеешь",
+            "ты можешь",
+            "ты знаешь",
+            "ты думаешь",
+            "зачем ты",
+            "для чего ты",
+            "кто ты",
+            "что ты",
+            "как ты",
+            "почему ты",
+            "твоя цель",
+            "твоё назначение",
+            "бот ",
+            "ботик",
+            "Chat Norris".ToLowerInvariant()
+        };
+
+        return botPatterns.Any(p => q.Contains(p));
     }
 }
 
