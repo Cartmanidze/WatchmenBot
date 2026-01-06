@@ -692,7 +692,6 @@ public class RagFusionService(
             "твоё назначение",
             "бот ",
             "ботик",
-            "Chat Norris".ToLowerInvariant()
         };
 
         return botPatterns.Any(p => q.Contains(p));
