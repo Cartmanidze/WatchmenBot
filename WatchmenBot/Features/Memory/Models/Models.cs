@@ -83,6 +83,28 @@ public class MemorySummary
     public List<string> Facts { get; set; } = [];
 }
 
+/// <summary>
+/// Relationship between chat participants (e.g., spouse, sibling, friend)
+/// </summary>
+public class UserRelationship
+{
+    public int Id { get; set; }
+    public long ChatId { get; set; }
+    public long UserId { get; set; }
+    public long? RelatedUserId { get; set; }
+    public string RelatedPersonName { get; set; } = "";
+    public string RelationshipType { get; set; } = "";
+    public string? RelationshipLabel { get; set; }
+    public double Confidence { get; set; } = 0.7;
+    public int MentionCount { get; set; } = 1;
+    public long[]? SourceMessageIds { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTimeOffset FirstSeen { get; set; }
+    public DateTimeOffset LastSeen { get; set; }
+    public DateTimeOffset? EndedAt { get; set; }
+    public string? EndReason { get; set; }
+}
+
 #endregion
 
 #region Internal Database Records (for Dapper)
@@ -137,6 +159,25 @@ internal class UserFactRecord
     public string fact_type { get; set; } = "";
     public string fact_text { get; set; } = "";
     public double confidence { get; set; }
+}
+
+internal class UserRelationshipRecord
+{
+    public int id { get; set; }
+    public long chat_id { get; set; }
+    public long user_id { get; set; }
+    public long? related_user_id { get; set; }
+    public string related_person_name { get; set; } = "";
+    public string relationship_type { get; set; } = "";
+    public string? relationship_label { get; set; }
+    public double confidence { get; set; }
+    public int mention_count { get; set; }
+    public long[]? source_message_ids { get; set; }
+    public bool is_active { get; set; }
+    public DateTime first_seen { get; set; }
+    public DateTime last_seen { get; set; }
+    public DateTime? ended_at { get; set; }
+    public string? end_reason { get; set; }
 }
 
 #endregion

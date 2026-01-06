@@ -3,6 +3,7 @@ using System.Text.Json;
 using Dapper;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Features.Llm.Services;
+using WatchmenBot.Features.Memory.Services;
 
 namespace WatchmenBot.Features.Profile.Services;
 
@@ -14,6 +15,7 @@ public class FactExtractionHandler(
     ProfileQueueService queueService,
     IDbConnectionFactory connectionFactory,
     LlmRouter llmRouter,
+    RelationshipService relationshipService,
     ProfileOptions options,
     ILogger<FactExtractionHandler> logger)
     : IProfileHandler
@@ -85,10 +87,25 @@ public class FactExtractionHandler(
 
                     if (facts.Count > 0)
                     {
-                        await SaveFactsAsync(chatId, userId, facts, userMessages.Select(m => m.MessageId).ToArray());
+                        // Separate regular facts from relationships
+                        var regularFacts = facts.Where(f => f.Type != "relationship").ToList();
+                        var relationships = facts.Where(f => f.Type == "relationship").ToList();
+
+                        var sourceMessageIds = userMessages.Select(m => m.MessageId).ToArray();
+
+                        if (regularFacts.Count > 0)
+                        {
+                            await SaveFactsAsync(chatId, userId, regularFacts, sourceMessageIds);
+                        }
+
+                        if (relationships.Count > 0)
+                        {
+                            await SaveRelationshipsAsync(chatId, userId, relationships, sourceMessageIds);
+                        }
+
                         factsExtracted += facts.Count;
-                        logger.LogInformation("[FactHandler] Extracted {Count} facts for {User} in chat {Chat}",
-                            facts.Count, displayName, chatId);
+                        logger.LogInformation("[FactHandler] Extracted {FactCount} facts + {RelCount} relationships for {User} in chat {Chat}",
+                            regularFacts.Count, relationships.Count, displayName, chatId);
                     }
 
                     processedIds.AddRange(userMessages.Select(m => m.Id));
@@ -146,10 +163,23 @@ public class FactExtractionHandler(
 
             Верни JSON в формате:
             - facts: массив объектов с полями type, text, confidence
-            - type: likes, dislikes, said, does, knows, opinion
+            - type: likes, dislikes, said, does, knows, opinion, relationship
             - confidence: 0.9 = явно сказал, 0.7 = можно предположить, 0.5 = слабая связь
 
-            Пример: facts: [type: "likes", text: "любит футбол", confidence: 0.9]
+            ТИПЫ ОТНОШЕНИЙ (relationship):
+            Если пользователь упоминает родственников/друзей/коллег, добавь fact с type="relationship".
+            Формат text: "тип:имя:оригинал" где:
+            - тип: spouse, partner, sibling, parent, child, friend, colleague, relative
+            - имя: имя человека как упомянуто (Маша, Петя, и т.д.)
+            - оригинал: оригинальное слово (жена, муж, брат, сестра, мама, папа, друг, коллега)
+
+            Примеры relationship:
+            - "моя жена Маша позвонила" → type: "relationship", text: "spouse:Маша:жена", confidence: 0.9
+            - "брат приехал" → type: "relationship", text: "sibling::брат", confidence: 0.7 (имя неизвестно)
+            - "Петя — мой лучший друг" → type: "relationship", text: "friend:Петя:друг", confidence: 0.9
+
+            Примеры обычных фактов:
+            - facts: [type: "likes", text: "любит футбол", confidence: 0.9]
 
             ПРАВИЛА:
             - Имена пиши ТОЧНО как в тексте (не транслитерируй, не "исправляй")
@@ -226,6 +256,72 @@ public class FactExtractionHandler(
         var count = await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM user_facts");
         return count;
     }
+
+    /// <summary>
+    /// Parse and save relationship facts via RelationshipService.
+    /// Format: "type:name:originalLabel" (e.g., "spouse:Маша:жена")
+    /// </summary>
+    private async Task SaveRelationshipsAsync(
+        long chatId,
+        long userId,
+        List<ExtractedFact> relationships,
+        long[] sourceMessageIds)
+    {
+        foreach (var rel in relationships)
+        {
+            try
+            {
+                // Parse format: "type:name:originalLabel"
+                var parts = rel.Text.Split(':', 3);
+                if (parts.Length < 2)
+                {
+                    logger.LogWarning("[FactHandler] Invalid relationship format: {Text}", rel.Text);
+                    continue;
+                }
+
+                var relationshipType = parts[0].Trim().ToLowerInvariant();
+                var personName = parts.Length > 1 ? parts[1].Trim() : "";
+                var originalLabel = parts.Length > 2 ? parts[2].Trim() : null;
+
+                // Skip if no name extracted (e.g., "sibling::брат" where name is empty)
+                if (string.IsNullOrWhiteSpace(personName))
+                {
+                    logger.LogDebug("[FactHandler] Skipping relationship without name: {Type}", relationshipType);
+                    continue;
+                }
+
+                // Validate relationship type
+                if (!IsValidRelationshipType(relationshipType))
+                {
+                    logger.LogWarning("[FactHandler] Unknown relationship type: {Type}", relationshipType);
+                    continue;
+                }
+
+                // Use first source message ID if available
+                long? sourceMessageId = sourceMessageIds.Length > 0 ? sourceMessageIds[0] : null;
+
+                await relationshipService.UpsertRelationshipAsync(
+                    chatId,
+                    userId,
+                    personName,
+                    relationshipType,
+                    originalLabel,
+                    rel.Confidence,
+                    sourceMessageId);
+
+                logger.LogDebug("[FactHandler] Saved relationship: {Type} → {Name} (label: {Label})",
+                    relationshipType, personName, originalLabel);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "[FactHandler] Failed to save relationship: {Text}", rel.Text);
+            }
+        }
+    }
+
+    private static bool IsValidRelationshipType(string type) =>
+        type is "spouse" or "partner" or "sibling" or "parent" or "child"
+            or "friend" or "colleague" or "relative";
 
     private class FactsResponse
     {

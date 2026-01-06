@@ -8,7 +8,8 @@ namespace WatchmenBot.Features.Memory.Services;
 /// </summary>
 public class MemoryContextBuilder(
     ProfileManagementService profileManagement,
-    ConversationMemoryService conversationMemory)
+    ConversationMemoryService conversationMemory,
+    RelationshipService relationshipService)
 {
     private const int MaxRecentMemories = 5;
 
@@ -129,6 +130,19 @@ public class MemoryContextBuilder(
             foreach (var fact in relevantFacts)
             {
                 sb.AppendLine($"  • [{fact.FactType}] {fact.FactText}");
+            }
+        }
+
+        // Add known relationships
+        var relationships = await relationshipService.GetUserRelationshipsAsync(chatId, userId, minConfidence: 0.5);
+        if (relationships.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Известные связи:");
+            foreach (var rel in relationships.Take(10))
+            {
+                var label = rel.RelationshipLabel ?? rel.RelationshipType;
+                sb.AppendLine($"  • {label}: {rel.RelatedPersonName}");
             }
         }
 

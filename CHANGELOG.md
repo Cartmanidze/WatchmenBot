@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Relationship detection between chat participants** — автоматическое определение отношений между участниками чата:
+  - **Цель** — улучшить контекст бота, зная кто кому кем приходится (жена, муж, брат, друг и т.д.)
+  - **Подход** — гибридный (Regex + LLM):
+    | Метод | Когда | Пример |
+    |-------|-------|--------|
+    | **Real-time regex** | Высоко-уверенные паттерны | "это моя жена Маша" |
+    | **Batch LLM** | Контекстный анализ | "опять жена звонит" |
+  - **Типы отношений**: `spouse`, `partner`, `sibling`, `parent`, `child`, `friend`, `colleague`, `relative`
+  - **Confidence thresholds**: ≥0.7 для показа в ответе, ≥0.5 для контекста LLM, ≥0.3 для хранения
+  - **Новые компоненты**:
+    - `user_relationships` таблица с soft-delete (`is_active` flag)
+    - `RelationshipService` — CRUD + обработка exclusive отношений (spouse, partner)
+    - `RelationshipExtractionService` — regex extraction с source-generated паттернами
+    - Интеграция в `FactExtractionHandler` промпт для LLM batch extraction
+    - Интеграция в `MemoryContextBuilder` — отношения в контексте LLM
+    - Интеграция в `SaveMessage` — fire-and-forget extraction
+  - **Файлы** — `RelationshipService.cs`, `RelationshipExtractionService.cs`, `Models.cs`, `DatabaseInitializer.cs`, `FactExtractionHandler.cs`, `MemoryContextBuilder.cs`, `SaveMessage.cs`
+
 ### Changed
 
 - **Persistent message queues with LISTEN/NOTIFY** — очереди `/ask`, `/summary` и `/truth` теперь персистентные с real-time уведомлениями:

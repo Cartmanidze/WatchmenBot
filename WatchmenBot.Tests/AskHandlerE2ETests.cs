@@ -232,9 +232,14 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             llmRouter,
             NullLogger<LlmExtractionService>.Instance);
 
+        var relationshipService = new RelationshipService(
+            connectionFactory,
+            NullLogger<RelationshipService>.Instance);
+
         var memoryContextBuilder = new MemoryContextBuilder(
             profileManagement,
-            conversationMemory);
+            conversationMemory,
+            relationshipService);
 
         var memoryService = new LlmMemoryService(
             profileManagement,

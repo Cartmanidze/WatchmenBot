@@ -38,6 +38,7 @@ public class SaveMessageHandler(
     MessageStore messageStore,
     UserAliasService userAliasService,
     NicknameExtractionService nicknameExtractionService,
+    RelationshipExtractionService relationshipExtractionService,
     EmbeddingService embeddingService,
     ProfileQueueService profileQueueService,
     LogCollector logCollector,
@@ -83,10 +84,18 @@ public class SaveMessageHandler(
                         // Extract nicknames from reply addressing patterns
                         // E.g., if user replies "Бекс, ты прав", associate "Бекс" with reply target
                         await nicknameExtractionService.ExtractAndRecordAsync(message);
+
+                        // Extract relationships from message text
+                        // E.g., "это моя жена Маша" → spouse:Маша
+                        if (!string.IsNullOrWhiteSpace(record.Text))
+                        {
+                            await relationshipExtractionService.ExtractAndSaveAsync(
+                                record.ChatId, record.FromUserId, record.Id, record.Text);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        logger.LogWarning(ex, "[UserAlias] Failed to record aliases for user {UserId}", record.FromUserId);
+                        logger.LogWarning(ex, "[UserAlias] Failed to record aliases/relationships for user {UserId}", record.FromUserId);
                     }
                 });
             }

@@ -48,6 +48,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<MessageStore>();
         services.AddScoped<UserAliasService>();
         services.AddScoped<NicknameExtractionService>();
+        services.AddScoped<RelationshipService>();
+        services.AddScoped<RelationshipExtractionService>();
         services.AddHostedService<DatabaseInitializer>();
 
         // Health checks

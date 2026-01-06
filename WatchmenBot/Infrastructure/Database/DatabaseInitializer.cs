@@ -34,6 +34,7 @@ public class DatabaseInitializer(
             await CreateContextEmbeddingsTableAsync(connection);
             await CreateChatSettingsTableAsync(connection);
             await CreateUserAliasesTableAsync(connection);
+            await CreateUserRelationshipsTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -599,6 +600,43 @@ public class DatabaseInitializer(
         {
             logger.LogInformation("Migrated {Count} username aliases from messages", usernameCount);
         }
+    }
+
+    private static async Task CreateUserRelationshipsTableAsync(System.Data.IDbConnection connection)
+    {
+        // Table to store relationships between chat participants
+        // E.g., "Глеб's wife is Маша", "Петя is Васи's brother"
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS user_relationships (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                related_user_id BIGINT,
+                related_person_name VARCHAR(255) NOT NULL,
+                relationship_type VARCHAR(30) NOT NULL,
+                relationship_label VARCHAR(50),
+                confidence REAL DEFAULT 0.7,
+                mention_count INT DEFAULT 1,
+                source_message_ids BIGINT[],
+                is_active BOOLEAN DEFAULT TRUE,
+                first_seen TIMESTAMPTZ DEFAULT NOW(),
+                last_seen TIMESTAMPTZ DEFAULT NOW(),
+                ended_at TIMESTAMPTZ,
+                end_reason TEXT,
+                UNIQUE(chat_id, user_id, related_person_name, relationship_type)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_relationships_lookup
+            ON user_relationships (chat_id, user_id) WHERE is_active = TRUE;
+
+            CREATE INDEX IF NOT EXISTS idx_relationships_person
+            ON user_relationships (chat_id, LOWER(related_person_name)) WHERE is_active = TRUE;
+
+            CREATE INDEX IF NOT EXISTS idx_relationships_related_user
+            ON user_relationships (chat_id, related_user_id) WHERE related_user_id IS NOT NULL AND is_active = TRUE;
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
     }
 
     private async Task CreateIndexesAsync(System.Data.IDbConnection connection)
