@@ -279,15 +279,8 @@ public class RagFusionService(
                 preferredTag: null,
                 ct: ct);
 
-            // Parse JSON response
-            var content = response.Content.Trim();
-
-            // Handle markdown code blocks
-            if (content.StartsWith("```"))
-            {
-                var lines = content.Split('\n');
-                content = string.Join("\n", lines.Skip(1).TakeWhile(l => !l.StartsWith("```")));
-            }
+            // Parse JSON response - extract JSON array from any surrounding text
+            var content = CleanJsonArrayResponse(response.Content);
 
             var variations = JsonSerializer.Deserialize<List<string>>(content);
 
@@ -620,6 +613,33 @@ public class RagFusionService(
         if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
             return text;
         return text[..(maxLength - 3)] + "...";
+    }
+
+    /// <summary>
+    /// Clean LLM response to extract JSON array even if surrounded by text.
+    /// Handles: markdown code blocks, explanatory text before/after array.
+    /// </summary>
+    private static string CleanJsonArrayResponse(string content)
+    {
+        var cleaned = content.Trim();
+
+        // Remove markdown code blocks
+        if (cleaned.StartsWith("```"))
+        {
+            var lines = cleaned.Split('\n');
+            cleaned = string.Join("\n", lines.Skip(1).TakeWhile(l => !l.StartsWith("```")));
+        }
+
+        // Find JSON array boundaries (handles "Вот варианты: [...]" case)
+        var start = cleaned.IndexOf('[');
+        var end = cleaned.LastIndexOf(']');
+
+        if (start >= 0 && end > start)
+        {
+            cleaned = cleaned[start..(end + 1)];
+        }
+
+        return cleaned.Trim();
     }
 }
 
