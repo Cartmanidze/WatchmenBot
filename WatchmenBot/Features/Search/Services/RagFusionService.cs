@@ -5,19 +5,23 @@ using WatchmenBot.Features.Llm.Services;
 namespace WatchmenBot.Features.Search.Services;
 
 /// <summary>
-/// RAG Fusion service: generates query variations and merges results using RRF
+/// RAG Fusion service: generates query variations and merges results using RRF.
+/// Now enhanced with HyDE (Hypothetical Document Embeddings) for better Q→A retrieval.
 /// Based on: https://habr.com/ru/companies/postgrespro/articles/979820/
+/// HyDE paper: https://arxiv.org/abs/2212.10496
 /// </summary>
 public class RagFusionService(
     LlmRouter llmRouter,
     EmbeddingService embeddingService,
+    HydeService hydeService,
     ILogger<RagFusionService> logger)
 {
     // RRF constant (standard value from literature)
     private const int RrfK = 60;
 
     /// <summary>
-    /// Search with RAG Fusion: generate query variations, search each, merge with RRF
+    /// Search with RAG Fusion: generate query variations, search each, merge with RRF.
+    /// Now enhanced with HyDE for better Q→A retrieval.
     /// </summary>
     /// <param name="chatId">Chat ID</param>
     /// <param name="query">Original query</param>
@@ -38,19 +42,43 @@ public class RagFusionService(
 
         try
         {
-            // Step 1: Generate query variations via LLM
+            // Step 1: Generate query variations AND HyDE answer in parallel
             var variationsSw = System.Diagnostics.Stopwatch.StartNew();
-            var variations = await GenerateQueryVariationsAsync(query, variationCount, participantNames, ct);
+
+            var variationsTask = GenerateQueryVariationsAsync(query, variationCount, participantNames, ct);
+            var hydeTask = hydeService.GenerateHypotheticalAnswerAsync(query, ct);
+
+            await Task.WhenAll(variationsTask, hydeTask);
+
+            var variations = variationsTask.Result;
+            var hydeResult = hydeTask.Result;
+
             variationsSw.Stop();
             response.QueryVariations = variations;
 
-            logger.LogInformation("[RAG Fusion] Generated {Count} variations in {Ms}ms for: {Query}",
+            // Log both variations and HyDE
+            logger.LogInformation("[RAG Fusion] Generated {Count} variations + HyDE in {Ms}ms for: {Query}",
                 variations.Count, variationsSw.ElapsedMilliseconds, TruncateForLog(query, 50));
 
+            if (hydeResult.Success && !string.IsNullOrWhiteSpace(hydeResult.HypotheticalAnswer))
+            {
+                logger.LogInformation("[RAG Fusion] HyDE: '{Hypo}'",
+                    TruncateForLog(hydeResult.HypotheticalAnswer, 60));
+            }
+
             // Step 2: Get embeddings for all queries in a SINGLE batch API call
-            // This reduces 4 separate Jina API calls to just 1, saving ~20-25 seconds
+            // Include: original query + variations + HyDE hypothetical answer
             var allQueries = new List<string> { query };
             allQueries.AddRange(variations);
+
+            // Add HyDE to queries if successful
+            var hydeIndex = -1;
+            if (hydeResult.Success && !string.IsNullOrWhiteSpace(hydeResult.HypotheticalAnswer))
+            {
+                hydeIndex = allQueries.Count;
+                allQueries.Add(hydeResult.HypotheticalAnswer);
+                response.HypotheticalAnswer = hydeResult.HypotheticalAnswer;
+            }
 
             var embeddingsSw = System.Diagnostics.Stopwatch.StartNew();
             var allEmbeddings = await embeddingService.GetBatchEmbeddingsAsync(allQueries, ct);
@@ -622,9 +650,15 @@ public class FusedSearchResult : SearchResult
 public class RagFusionResponse
 {
     public string OriginalQuery { get; set; } = string.Empty;
-    
+
     public List<string> QueryVariations { get; set; } = [];
-    
+
+    /// <summary>
+    /// HyDE (Hypothetical Document Embeddings) - generated hypothetical answer.
+    /// Used for better Q→A retrieval by searching in "answer space" instead of "question space".
+    /// </summary>
+    public string? HypotheticalAnswer { get; set; }
+
     public List<FusedSearchResult> Results { get; set; } = [];
 
     public SearchConfidence Confidence { get; set; }

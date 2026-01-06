@@ -164,6 +164,7 @@ public partial class BackgroundAskWorker(
             item.Question, item.AskerName, item.AskerUsername, ct);
 
         // Start default RAG Fusion search in parallel (will be used for most queries)
+        // HyDE handles bot-directed questions semantically, no explicit flag needed
         Task<SearchResponse>? defaultSearchTask = null;
         if (item.Command != "smart")
         {

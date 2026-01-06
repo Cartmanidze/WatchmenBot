@@ -280,9 +280,14 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
             NullLogger<ContextEmbeddingService>.Instance);
 
         // Search services
+        var hydeService = new HydeService(
+            llmRouter,
+            NullLogger<HydeService>.Instance);
+
         var ragFusionService = new RagFusionService(
             llmRouter,
             embeddingService,
+            hydeService,
             NullLogger<RagFusionService>.Instance);
 
         var userAliasService = new UserAliasService(

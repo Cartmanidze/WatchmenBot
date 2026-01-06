@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **HyDE (Hypothetical Document Embeddings)** — улучшение Q→A retrieval через генерацию гипотетических ответов:
+  - **Проблема** — bi-encoder плохо связывает вопросы с ответами:
+    - Вопрос "для чего ты создан?" в "question space"
+    - Ответ "я создан чтобы..." в "answer space"
+    - Эти пространства семантически разные!
+  - **Решение** — HyDE переводит вопрос в "answer space":
+    ```
+    Query: "ты разочарован из-за своей глупой цели?"
+                    ↓
+             LLM генерирует гипотетический ответ
+                    ↓
+    HyDE: "Нет, я не разочарован. Я создан чтобы помогать..."
+                    ↓
+             Bi-encoder ищет по HyDE (в answer space!)
+                    ↓
+             Находит "ты создан чтобы обрабатывать тупые вопросы"
+    ```
+  - **Интеграция в RAG Fusion**:
+    - HyDE генерируется параллельно с query variations
+    - Embedding HyDE добавляется к batch запросу
+    - Результаты HyDE поиска мержатся через RRF
+  - **Paper**: https://arxiv.org/abs/2212.10496
+  - **Файлы** — `HydeService.cs`, `RagFusionService.cs`, `ServiceCollectionExtensions.cs`
+
 - **Cross-encoder reranking via Cohere API** — улучшение качества поиска через реранкинг с помощью cross-encoder:
   - **Проблема** — bi-encoder эмбеддинги плохо связывают вопросы с ответами:
     - "для чего ты создан?" → "ты создан чтобы..." давало similarity ~0.30 вместо 0.70+
@@ -136,6 +160,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Расширяет список стеммами ("няма" → "ням", "делают" → "дела")
   - **Результат** — exact match boost теперь работает для большего числа слов
   - **Файл** — `TextSearchHelpers.cs`
+
+- **RAG Fusion generating wrong variations for bot-directed questions** — RAG Fusion генерировал нерелевантные вариации для вопросов о боте:
+  - **Проблема** — запрос "ты разочарован из-за своей глупой цели существования?" генерировал вариации:
+    - "ахахах разочаровался в своей жизни"
+    - "бля какой смысл существования"
+    - Это искало сообщения о человеческой жизни, НЕ о боте
+  - **Root cause** — RAG Fusion prompt имел правило 4 "эмоциональные паттерны чата":
+    - "разочарован" → "ахахах разочаровался" (общий паттерн)
+    - Не различал вопросы о боте vs о людях
+  - **Решение** — HyDE (Hypothetical Document Embeddings), см. "Added" выше:
+    - Вместо детекции "бот-вопрос vs не-бот-вопрос" HyDE решает проблему семантически
+    - LLM генерирует гипотетический ответ, который близок к реальным ответам в базе
+    - Это работает для любых типов вопросов, не только bot-directed
+  - **История (удалено)**:
+    - v1: `IsBotDirectedQuestion()` regex detector — удалён
+    - v2: `is_bot_directed` флаг в IntentClassifier — удалён
+    - Причина удаления: HyDE решает проблему элегантнее без явных флагов
+  - **Файлы** — `HydeService.cs` (новый), `RagFusionService.cs`, `IntentClassifier.cs` (удалён IsBotDirected)
 
 - **PostgreSQL timeout in RAG Fusion** — таймаут при поиске из-за каскадного параллелизма:
   - **Проблема** — запрос "тайланд и китай одно и тоже?" падал с `Npgsql.NpgsqlException: Timeout during reading attempt`

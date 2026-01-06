@@ -158,7 +158,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IEmbeddingHandler, ContextEmbeddingHandler>();
         services.AddScoped<EmbeddingOrchestrator>();
 
-        // RAG Fusion Service (multi-query search with RRF)
+        // HyDE Service (Hypothetical Document Embeddings for better Q→A retrieval)
+        services.AddScoped<HydeService>();
+
+        // RAG Fusion Service (multi-query search with RRF, now with HyDE)
         services.AddScoped<RagFusionService>();
 
         // Rerank Service (LLM-based reranking)

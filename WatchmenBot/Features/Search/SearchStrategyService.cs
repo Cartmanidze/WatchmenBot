@@ -71,7 +71,7 @@ public class SearchStrategyService(
                 classified.OriginalQuestion,
                 ct),
 
-            // Default: context-only search
+            // Default: context-only search (HyDE handles Q→A semantic gap)
             _ => await SearchContextOnlyAsync(chatId, classified.OriginalQuestion, ct)
         };
     }
@@ -462,12 +462,12 @@ public class SearchStrategyService(
     /// 4. Also search context_embeddings for dialog context
     /// </summary>
     public async Task<SearchResponse> SearchContextOnlyAsync(
-        long chatId, string query, CancellationToken ct)
+        long chatId, string query, CancellationToken ct = default)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        // Step 1: RAG Fusion search (generates variations + RRF merge)
-        // SEQUENTIAL execution to prevent DB connection contention
+        // Step 1: RAG Fusion search (generates variations + HyDE + RRF merge)
+        // HyDE handles bot-directed questions semantically without explicit flag
         var fusionResponse = await ragFusionService.SearchWithFusionAsync(
             chatId, query,
             participantNames: null, // Could pass chat participants for better name variation
