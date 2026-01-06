@@ -8,18 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **Persistent message queues** — очереди `/ask` и `/summary` теперь персистентные (PostgreSQL):
-  - **Проблема** — in-memory Channel очереди терялись при рестарте/деплое приложения
-  - **Было** — `AskQueueService` и `SummaryQueueService` использовали `System.Threading.Channels`
-  - **Стало** — PostgreSQL таблицы `ask_queue` и `summary_queue` с надёжной доставкой
+- **Persistent message queues with LISTEN/NOTIFY** — очереди `/ask`, `/summary` и `/truth` теперь персистентные с real-time уведомлениями:
+  - **Проблема** — in-memory Channel очереди терялись при рестарте/деплое, polling добавлял 2-5 сек latency
+  - **Было** — `System.Threading.Channels` (in-memory) с polling
+  - **Стало** — PostgreSQL таблицы + LISTEN/NOTIFY для мгновенной реакции
+  - **Архитектура**:
+    ```
+    INSERT → TRIGGER → pg_notify('channel') → Worker получает мгновенно
+                                            ↓
+                                  Fallback polling каждые 30 сек
+    ```
   - **Преимущества**:
-    - Запросы выживают при рестарте
-    - Retry логика через `processed` флаг
-    - Видимость очереди через SQL
-    - Автоматический cleanup старых записей (7 дней)
-    - Трекинг `started_at`, `completed_at`, `error` для отладки
-  - **Polling** — воркеры теперь используют polling (2-5 сек) вместо Channel.Reader
-  - **Файлы** — `AskQueueService.cs`, `SummaryQueueService.cs`, `BackgroundAskWorker.cs`, `BackgroundSummaryWorker.cs`, `DatabaseInitializer.cs`
+    - ⚡ Мгновенная реакция (~10-50ms вместо 2-5 сек)
+    - 💾 Запросы выживают при рестарте
+    - 🔄 Надёжность через fallback polling (30 сек)
+    - 📊 Видимость очереди через SQL
+    - 🧹 Auto-cleanup через 7 дней
+  - **Новые компоненты**:
+    - `PostgresNotificationService` — слушает NOTIFY каналы (ask, summary, truth)
+    - Триггеры `notify_*_queue_insert()` для всех очередей
+    - `TruthQueueService` + `BackgroundTruthWorker` — фоновая обработка `/truth`
+  - **Файлы** — `PostgresNotificationService.cs`, `DatabaseInitializer.cs`, `BackgroundAskWorker.cs`, `BackgroundSummaryWorker.cs`, `TruthQueueService.cs`, `BackgroundTruthWorker.cs`, `FactCheckHandler.cs`
 
 ### Improved
 

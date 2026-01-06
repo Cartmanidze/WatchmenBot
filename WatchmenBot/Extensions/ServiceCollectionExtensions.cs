@@ -206,6 +206,10 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<ProfileWorkerService>();
         services.AddHostedService<ProfileGeneratorService>();
 
+        // PostgreSQL LISTEN/NOTIFY for real-time queue notifications
+        services.AddSingleton<PostgresNotificationService>();
+        services.AddHostedService(sp => sp.GetRequiredService<PostgresNotificationService>());
+
         // Summary Queue (background processing to avoid nginx timeout)
         services.AddSingleton<SummaryQueueService>();
         services.AddHostedService<BackgroundSummaryWorker>();
@@ -213,6 +217,10 @@ public static class ServiceCollectionExtensions
         // Ask Queue (background processing to avoid Telegram webhook timeout)
         services.AddSingleton<AskQueueService>();
         services.AddHostedService<BackgroundAskWorker>();
+
+        // Truth Queue (background processing for /truth fact-checking)
+        services.AddSingleton<TruthQueueService>();
+        services.AddHostedService<BackgroundTruthWorker>();
 
         // Background Services
         services.AddHostedService<DailySummaryService>();

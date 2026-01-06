@@ -28,6 +28,8 @@ public class DatabaseInitializer(
             await CreateMessageQueueTableAsync(connection);
             await CreateAskQueueTableAsync(connection);
             await CreateSummaryQueueTableAsync(connection);
+            await CreateTruthQueueTableAsync(connection);
+            await CreateQueueNotifyTriggersAsync(connection);
             await CreateUserFactsTableAsync(connection);
             await CreateContextEmbeddingsTableAsync(connection);
             await CreateChatSettingsTableAsync(connection);
@@ -330,6 +332,85 @@ public class DatabaseInitializer(
             """;
 
         await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateTruthQueueTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS truth_queue (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                reply_to_message_id INT NOT NULL,
+                message_count INT NOT NULL DEFAULT 5,
+                requested_by TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                processed BOOLEAN DEFAULT FALSE,
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ,
+                error TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_truth_queue_pending
+            ON truth_queue (processed, created_at)
+            WHERE processed = FALSE;
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private async Task CreateQueueNotifyTriggersAsync(System.Data.IDbConnection connection)
+    {
+        // Create NOTIFY triggers for real-time queue processing
+        // Workers will LISTEN to these channels instead of polling
+        const string createTriggersSql = """
+            -- Function to notify on new ask_queue item
+            CREATE OR REPLACE FUNCTION notify_ask_queue_insert()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                PERFORM pg_notify('ask_queue_channel', NEW.id::text);
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            -- Function to notify on new summary_queue item
+            CREATE OR REPLACE FUNCTION notify_summary_queue_insert()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                PERFORM pg_notify('summary_queue_channel', NEW.id::text);
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            -- Function to notify on new truth_queue item
+            CREATE OR REPLACE FUNCTION notify_truth_queue_insert()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                PERFORM pg_notify('truth_queue_channel', NEW.id::text);
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            -- Trigger for ask_queue (drop first to avoid duplicates)
+            DROP TRIGGER IF EXISTS ask_queue_notify_trigger ON ask_queue;
+            CREATE TRIGGER ask_queue_notify_trigger
+            AFTER INSERT ON ask_queue
+            FOR EACH ROW EXECUTE FUNCTION notify_ask_queue_insert();
+
+            -- Trigger for summary_queue (drop first to avoid duplicates)
+            DROP TRIGGER IF EXISTS summary_queue_notify_trigger ON summary_queue;
+            CREATE TRIGGER summary_queue_notify_trigger
+            AFTER INSERT ON summary_queue
+            FOR EACH ROW EXECUTE FUNCTION notify_summary_queue_insert();
+
+            -- Trigger for truth_queue (drop first to avoid duplicates)
+            DROP TRIGGER IF EXISTS truth_queue_notify_trigger ON truth_queue;
+            CREATE TRIGGER truth_queue_notify_trigger
+            AFTER INSERT ON truth_queue
+            FOR EACH ROW EXECUTE FUNCTION notify_truth_queue_insert();
+            """;
+
+        await connection.ExecuteAsync(createTriggersSql);
+        logger.LogInformation("Queue NOTIFY triggers created for real-time processing");
     }
 
     private static async Task CreateUserFactsTableAsync(System.Data.IDbConnection connection)

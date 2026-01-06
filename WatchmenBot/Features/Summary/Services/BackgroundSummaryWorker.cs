@@ -3,41 +3,44 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Admin.Services;
+using WatchmenBot.Infrastructure.Database;
 
 namespace WatchmenBot.Features.Summary.Services;
 
 /// <summary>
 /// Background worker for summary generation.
-/// Uses PostgreSQL-backed queue for reliable, persistent processing.
+/// Uses PostgreSQL LISTEN/NOTIFY for instant notifications with polling fallback.
 /// </summary>
 public partial class BackgroundSummaryWorker(
     SummaryQueueService queue,
+    PostgresNotificationService notifications,
     ITelegramBotClient bot,
     IServiceProvider serviceProvider,
     LogCollector logCollector,
     ILogger<BackgroundSummaryWorker> logger)
     : BackgroundService
 {
-    private static readonly TimeSpan PollingInterval = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan IdleInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan NotificationTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromHours(6);
     private DateTime _lastCleanup = DateTime.UtcNow;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("[BackgroundSummary] Worker started (PostgreSQL-backed queue)");
+        logger.LogInformation("[BackgroundSummary] Worker started (LISTEN/NOTIFY + polling fallback)");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                // Get pending requests from DB
+                // Strategy: Wait for notification OR timeout, then check DB
+                // This ensures we don't miss items even if notification is lost
+                await WaitForNotificationOrTimeoutAsync(stoppingToken);
+
+                // Get pending requests from DB (notification is just a hint)
                 var items = await queue.GetPendingAsync(limit: 5);
 
                 if (items.Count == 0)
                 {
-                    // No work - wait longer before checking again
-                    await Task.Delay(IdleInterval, stoppingToken);
                     await PeriodicCleanupAsync();
                     continue;
                 }
@@ -73,9 +76,6 @@ public partial class BackgroundSummaryWorker(
                         }
                     }
                 }
-
-                // Short delay between batches
-                await Task.Delay(PollingInterval, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -89,6 +89,32 @@ public partial class BackgroundSummaryWorker(
         }
 
         logger.LogInformation("[BackgroundSummary] Worker stopped");
+    }
+
+    /// <summary>
+    /// Wait for a notification or timeout (whichever comes first).
+    /// Notification provides instant response, timeout ensures polling fallback.
+    /// </summary>
+    private async Task WaitForNotificationOrTimeoutAsync(CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(NotificationTimeout);
+
+        try
+        {
+            // Wait for notification (instant) or timeout (30s fallback)
+            await notifications.SummaryQueueNotifications.WaitToReadAsync(timeoutCts.Token);
+
+            // Drain all pending notifications (we'll fetch from DB anyway)
+            while (notifications.SummaryQueueNotifications.TryRead(out var itemId))
+            {
+                logger.LogDebug("[BackgroundSummary] Received notification for item {ItemId}", itemId);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Timeout - this is normal, we'll poll the DB
+        }
     }
 
     private async Task PeriodicCleanupAsync()
