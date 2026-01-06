@@ -93,9 +93,10 @@ public class DebugService(
             {
                 await bot.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
             }
-            catch
+            catch (Exception ex)
             {
                 // Fallback to plain text
+                logger.LogWarning(ex, "[DebugService] HTML parsing failed, falling back to plain text");
                 var plain = System.Text.RegularExpressions.Regex.Replace(text, "<[^>]+>", "");
                 await bot.SendMessage(chatId, plain, cancellationToken: ct);
             }
@@ -110,8 +111,9 @@ public class DebugService(
             {
                 await bot.SendMessage(chatId, chunk, parseMode: ParseMode.Html, cancellationToken: ct);
             }
-            catch
+            catch (Exception ex)
             {
+                logger.LogWarning(ex, "[DebugService] HTML chunk parsing failed, falling back to plain text");
                 var plain = System.Text.RegularExpressions.Regex.Replace(chunk, "<[^>]+>", "");
                 await bot.SendMessage(chatId, plain, cancellationToken: ct);
             }

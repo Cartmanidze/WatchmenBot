@@ -111,9 +111,9 @@ public partial class GenerateSummaryHandler(
                     replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: ct);
             }
-            catch
+            catch (Exception sendEx)
             {
-                // Ignore send errors
+                logger.LogWarning(sendEx, "[GenerateSummary] Failed to send error notification to chat {ChatId}", chatId);
             }
 
             return GenerateSummaryResponse.Error(ex.Message);

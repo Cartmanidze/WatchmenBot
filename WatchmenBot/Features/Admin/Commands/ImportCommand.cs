@@ -168,7 +168,7 @@ public class ImportCommand(
             finally
             {
                 // Cleanup temp files
-                try { Directory.Delete(tempDir, true); } catch { }
+                try { Directory.Delete(tempDir, true); } catch (Exception ex) { Logger.LogWarning(ex, "[Import] Failed to cleanup temp directory {Path}", tempDir); }
             }
         }
         catch (Exception ex)

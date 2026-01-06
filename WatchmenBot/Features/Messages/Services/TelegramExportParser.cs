@@ -35,8 +35,9 @@ public class TelegramExportParser(ILogger<TelegramExportParser> logger)
             var titleNode = doc.DocumentNode.SelectSingleNode("//div[@class='page_header']//div[@class='text bold']");
             return titleNode != null ? HtmlEntity.DeEntitize(titleNode.InnerText.Trim()) : null;
         }
-        catch
+        catch (Exception ex)
         {
+            logger.LogWarning(ex, "[TelegramExport] Failed to extract chat title from {Path}", directoryPath);
             return null;
         }
     }
@@ -241,8 +242,9 @@ public class TelegramExportParser(ILogger<TelegramExportParser> logger)
 
             return dto.ToUniversalTime();
         }
-        catch
+        catch (Exception ex)
         {
+            logger.LogWarning(ex, "[TelegramExport] Failed to parse datetime from title");
             return null;
         }
     }

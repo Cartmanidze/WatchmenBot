@@ -333,7 +333,7 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
 
         // Note: AskHandler now uses background processing via AskQueueService
         // These E2E tests need to be rewritten to test BackgroundAskWorker instead
-        var askQueue = new AskQueueService(NullLogger<AskQueueService>.Instance);
+        var askQueue = new AskQueueService(dbFixture.ConnectionFactory!, NullLogger<AskQueueService>.Instance);
 
         var handler = new AskHandler(
             botMock.Object,

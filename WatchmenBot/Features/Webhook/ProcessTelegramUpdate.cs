@@ -24,11 +24,9 @@ public class ProcessTelegramUpdateResponse
     public bool IsSuccess { get; init; }
     public string? ErrorMessage { get; init; }
     public int StatusCode { get; init; }
-    
+
     public static ProcessTelegramUpdateResponse Success() => new() { IsSuccess = true, StatusCode = 200 };
     public static ProcessTelegramUpdateResponse Unauthorized(string message) => new() { IsSuccess = false, ErrorMessage = message, StatusCode = 403 };
-    public static ProcessTelegramUpdateResponse BadRequest(string message) => new() { IsSuccess = false, ErrorMessage = message, StatusCode = 400 };
-    public static ProcessTelegramUpdateResponse InternalError(string message) => new() { IsSuccess = false, ErrorMessage = message, StatusCode = 500 };
 }
 
 public class ProcessTelegramUpdateHandler(
@@ -119,7 +117,7 @@ public class ProcessTelegramUpdateHandler(
                     cancellationToken: cancellationToken);
 
                 // Добавляем в очередь для фоновой обработки
-                summaryQueue.EnqueueFromMessage(message, hours);
+                await summaryQueue.EnqueueFromMessageAsync(message, hours);
 
                 return ProcessTelegramUpdateResponse.Success();
             }
@@ -185,9 +183,7 @@ public class ProcessTelegramUpdateHandler(
 
     private static bool IsCommand(string? text, string command)
     {
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-        return text.StartsWith(command, StringComparison.OrdinalIgnoreCase);
+        return !string.IsNullOrWhiteSpace(text) && text.StartsWith(command, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsSmartCommand(string? text)

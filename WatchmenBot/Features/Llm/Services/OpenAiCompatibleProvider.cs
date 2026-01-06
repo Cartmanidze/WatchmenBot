@@ -109,8 +109,9 @@ public class OpenAiCompatibleProvider(HttpClient httpClient, OpenAiProviderConfi
             using var response = await httpClient.SendAsync(request, ct);
             return response.IsSuccessStatusCode;
         }
-        catch
+        catch (Exception ex)
         {
+            logger.LogWarning(ex, "[LlmProvider] Health check failed for {Provider}", config.Name);
             return false;
         }
     }

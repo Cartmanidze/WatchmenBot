@@ -26,6 +26,8 @@ public class DatabaseInitializer(
             await CreateUserProfilesTableAsync(connection);
             await CreateConversationMemoryTableAsync(connection);
             await CreateMessageQueueTableAsync(connection);
+            await CreateAskQueueTableAsync(connection);
+            await CreateSummaryQueueTableAsync(connection);
             await CreateUserFactsTableAsync(connection);
             await CreateContextEmbeddingsTableAsync(connection);
             await CreateChatSettingsTableAsync(connection);
@@ -273,6 +275,57 @@ public class DatabaseInitializer(
 
             CREATE INDEX IF NOT EXISTS idx_message_queue_pending
             ON message_queue (processed, created_at)
+            WHERE processed = FALSE;
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateAskQueueTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS ask_queue (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                reply_to_message_id INT NOT NULL,
+                question TEXT NOT NULL,
+                command VARCHAR(20) NOT NULL DEFAULT 'ask',
+                asker_id BIGINT NOT NULL,
+                asker_name TEXT NOT NULL,
+                asker_username TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                processed BOOLEAN DEFAULT FALSE,
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ,
+                error TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ask_queue_pending
+            ON ask_queue (processed, created_at)
+            WHERE processed = FALSE;
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateSummaryQueueTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS summary_queue (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                reply_to_message_id INT NOT NULL,
+                hours INT NOT NULL DEFAULT 24,
+                requested_by TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                processed BOOLEAN DEFAULT FALSE,
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ,
+                error TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_summary_queue_pending
+            ON summary_queue (processed, created_at)
             WHERE processed = FALSE;
             """;
 

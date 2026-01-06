@@ -1,13 +1,15 @@
-using System.Threading.Channels;
+using Dapper;
 using Telegram.Bot.Types;
+using WatchmenBot.Infrastructure.Database;
 
 namespace WatchmenBot.Features.Summary.Services;
 
 /// <summary>
-/// Запрос на генерацию summary в фоне
+/// Request for background summary generation
 /// </summary>
 public class SummaryQueueItem
 {
+    public int Id { get; init; }
     public required long ChatId { get; init; }
     public required int ReplyToMessageId { get; init; }
     public required int Hours { get; init; }
@@ -16,43 +18,54 @@ public class SummaryQueueItem
 }
 
 /// <summary>
-/// Сервис очереди для фоновой генерации summary.
-/// Использует in-memory Channel для быстрой обработки.
+/// PostgreSQL-backed queue service for background summary generation.
+/// Persists requests to survive restarts and ensures reliable delivery.
 /// </summary>
-public class SummaryQueueService(ILogger<SummaryQueueService> logger)
+public class SummaryQueueService(
+    IDbConnectionFactory connectionFactory,
+    ILogger<SummaryQueueService> logger)
 {
-    private readonly Channel<SummaryQueueItem> _channel = Channel.CreateBounded<SummaryQueueItem>(new BoundedChannelOptions(100)
-    {
-        FullMode = BoundedChannelFullMode.DropOldest // При переполнении удаляем старые
-    });
-
-    // Bounded channel с ограничением на 100 запросов в очереди
-    // При переполнении удаляем старые
-
     /// <summary>
-    /// Добавить запрос на summary в очередь
+    /// Enqueue summary request for background processing (persisted to DB)
     /// </summary>
-    private bool Enqueue(SummaryQueueItem item)
+    public async Task<bool> EnqueueAsync(SummaryQueueItem item)
     {
-        if (_channel.Writer.TryWrite(item))
+        try
         {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            await connection.ExecuteAsync("""
+                INSERT INTO summary_queue (chat_id, reply_to_message_id, hours, requested_by)
+                VALUES (@ChatId, @ReplyToMessageId, @Hours, @RequestedBy)
+                """,
+                new
+                {
+                    item.ChatId,
+                    item.ReplyToMessageId,
+                    item.Hours,
+                    item.RequestedBy
+                });
+
             logger.LogInformation("[SummaryQueue] Enqueued summary request for chat {ChatId}, {Hours}h, by @{User}",
                 item.ChatId, item.Hours, item.RequestedBy);
+
             return true;
         }
-
-        logger.LogWarning("[SummaryQueue] Failed to enqueue - queue is full");
-        return false;
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "[SummaryQueue] Failed to enqueue request");
+            return false;
+        }
     }
 
     /// <summary>
-    /// Добавить запрос из Telegram Message
+    /// Enqueue from Telegram Message
     /// </summary>
-    public bool EnqueueFromMessage(Message message, int hours)
+    public Task<bool> EnqueueFromMessageAsync(Message message, int hours)
     {
         var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
 
-        return Enqueue(new SummaryQueueItem
+        return EnqueueAsync(new SummaryQueueItem
         {
             ChatId = message.Chat.Id,
             ReplyToMessageId = message.MessageId,
@@ -62,12 +75,125 @@ public class SummaryQueueService(ILogger<SummaryQueueService> logger)
     }
 
     /// <summary>
-    /// Получить reader для обработки очереди (для BackgroundService)
+    /// Get pending requests from queue (for background worker)
     /// </summary>
-    public ChannelReader<SummaryQueueItem> Reader => _channel.Reader;
+    public async Task<List<SummaryQueueItem>> GetPendingAsync(int limit = 10)
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            var items = await connection.QueryAsync<SummaryQueueItem>("""
+                SELECT
+                    id as Id,
+                    chat_id as ChatId,
+                    reply_to_message_id as ReplyToMessageId,
+                    hours as Hours,
+                    requested_by as RequestedBy,
+                    created_at as RequestedAt
+                FROM summary_queue
+                WHERE processed = FALSE
+                ORDER BY created_at
+                LIMIT @Limit
+                """,
+                new { Limit = limit });
+
+            return items.ToList();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "[SummaryQueue] Failed to get pending requests");
+            return [];
+        }
+    }
 
     /// <summary>
-    /// Количество элементов в очереди (примерное)
+    /// Mark request as started (prevents duplicate processing)
     /// </summary>
-    public int Count => _channel.Reader.Count;
+    public async Task MarkAsStartedAsync(int id)
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            await connection.ExecuteAsync("""
+                UPDATE summary_queue SET started_at = NOW() WHERE id = @Id
+                """,
+                new { Id = id });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[SummaryQueue] Failed to mark request {Id} as started", id);
+        }
+    }
+
+    /// <summary>
+    /// Mark request as completed
+    /// </summary>
+    public async Task MarkAsCompletedAsync(int id)
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            await connection.ExecuteAsync("""
+                UPDATE summary_queue
+                SET processed = TRUE, completed_at = NOW()
+                WHERE id = @Id
+                """,
+                new { Id = id });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[SummaryQueue] Failed to mark request {Id} as completed", id);
+        }
+    }
+
+    /// <summary>
+    /// Mark request as failed with error message
+    /// </summary>
+    public async Task MarkAsFailedAsync(int id, string error)
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            await connection.ExecuteAsync("""
+                UPDATE summary_queue
+                SET processed = TRUE, completed_at = NOW(), error = @Error
+                WHERE id = @Id
+                """,
+                new { Id = id, Error = error });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[SummaryQueue] Failed to mark request {Id} as failed", id);
+        }
+    }
+
+    /// <summary>
+    /// Cleanup old processed requests (call periodically)
+    /// </summary>
+    public async Task CleanupOldAsync(int daysToKeep = 7)
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            var deleted = await connection.ExecuteAsync("""
+                DELETE FROM summary_queue
+                WHERE processed = TRUE AND created_at < NOW() - @Days * INTERVAL '1 day'
+                """,
+                new { Days = daysToKeep });
+
+            if (deleted > 0)
+            {
+                logger.LogInformation("[SummaryQueue] Cleaned up {Count} old processed requests", deleted);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[SummaryQueue] Failed to cleanup old requests");
+        }
+    }
 }

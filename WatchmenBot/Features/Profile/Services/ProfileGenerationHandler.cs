@@ -233,6 +233,7 @@ public class ProfileGenerationHandler(
         }
         catch
         {
+            // Static method without logger - silently return default
             return "нет данных";
         }
     }

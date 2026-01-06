@@ -144,9 +144,9 @@ public class FactCheckHandler(
                     text: "Произошла ошибка при проверке фактов. Попробуйте позже.",
                     cancellationToken: ct);
             }
-            catch
+            catch (Exception sendEx)
             {
-                // Ignore - we can't even send an error message
+                logger.LogWarning(sendEx, "[FactCheck] Failed to send error notification to chat {ChatId}", chatId);
             }
         }
     }

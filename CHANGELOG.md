@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Persistent message queues** — очереди `/ask` и `/summary` теперь персистентные (PostgreSQL):
+  - **Проблема** — in-memory Channel очереди терялись при рестарте/деплое приложения
+  - **Было** — `AskQueueService` и `SummaryQueueService` использовали `System.Threading.Channels`
+  - **Стало** — PostgreSQL таблицы `ask_queue` и `summary_queue` с надёжной доставкой
+  - **Преимущества**:
+    - Запросы выживают при рестарте
+    - Retry логика через `processed` флаг
+    - Видимость очереди через SQL
+    - Автоматический cleanup старых записей (7 дней)
+    - Трекинг `started_at`, `completed_at`, `error` для отладки
+  - **Polling** — воркеры теперь используют polling (2-5 сек) вместо Channel.Reader
+  - **Файлы** — `AskQueueService.cs`, `SummaryQueueService.cs`, `BackgroundAskWorker.cs`, `BackgroundSummaryWorker.cs`, `DatabaseInitializer.cs`
+
+### Improved
+
+- **Debug logging for empty catch blocks** — добавлен `LogDebug` во все пустые catch блоки с доступным logger:
+  - **Проблема** — ошибки проглатывались молча, затрудняя отладку
+  - **Решение** — 10 catch блоков теперь логируют исключения на уровне Debug:
+    - `BackgroundAskWorker.cs` — ошибки отправки уведомлений
+    - `BackgroundSummaryWorker.cs` — ошибки отправки уведомлений
+    - `DebugService.cs` — ошибки парсинга HTML (2 места)
+    - `FactCheckHandler.cs` — ошибки отправки уведомлений
+    - `GenerateSummary.cs` — ошибки отправки уведомлений
+    - `OpenAiCompatibleProvider.cs` — health check failures
+    - `TelegramExportParser.cs` — ошибки парсинга экспорта (2 места)
+    - `AskQueueService.cs` — ошибки запроса pending count
+    - `ImportCommand.cs` — ошибки очистки temp директории
+  - **Исключения** — static методы без logger (`MemoryHelpers`, `MetadataParser`, `AskHandlerHelpers`, `ProfileGenerationHandler.FormatActiveHours`) оставлены с пустыми catch — это fail-safe utility методы
+  - **Уровень логов** — `LogWarning` для видимости в production (можно понизить до Debug позже)
+
 ### Fixed
 
 - **Exact match not working for short words** — точное совпадение не работало для коротких слов:

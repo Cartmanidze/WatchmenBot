@@ -39,7 +39,7 @@ public class AskHandler(
         }
 
         // Enqueue for background processing (avoids Telegram webhook timeout)
-        if (askQueue.EnqueueFromMessage(message, command, question))
+        if (await askQueue.EnqueueFromMessageAsync(message, command, question))
         {
             logger.LogInformation("[{Command}] Enqueued: {Question} in chat {ChatId}",
                 command.ToUpper(), question, chatId);

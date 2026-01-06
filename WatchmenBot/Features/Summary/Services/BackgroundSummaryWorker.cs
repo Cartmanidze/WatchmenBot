@@ -7,8 +7,8 @@ using WatchmenBot.Features.Admin.Services;
 namespace WatchmenBot.Features.Summary.Services;
 
 /// <summary>
-/// Фоновый воркер для обработки запросов на генерацию summary.
-/// Не привязан к nginx timeout — работает сколько нужно.
+/// Background worker for summary generation.
+/// Uses PostgreSQL-backed queue for reliable, persistent processing.
 /// </summary>
 public partial class BackgroundSummaryWorker(
     SummaryQueueService queue,
@@ -18,37 +18,86 @@ public partial class BackgroundSummaryWorker(
     ILogger<BackgroundSummaryWorker> logger)
     : BackgroundService
 {
+    private static readonly TimeSpan PollingInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan IdleInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CleanupInterval = TimeSpan.FromHours(6);
+    private DateTime _lastCleanup = DateTime.UtcNow;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("[BackgroundSummary] Worker started");
+        logger.LogInformation("[BackgroundSummary] Worker started (PostgreSQL-backed queue)");
 
-        await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await ProcessSummaryRequestAsync(item, stoppingToken);
+                // Get pending requests from DB
+                var items = await queue.GetPendingAsync(limit: 5);
+
+                if (items.Count == 0)
+                {
+                    // No work - wait longer before checking again
+                    await Task.Delay(IdleInterval, stoppingToken);
+                    await PeriodicCleanupAsync();
+                    continue;
+                }
+
+                // Process each request
+                foreach (var item in items)
+                {
+                    if (stoppingToken.IsCancellationRequested) break;
+
+                    try
+                    {
+                        await queue.MarkAsStartedAsync(item.Id);
+                        await ProcessSummaryRequestAsync(item, stoppingToken);
+                        await queue.MarkAsCompletedAsync(item.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "[BackgroundSummary] Failed to process summary for chat {ChatId}", item.ChatId);
+
+                        await queue.MarkAsFailedAsync(item.Id, ex.Message);
+
+                        try
+                        {
+                            await bot.SendMessage(
+                                chatId: item.ChatId,
+                                text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
+                                replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
+                                cancellationToken: stoppingToken);
+                        }
+                        catch (Exception sendEx)
+                        {
+                            logger.LogWarning(sendEx, "[BackgroundSummary] Failed to send error notification to chat {ChatId}", item.ChatId);
+                        }
+                    }
+                }
+
+                // Short delay between batches
+                await Task.Delay(PollingInterval, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "[BackgroundSummary] Failed to process summary for chat {ChatId}", item.ChatId);
-
-                // Отправляем сообщение об ошибке пользователю
-                try
-                {
-                    await bot.SendMessage(
-                        chatId: item.ChatId,
-                        text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
-                        replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
-                        cancellationToken: stoppingToken);
-                }
-                catch
-                {
-                    // Ignore send errors
-                }
+                logger.LogError(ex, "[BackgroundSummary] Error in worker loop");
+                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
         }
 
         logger.LogInformation("[BackgroundSummary] Worker stopped");
+    }
+
+    private async Task PeriodicCleanupAsync()
+    {
+        if (DateTime.UtcNow - _lastCleanup > CleanupInterval)
+        {
+            await queue.CleanupOldAsync(daysToKeep: 7);
+            _lastCleanup = DateTime.UtcNow;
+        }
     }
 
     private async Task ProcessSummaryRequestAsync(SummaryQueueItem item, CancellationToken ct)
@@ -77,12 +126,12 @@ public partial class BackgroundSummaryWorker(
             return;
         }
 
-        // Генерируем summary (может занять 30-120 секунд)
+        // Generate summary (may take 30-120 seconds)
         var periodText = GetPeriodText(item.Hours);
         var report = await smartSummary.GenerateSmartSummaryAsync(
             item.ChatId, messages, startUtc, nowUtc, periodText, ct);
 
-        // Отправляем результат
+        // Send result
         try
         {
             await bot.SendMessage(
