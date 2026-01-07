@@ -41,6 +41,16 @@ public class ContextBuilderService(
             .Take(10) // Top 10 for context windows
             .ToList();
 
+        // Log top 10 candidates
+        logger.LogInformation("[BuildContext] Top 10 candidates:");
+        for (var i = 0; i < sortedResults.Count; i++)
+        {
+            var r = sortedResults[i];
+            var textPreview = r.ChunkText.Length > 60 ? r.ChunkText[..60] + "..." : r.ChunkText;
+            logger.LogInformation("  [{Index}] id={Id} sim={Sim:F3} isCtxWin={IsCtx} text=\"{Text}\"",
+                i + 1, r.MessageId, r.Similarity, r.IsContextWindow, textPreview.Replace("\n", " "));
+        }
+
         foreach (var r in results)
         {
             if (string.IsNullOrWhiteSpace(r.ChunkText))
@@ -53,7 +63,7 @@ public class ContextBuilderService(
         var contextWindowResults = sortedResults.Where(r => r.IsContextWindow).ToList();
         var messageResults = sortedResults.Where(r => !r.IsContextWindow).ToList();
 
-        logger.LogDebug("[BuildContext] Split results: {ContextCount} context windows + {MessageCount} messages to expand",
+        logger.LogInformation("[BuildContext] Split: {ContextCount} pre-formatted context windows + {MessageCount} messages to expand",
             contextWindowResults.Count, messageResults.Count);
 
         // Get context windows only for message results that need expansion
@@ -61,6 +71,9 @@ public class ContextBuilderService(
             ? await embeddingService.GetMergedContextWindowsAsync(
                 chatId, messageResults.Select(r => r.MessageId).ToList(), ContextWindowSize, ct)
             : [];
+
+        logger.LogInformation("[BuildContext] Expansion result: requested {Requested} → got {Expanded} windows",
+            messageResults.Count, expandedWindows.Count);
 
         // Build context string with budget control
         var sb = new StringBuilder();
@@ -72,12 +85,13 @@ public class ContextBuilderService(
         var seenMessageIds = new HashSet<long>();
 
         // Process all results by similarity (mix of context windows and expanded messages)
-        var allWindowData = new List<(double similarity, long messageId, string text, bool isPreformatted)>();
+        // Track source type for detailed logging
+        var allWindowData = new List<(double similarity, long messageId, string text, string source)>();
 
         // Add pre-formatted context windows
         foreach (var cwr in contextWindowResults)
         {
-            allWindowData.Add((cwr.Similarity, cwr.MessageId, cwr.ChunkText, true));
+            allWindowData.Add((cwr.Similarity, cwr.MessageId, cwr.ChunkText, "preformatted"));
         }
 
         // Add expanded message windows
@@ -86,30 +100,57 @@ public class ContextBuilderService(
         {
             var matchingResult = messageResults.FirstOrDefault(r => r.MessageId == window.CenterMessageId);
             var similarity = matchingResult?.Similarity ?? 0.0;
-            allWindowData.Add((similarity, window.CenterMessageId, window.ToFormattedText(), false));
+            var formattedText = window.ToFormattedText();
+            allWindowData.Add((similarity, window.CenterMessageId, formattedText, $"expanded({window.Messages.Count}msg)"));
+
+            logger.LogInformation("[BuildContext] Expanded id={Id}: {MsgCount} messages, {Chars} chars",
+                window.CenterMessageId, window.Messages.Count, formattedText.Length);
         }
 
         // FALLBACK: Add messages that couldn't be expanded (e.g., not in messages table)
         // Use their ChunkText directly instead of expanded window
+        var fallbackCount = 0;
         foreach (var msg in messageResults)
         {
             if (!expandedMessageIds.Contains(msg.MessageId))
             {
-                logger.LogDebug("[BuildContext] Message {Id} expansion failed, using ChunkText fallback (sim={Sim:F3})",
-                    msg.MessageId, msg.Similarity);
-                allWindowData.Add((msg.Similarity, msg.MessageId, msg.ChunkText, true));
+                fallbackCount++;
+                logger.LogWarning("[BuildContext] ⚠️ FALLBACK: Message {Id} NOT FOUND in messages table! " +
+                    "Using raw ChunkText (sim={Sim:F3}, {Chars} chars): \"{Preview}\"",
+                    msg.MessageId, msg.Similarity, msg.ChunkText.Length,
+                    msg.ChunkText.Length > 80 ? msg.ChunkText[..80] + "..." : msg.ChunkText);
+                allWindowData.Add((msg.Similarity, msg.MessageId, msg.ChunkText, "fallback"));
             }
         }
 
-        // Sort by similarity and process
-        foreach (var (_, messageId, windowText, _) in allWindowData.OrderByDescending(w => w.similarity))
+        if (fallbackCount > 0)
+        {
+            logger.LogWarning("[BuildContext] {FallbackCount} messages used fallback (not in messages table)",
+                fallbackCount);
+        }
+
+        // Log all window data before processing
+        logger.LogInformation("[BuildContext] All windows to process ({Count} total):", allWindowData.Count);
+        foreach (var (sim, msgId, text, source) in allWindowData.OrderByDescending(w => w.similarity))
+        {
+            logger.LogInformation("  id={Id} sim={Sim:F3} source={Source} chars={Chars}",
+                msgId, sim, source, text.Length);
+        }
+
+        // Sort by similarity and process with budget tracking
+        logger.LogInformation("[BuildContext] Processing windows (budget={Budget} chars):", ContextCharBudget);
+
+        foreach (var (sim, messageId, windowText, source) in allWindowData.OrderByDescending(w => w.similarity))
         {
             var windowChars = windowText.Length + 50; // +50 for separators
 
             if (usedChars + windowChars > ContextCharBudget)
             {
-                logger.LogDebug("[BuildContext] Budget exceeded, stopping at {Windows} windows", includedWindows);
-                break;
+                logger.LogInformation("[BuildContext] ❌ BUDGET EXCEEDED at window #{Num}: " +
+                    "id={Id} needs {Need} chars, have {Have}/{Budget}",
+                    includedWindows + 1, messageId, windowChars, ContextCharBudget - usedChars, ContextCharBudget);
+                tracker[messageId] = (false, "budget_exceeded");
+                continue; // Continue to mark all remaining as budget_exceeded
             }
 
             // Mark message as included
@@ -120,21 +161,39 @@ public class ContextBuilderService(
             sb.Append(windowText);
             sb.AppendLine();
 
+            logger.LogInformation("[BuildContext] ✅ Added #{Num}: id={Id} sim={Sim:F3} source={Source} " +
+                "+{Added} chars → {Used}/{Budget}",
+                includedWindows + 1, messageId, sim, source, windowChars, usedChars + windowChars, ContextCharBudget);
+
             usedChars += windowChars;
             includedWindows++;
             seenMessageIds.Add(messageId);
         }
 
-        // Mark remaining messages
+        // Mark remaining messages that weren't processed
         foreach (var r in sortedResults)
         {
             if (!tracker.ContainsKey(r.MessageId))
                 tracker[r.MessageId] = (false, "budget_exceeded");
         }
 
+        // Final summary
+        var includedIds = tracker.Where(kv => kv.Value.included).Select(kv => kv.Key).ToList();
+        var excludedByBudget = tracker.Where(kv => !kv.Value.included && kv.Value.reason == "budget_exceeded").Select(kv => kv.Key).ToList();
+
         logger.LogInformation(
-            "[BuildContext] Built context: {Windows} windows ({Direct} direct + {Expanded} expanded), {Chars}/{Budget} chars",
-            includedWindows, contextWindowResults.Count, expandedWindows.Count, usedChars, ContextCharBudget);
+            "[BuildContext] SUMMARY: {Windows} windows included, {Chars}/{Budget} chars used ({Percent}%)",
+            includedWindows, usedChars, ContextCharBudget, usedChars * 100 / ContextCharBudget);
+
+        if (includedIds.Count > 0)
+            logger.LogInformation("[BuildContext] Included message ids: [{Ids}]", string.Join(", ", includedIds));
+
+        if (excludedByBudget.Count > 0)
+            logger.LogInformation("[BuildContext] Excluded by budget: [{Ids}]", string.Join(", ", excludedByBudget));
+
+        if (fallbackCount > 0)
+            logger.LogWarning("[BuildContext] ⚠️ {FallbackCount} messages used fallback - may indicate missing data in messages table",
+                fallbackCount);
 
         return (sb.ToString(), tracker);
     }
