@@ -157,6 +157,14 @@ public class DatabaseInitializer(
                 """;
 
             await connection.ExecuteAsync(createTableSql);
+
+            // Add is_question column for Q→A semantic bridge (generated questions linked to answers)
+            const string addIsQuestionColumnSql = """
+                ALTER TABLE message_embeddings ADD COLUMN IF NOT EXISTS is_question BOOLEAN DEFAULT FALSE;
+                ALTER TABLE message_embeddings ADD COLUMN IF NOT EXISTS source_message_id BIGINT;
+                """;
+            await connection.ExecuteAsync(addIsQuestionColumnSql);
+
             logger.LogInformation("Embeddings table ready with {Dimensions} dimensions", dimensions);
         }
         catch (Exception ex)

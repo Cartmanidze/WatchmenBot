@@ -8,6 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Q→A Semantic Bridge via Question Generation** — автоматическая генерация вопросов при индексации для решения проблемы семантического разрыва:
+  - **Проблема** — bi-encoder не понимает связь вопрос→ответ:
+    - Вопрос: "ты разочарован из-за своей цели существования?"
+    - Ответ в БД: "ты создан чтобы обрабатывать тупые вопросы"
+    - Нет пересечения ключевых слов → низкая bi-encoder similarity
+  - **Решение** — при индексации сообщения генерируем вопросы, на которые оно может быть ответом:
+    ```
+    Сообщение: "ты создан чтобы обрабатывать тупые вопросы"
+    Сгенерированные вопросы:
+    - "зачем ты создан?"
+    - "какая твоя цель?"
+    - "для чего ты существуешь?"
+    ```
+  - **Как работает**:
+    1. При сохранении embedding сообщения вызывается `QuestionGenerationService`
+    2. LLM генерирует 2-3 вопроса к сообщению
+    3. Вопросы индексируются с `is_question=true` и `source_message_id` → связь с ответом
+    4. При поиске вопрос находит сгенерированный вопрос → получаем оригинальное сообщение
+  - **Фильтрация мусора** — пропускаются:
+    - Сообщения < 5 символов
+    - Реакции: "лол", "ок", "да", "нет", "привет" и т.д.
+    - Эмодзи-only сообщения
+    - URLs и ссылки
+    - Forwarded сообщения
+    - Стикеры
+  - **Новые файлы**:
+    - `QuestionGenerationService.cs` — генерация вопросов через LLM
+    - Интеграция в `EmbeddingStorageService.cs`
+  - **Изменения в БД** — добавлены колонки в `message_embeddings`:
+    - `is_question BOOLEAN DEFAULT FALSE`
+    - `source_message_id BIGINT` — ссылка на сообщение-ответ
+  - **Trade-off** — LLM-вызов при каждом информативном сообщении (~500ms), но решает Q→A gap навсегда
+
 - **E2E test for bot-directed questions** — новый тест для проверки hybrid search и философских вопросов о боте:
   - **Тест**: `HandleAsync_BotDirectedQuestions_ReturnsRelevantAnswers`
   - **Сценарий**:
@@ -43,6 +76,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Файлы** — `DatabaseFixture.cs`, `AskHandlerE2ETests.cs`
 
 ### Changed
+
+- **Expanded candidate pool for Cohere reranker** — увеличен пул кандидатов для улучшения recall семантически далёких результатов:
+  - **Проблема** — вопросы типа "ты разочарован из-за своей цели существования?" не находили релевантное сообщение "ты создан чтобы обрабатывать..." из-за низкой bi-encoder similarity
+  - **Причина** — bi-encoder (Jina) не понимает Q→A связь между "цель существования" и "создан чтобы", но cross-encoder (Cohere) понимает
+  - **Решение** — увеличить пул кандидатов, чтобы cross-encoder видел больше потенциально релевантных результатов:
+    | Параметр | Было | Стало |
+    |----------|------|-------|
+    | `ResultsPerQuery` | 30 | 60 |
+    | `RerankerTopN` | 50 | 100 |
+    | `contextLimit` | 50 | 100 |
+    | `resultsPerQuery` (в SearchStrategy) | 15 | 30 |
+  - **Trade-off** — больше кандидатов = больше токенов на reranking, но лучше recall для сложных вопросов
+  - **Файлы** — `RagFusionService.cs`, `SearchStrategyService.cs`
 
 - **Default embeddings provider changed from HuggingFace to Jina AI** — переход на Jina для улучшения качества RAG:
   - **Что изменилось**:

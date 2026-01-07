@@ -139,6 +139,9 @@ public static class ServiceCollectionExtensions
                 return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, provider, logger);
             });
 
+        // Q→A Semantic Bridge (question generation for better search)
+        services.AddScoped<QuestionGenerationService>();
+
         // Embedding Services (refactored architecture)
         services.AddScoped<EmbeddingStorageService>();
         services.AddScoped<PersonalSearchService>();

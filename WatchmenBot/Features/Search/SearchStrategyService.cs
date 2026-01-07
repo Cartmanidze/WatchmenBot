@@ -334,7 +334,8 @@ public class SearchStrategyService(
 
         // Step 2: Parallel search in context embeddings (user might be in dialogs)
         // Fetch more candidates for reranking - cross-encoder will improve relevance
-        var contextLimit = cohereReranker.IsConfigured ? 50 : 10;
+        // Increased from 50 to 100 to catch semantically distant but relevant results
+        var contextLimit = cohereReranker.IsConfigured ? 100 : 10;
         var contextTask = contextEmbeddingService.SearchContextAsync(chatId, query, limit: contextLimit, ct);
 
         await Task.WhenAll(personalTask, contextTask);
@@ -466,18 +467,19 @@ public class SearchStrategyService(
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        // Step 1: RAG Fusion search (generates variations + HyDE + RRF merge)
-        // HyDE handles bot-directed questions semantically without explicit flag
+        // Step 1: RAG Fusion search (generates variations + RRF merge)
+        // Increased resultsPerQuery from 15 to 30 to catch semantically distant matches
         var fusionResponse = await ragFusionService.SearchWithFusionAsync(
             chatId, query,
             participantNames: null, // Could pass chat participants for better name variation
             variationCount: 3,
-            resultsPerQuery: 15,
+            resultsPerQuery: 30,
             ct);
 
         // Step 2: Context embeddings search (for dialog context)
         // Fetch more candidates for reranking if cross-encoder is configured
-        var contextLimit = cohereReranker.IsConfigured ? 50 : 10;
+        // Increased from 50 to 100 to catch semantically distant but relevant results
+        var contextLimit = cohereReranker.IsConfigured ? 100 : 10;
         var contextResults = await contextEmbeddingService.SearchContextAsync(chatId, query, limit: contextLimit, ct);
 
         logger.LogInformation(

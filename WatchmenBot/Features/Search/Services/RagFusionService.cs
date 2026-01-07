@@ -22,8 +22,11 @@ public partial class RagFusionService(
 {
     // RRF constant (standard value from literature)
     private const int RrfK = 60;
-    private const int ResultsPerQuery = 30;
-    private const int RerankerTopN = 50;
+
+    // Increased pool sizes to catch semantically distant but relevant results
+    // Cross-encoder reranker will filter out noise, so bigger pool = better recall
+    private const int ResultsPerQuery = 60;
+    private const int RerankerTopN = 100;
 
     /// <summary>
     /// Search with simplified RAG Fusion: structural variations + keyword search + reranking.

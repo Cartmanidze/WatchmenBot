@@ -10,10 +10,12 @@ namespace WatchmenBot.Features.Search.Services;
 /// <summary>
 /// Service for storing and managing embeddings in the database.
 /// Handles all CRUD operations for message_embeddings table.
+/// Now includes Q→A semantic bridge via question generation.
 /// </summary>
 public class EmbeddingStorageService(
     EmbeddingClient embeddingClient,
     IDbConnectionFactory connectionFactory,
+    QuestionGenerationService questionGenerator,
     ILogger<EmbeddingStorageService> logger)
 {
     /// <summary>
@@ -51,7 +53,12 @@ public class EmbeddingStorageService(
                     message.ForwardFromName,
                     message.ForwardOriginType
                 },
+                isQuestion: false,
+                sourceMessageId: null,
                 ct);
+
+            // Generate and store questions for Q→A semantic bridge
+            await GenerateAndStoreQuestionsAsync(message.ChatId, message.Id, message.Text, message.IsForwarded, ct);
 
             logger.LogDebug("Stored embedding for message {MessageId} in chat {ChatId}", message.Id, message.ChatId);
         }
@@ -255,6 +262,8 @@ public class EmbeddingStorageService(
         string chunkText,
         float[] embedding,
         object metadata,
+        bool isQuestion,
+        long? sourceMessageId,
         CancellationToken ct)
     {
         using var connection = await connectionFactory.CreateConnectionAsync();
@@ -264,13 +273,15 @@ public class EmbeddingStorageService(
 
         await connection.ExecuteAsync(
             """
-            INSERT INTO message_embeddings (chat_id, message_id, chunk_index, chunk_text, embedding, metadata)
-            VALUES (@ChatId, @MessageId, @ChunkIndex, @ChunkText, @Embedding::vector, @Metadata::jsonb)
+            INSERT INTO message_embeddings (chat_id, message_id, chunk_index, chunk_text, embedding, metadata, is_question, source_message_id)
+            VALUES (@ChatId, @MessageId, @ChunkIndex, @ChunkText, @Embedding::vector, @Metadata::jsonb, @IsQuestion, @SourceMessageId)
             ON CONFLICT (chat_id, message_id, chunk_index)
             DO UPDATE SET
                 chunk_text = EXCLUDED.chunk_text,
                 embedding = EXCLUDED.embedding,
                 metadata = EXCLUDED.metadata,
+                is_question = EXCLUDED.is_question,
+                source_message_id = EXCLUDED.source_message_id,
                 created_at = NOW()
             """,
             new
@@ -280,8 +291,73 @@ public class EmbeddingStorageService(
                 ChunkIndex = chunkIndex,
                 ChunkText = chunkText,
                 Embedding = embeddingString,
-                Metadata = metadataJson
+                Metadata = metadataJson,
+                IsQuestion = isQuestion,
+                SourceMessageId = sourceMessageId
             });
+    }
+
+    /// <summary>
+    /// Generate questions for a message and store their embeddings.
+    /// Questions are stored with is_question=true and source_message_id pointing to the answer.
+    /// </summary>
+    private async Task GenerateAndStoreQuestionsAsync(
+        long chatId,
+        long sourceMessageId,
+        string? messageText,
+        bool isForwarded,
+        CancellationToken ct)
+    {
+        if (!questionGenerator.ShouldGenerateQuestions(messageText, isForwarded))
+            return;
+
+        try
+        {
+            var questions = await questionGenerator.GenerateQuestionsAsync(messageText!, ct);
+
+            if (questions.Count == 0)
+                return;
+
+            // Get embeddings for all questions at once
+            var embeddings = await embeddingClient.GetEmbeddingsAsync(
+                questions,
+                EmbeddingTask.RetrievalQuery, // Questions use query mode
+                lateChunking: false,
+                ct);
+
+            // Store each question embedding
+            for (var i = 0; i < questions.Count && i < embeddings.Count; i++)
+            {
+                if (embeddings[i].Length == 0)
+                    continue;
+
+                // Use negative chunk_index to distinguish questions from message chunks
+                // This ensures unique constraint (chat_id, message_id, chunk_index) is satisfied
+                var chunkIndex = -(i + 1);
+
+                await StoreEmbeddingAsync(
+                    chatId,
+                    sourceMessageId,
+                    chunkIndex,
+                    questions[i],
+                    embeddings[i],
+                    new { GeneratedQuestion = true, QuestionIndex = i },
+                    isQuestion: true,
+                    sourceMessageId: sourceMessageId,
+                    ct);
+            }
+
+            logger.LogDebug(
+                "[QuestionGen] Stored {Count} questions for message {MsgId} in chat {ChatId}",
+                questions.Count, sourceMessageId, chatId);
+        }
+        catch (Exception ex)
+        {
+            // Don't fail the main embedding if question generation fails
+            logger.LogWarning(ex,
+                "[QuestionGen] Failed for message {MsgId} in chat {ChatId}",
+                sourceMessageId, chatId);
+        }
     }
 
     /// <summary>
