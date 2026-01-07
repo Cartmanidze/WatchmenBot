@@ -158,10 +158,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IEmbeddingHandler, ContextEmbeddingHandler>();
         services.AddScoped<EmbeddingOrchestrator>();
 
-        // HyDE Service (Hypothetical Document Embeddings for better Q→A retrieval)
-        services.AddScoped<HydeService>();
-
-        // RAG Fusion Service (multi-query search with RRF, now with HyDE)
+        // RAG Fusion Service (structural variations + vector/keyword search + reranking)
         services.AddScoped<RagFusionService>();
 
         // Rerank Service (LLM-based reranking)
@@ -360,6 +357,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<NicknameResolverService>(); // Resolves nicknames to actual usernames
         services.AddScoped<DebugReportCollector>();
         services.AddScoped<ConfidenceGateService>();
+
+        // Ask Processing Service (core /ask logic, used by BackgroundAskWorker and tests)
+        services.AddScoped<AskProcessingService>();
 
         // Search Handlers (embedding-based)
         services.AddScoped<AskHandler>();

@@ -105,6 +105,21 @@ public class DatabaseFixture : IAsyncLifetime
             )
             """);
 
+        // Create user_aliases table
+        await connection.ExecuteAsync("""
+            CREATE TABLE IF NOT EXISTS user_aliases (
+                id BIGSERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                alias TEXT NOT NULL,
+                alias_type TEXT NOT NULL,
+                usage_count INT DEFAULT 1,
+                last_used TIMESTAMPTZ DEFAULT NOW(),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(chat_id, alias)
+            )
+            """);
+
         // Create user_facts table
         await connection.ExecuteAsync("""
             CREATE TABLE IF NOT EXISTS user_facts (

@@ -27,7 +27,7 @@ public class TestConfiguration : IDisposable
             .Build();
 
         OpenRouterApiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")
-                           ?? Configuration["OpenRouter:ApiKey"];
+                           ?? Configuration["Llm:Providers:0:ApiKey"];  // Read from Llm:Providers array
 
         OpenAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
                        ?? Configuration["Embeddings:ApiKey"];
@@ -61,8 +61,8 @@ public class TestConfiguration : IDisposable
             Name = "openrouter",
             Type = "openrouter",
             ApiKey = OpenRouterApiKey!,
-            BaseUrl = Configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api/v1",
-            Model = Configuration["OpenRouter:Model"] ?? "deepseek/deepseek-chat",
+            BaseUrl = Configuration["Llm:Providers:0:BaseUrl"] ?? "https://openrouter.ai/api/v1",
+            Model = Configuration["Llm:Providers:0:Model"] ?? "deepseek/deepseek-chat",
             Priority = 1,
             Tags = ["default"]
         };
@@ -83,9 +83,10 @@ public class TestConfiguration : IDisposable
         if (!HasOpenAiKey)
             throw new InvalidOperationException("Embeddings API key not configured");
 
-        var providerStr = Configuration["Embeddings:Provider"] ?? "openai";
+        var providerStr = Configuration["Embeddings:Provider"] ?? "jina";
         var provider = providerStr.ToLowerInvariant() switch
         {
+            "jina" => EmbeddingProvider.Jina,
             "huggingface" or "hf" => EmbeddingProvider.HuggingFace,
             _ => EmbeddingProvider.OpenAI
         };
