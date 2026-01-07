@@ -1,29 +1,25 @@
-using Telegram.Bot;
-using Telegram.Bot.Types;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Admin.Services;
 
 namespace WatchmenBot.Features.Search;
 
 /// <summary>
-/// Service for handling confidence gates and context building with early returns
+/// Service for handling confidence gates and context building.
+/// Now returns shouldContinue=true even for None confidence (fallback to Perplexity).
 /// </summary>
 public class ConfidenceGateService(
-    ITelegramBotClient bot,
     ContextBuilderService contextBuilder,
-    DebugReportCollector debugCollector,
-    DebugService debugService)
+    DebugReportCollector debugCollector)
 {
     /// <summary>
-    /// Process search results: check confidence, build context, handle early returns
+    /// Process search results: check confidence, build context, determine if LLM should be called.
     /// Returns: (context, confidenceWarning, contextTracker, shouldContinue)
-    /// shouldContinue = false means early return was sent to user
+    /// shouldContinue is always true now (fallback to Perplexity when None)
     /// </summary>
     public async Task<(string? context, string? confidenceWarning, Dictionary<long, (bool included, string reason)> tracker, bool shouldContinue)>
         ProcessSearchResultsAsync(
             string command,
             long chatId,
-            int replyToMessageId,
             SearchResponse searchResponse,
             DebugReport debugReport,
             CancellationToken ct)
@@ -52,19 +48,12 @@ public class ConfidenceGateService(
             foreach (var r in results)
                 contextTracker[r.MessageId] = (false, "confidence_none");
 
-            // Collect debug info before early return
-            debugCollector.CollectSearchDebugInfo(debugReport, results, contextTracker, personalTarget: null);
+            // FALLBACK: When nothing found in chat, fall back to Perplexity (internet search)
+            // Don't send "не нашёл" - instead continue with null context and warning
+            confidenceWarning = "🔍 <i>В чате не нашёл, ищу в интернете...</i>\n\n";
 
-            await bot.SendMessage(
-                chatId: chatId,
-                text: "🤷 В истории чата про это не нашёл. Попробуй уточнить вопрос или период.",
-                replyParameters: new ReplyParameters { MessageId = replyToMessageId },
-                cancellationToken: ct);
-
-            await debugService.SendDebugReportAsync(debugReport, ct);
-
-            // Signal early return
-            return (null, null, contextTracker, false);
+            // Return shouldContinue = true to trigger Perplexity fallback
+            return (null, confidenceWarning, contextTracker, true);
         }
 
         if (searchResponse.Confidence == SearchConfidence.Low)

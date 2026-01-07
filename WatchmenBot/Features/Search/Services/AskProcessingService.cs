@@ -124,9 +124,9 @@ public partial class AskProcessingService(
             item.Command, item.ChatId, item.AskerId, item.AskerName, item.AskerUsername,
             searchQuestion, classified, defaultSearchTask, ct);
 
-        // Handle confidence gate
+        // Handle confidence gate (now always continues - fallback to Perplexity when confidence=None)
         var (context, confidenceWarning, contextTracker, shouldContinue) = await confidenceGate.ProcessSearchResultsAsync(
-            item.Command, item.ChatId, item.ReplyToMessageId, searchResponse, debugReport, ct);
+            item.Command, item.ChatId, searchResponse, debugReport, ct);
 
         if (!shouldContinue)
         {

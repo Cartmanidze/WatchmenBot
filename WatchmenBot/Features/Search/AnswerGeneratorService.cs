@@ -81,6 +81,16 @@ public class AnswerGeneratorService(
             ? $"\n{memoryContext}\n"
             : "";
 
+        // FALLBACK: If /ask has no context, fall back to Perplexity (internet search)
+        // This happens when confidence = None (nothing found in chat)
+        var isPerplexityFallback = command == "ask" && string.IsNullOrWhiteSpace(context);
+        if (isPerplexityFallback)
+        {
+            // Override settings to use Perplexity (same as /smart)
+            settings = await promptSettings.GetSettingsAsync("smart", chatSettingsData.Mode, chatSettingsData.Language);
+            logger.LogInformation("[AnswerGenerator] /ask fallback to Perplexity (confidence=None, no context)");
+        }
+
         // For /q or /ask without context - single stage
         var userPrompt = string.IsNullOrWhiteSpace(context)
             ? $"""

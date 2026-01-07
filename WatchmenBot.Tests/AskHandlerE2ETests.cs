@@ -209,7 +209,7 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
         var debugCollector = new DebugReportCollector();
         var adminSettings = new AdminSettingsStore(connectionFactory, _testConfig.Configuration, NullLogger<AdminSettingsStore>.Instance);
         var debugService = new DebugService(botMock.Object, adminSettings, NullLogger<DebugService>.Instance);
-        var confidenceGate = new ConfidenceGateService(botMock.Object, contextBuilder, debugCollector, debugService);
+        var confidenceGate = new ConfidenceGateService(contextBuilder, debugCollector);
 
         var processingService = new AskProcessingService(
             botMock.Object, memoryService, debugService, searchStrategy, answerGenerator,
