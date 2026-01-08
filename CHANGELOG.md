@@ -4,7 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2026-01-08]
+
+### Fixed
+
+- **Real-time Embedding Threshold Lowered** — снижен порог для мгновенной индексации сообщений с `> 10` до `>= 6` символов:
+  - **Проблема**: сообщения ровно 10 символов (например "бек гондон") не индексировались сразу, а ждали background service (~3 минуты)
+  - **Причина**: условие `record.Text.Length > 10` отклоняло сообщения длиной ровно 10 символов
+  - **Решение**: изменено на `record.Text.Length >= 6` — теперь короткие, но осмысленные сообщения индексируются мгновенно
+  - **Результат**: `/ask` находит свежие сообщения сразу после отправки, а не через 3+ минуты
 
 ### Added
 

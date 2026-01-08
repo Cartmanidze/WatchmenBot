@@ -118,8 +118,9 @@ public class SaveMessageHandler(
             }
 
             // Create embedding immediately with timeout (don't block webhook too long)
-            // Skip short messages (< 10 chars) - they add noise to embeddings
-            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length > 10)
+            // Skip very short messages (< 6 chars) - they add noise to embeddings
+            // Note: >= 6 allows short but meaningful messages like "бек гондон" (10 chars)
+            if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length >= 6)
             {
                 try
                 {
