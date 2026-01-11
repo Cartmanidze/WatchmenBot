@@ -5,6 +5,7 @@ using Telegram.Bot.Types.Enums;
 using WatchmenBot.Extensions;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Messages;
+using WatchmenBot.Features.Onboarding;
 using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
@@ -70,12 +71,17 @@ public class ProcessTelegramUpdateHandler(
         {
             using var scope = serviceProvider.CreateScope();
 
-            // Handle private messages (for admin commands and /smart)
+            // Handle private messages (for admin commands, /smart, and /start)
             if (message.Chat.Type == ChatType.Private)
             {
                 // Handle text commands or document uploads with caption
                 var commandText = message.Text ?? message.Caption ?? "";
-                if (IsCommand(commandText, "/admin"))
+                if (IsCommand(commandText, "/start"))
+                {
+                    var startHandler = scope.ServiceProvider.GetRequiredService<StartCommandHandler>();
+                    await startHandler.HandleAsync(message, cancellationToken);
+                }
+                else if (IsCommand(commandText, "/admin"))
                 {
                     var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();
                     await adminHandler.HandleAsync(message, cancellationToken);
@@ -96,6 +102,14 @@ public class ProcessTelegramUpdateHandler(
             }
 
             // Handle commands
+            if (IsCommand(message.Text, "/start"))
+            {
+                // Short response in groups (auto-deletes)
+                var startHandler = scope.ServiceProvider.GetRequiredService<StartCommandHandler>();
+                await startHandler.HandleAsync(message, cancellationToken);
+                return ProcessTelegramUpdateResponse.Success();
+            }
+
             if (IsCommand(message.Text, "/admin"))
             {
                 var adminHandler = scope.ServiceProvider.GetRequiredService<AdminCommandHandler>();

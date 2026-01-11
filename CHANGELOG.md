@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-01-11]
 
+### Added
+
+- **Onboarding /start Command** — приветствие и онбординг для новых пользователей:
+  - `StartCommandHandler.cs` — обработчик команды /start
+  - **Private chat**: полное приветствие с описанием команд и кнопкой "➕ Добавить в чат"
+  - **Group chat**: короткое сообщение "Я готов!" с автоудалением через 15 сек
+  - Inline-кнопка использует deep link `t.me/{bot}?startgroup=welcome` для добавления в группу
+  - Зарегистрирована команда /start в меню бота для private chats
+  - Интеграция в `ProcessTelegramUpdate.cs` и `TelegramPollingService.cs`
+
 ### Fixed
 
 - **Complete IsQuestionEmbedding Preservation Through Entire Pipeline** — флаг Q→A bridge теперь сохраняется на всех этапах:

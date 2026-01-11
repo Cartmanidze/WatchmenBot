@@ -4,6 +4,7 @@ using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Admin;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Messages;
+using WatchmenBot.Features.Onboarding;
 using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Summary;
 
@@ -87,10 +88,14 @@ public class TelegramPollingService(
         {
             using var scope = serviceProvider.CreateScope();
 
-            // Handle private messages (admin commands and /q)
+            // Handle private messages (admin commands, /q, and /start)
             if (message.Chat.Type == ChatType.Private)
             {
-                if (IsAdminCommand(message.Text))
+                if (IsStartCommand(message.Text))
+                {
+                    await HandleStartCommand(scope.ServiceProvider, message, ct);
+                }
+                else if (IsAdminCommand(message.Text))
                 {
                     await HandleAdminCommand(scope.ServiceProvider, message, ct);
                 }
@@ -106,6 +111,13 @@ public class TelegramPollingService(
             if (message.Chat.Type != ChatType.Group && message.Chat.Type != ChatType.Supergroup)
             {
                 logger.LogDebug("[Telegram] Skipping {Type} message from {User}", message.Chat.Type, userName);
+                return;
+            }
+
+            // Check for /start command in groups (short response that auto-deletes)
+            if (IsStartCommand(message.Text))
+            {
+                await HandleStartCommand(scope.ServiceProvider, message, ct);
                 return;
             }
 
@@ -201,6 +213,23 @@ public class TelegramPollingService(
             || text.Equals("/q", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsStartCommand(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        return text.StartsWith("/start", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task HandleStartCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
+    {
+        var userName = message.From?.Username ?? message.From?.FirstName ?? "unknown";
+        logger.LogInformation("[Telegram] /start from @{User}", userName);
+
+        var startHandler = serviceProvider.GetRequiredService<StartCommandHandler>();
+        await startHandler.HandleAsync(message, ct);
+    }
+
     private async Task HandleSummaryCommand(IServiceProvider serviceProvider, Message message, CancellationToken ct)
     {
         var chatName = message.Chat.Title ?? message.Chat.Id.ToString();
@@ -277,9 +306,10 @@ public class TelegramPollingService(
                 new() { Command = "truth", Description = "Фактчек последних сообщений" },
             };
 
-            // Commands for private chat (admin only)
+            // Commands for private chat
             var privateCommands = new BotCommand[]
             {
+                new() { Command = "start", Description = "Начать работу с ботом" },
                 new() { Command = "admin", Description = "Показать справку по админ-командам" },
             };
 

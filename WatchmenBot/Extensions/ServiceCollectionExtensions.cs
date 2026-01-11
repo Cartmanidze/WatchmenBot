@@ -10,6 +10,7 @@ using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Webhook;
+using WatchmenBot.Features.Onboarding;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Admin.Services;
@@ -348,6 +349,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SaveMessageHandler>();
         services.AddScoped<GenerateSummaryHandler>();
         services.AddScoped<AdminCommandHandler>();
+        services.AddScoped<StartCommandHandler>();
         services.AddScoped<SetWebhookHandler>();
         services.AddScoped<DeleteWebhookHandler>();
         services.AddScoped<GetWebhookInfoHandler>();
