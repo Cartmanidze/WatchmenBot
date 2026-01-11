@@ -58,7 +58,7 @@ public class StartCommandHandler(
         logger.LogInformation("[Start] Group chat /start in {Chat}", chatName);
 
         // Short message for groups - don't spam
-        var shortMessage = "👋 Я готов! Используй /summary или /ask.\nНастройка: напиши мне в личку.";
+        var shortMessage = "👋 Я готов! Команды: /summary, /ask, /smart, /truth";
 
         var sentMessage = await bot.SendMessage(
             chatId: message.Chat.Id,
