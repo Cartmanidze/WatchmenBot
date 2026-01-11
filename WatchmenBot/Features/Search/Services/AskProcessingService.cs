@@ -5,6 +5,7 @@ using WatchmenBot.Features.Memory.Services;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Webhook.Services;
+using WatchmenBot.Features.Search;
 
 namespace WatchmenBot.Features.Search.Services;
 
@@ -49,16 +50,46 @@ public partial class AskProcessingService(
         // Send typing action
         await bot.SendChatAction(item.ChatId, ChatAction.Typing, cancellationToken: ct);
 
+        var normalizedQuestion = QueryNormalizer.Normalize(item.Question);
+        if (string.IsNullOrWhiteSpace(normalizedQuestion))
+        {
+            // Query was only invisible characters, emoji, or whitespace - cannot search
+            logger.LogWarning("[AskProcessing] Query normalized to empty: '{Original}'",
+                item.Question.Length > 60 ? item.Question[..60] + "..." : item.Question);
+
+            await bot.SendMessage(
+                chatId: item.ChatId,
+                text: "❌ Не удалось распознать вопрос. Попробуйте переформулировать.",
+                replyParameters: new Telegram.Bot.Types.ReplyParameters { MessageId = item.ReplyToMessageId },
+                cancellationToken: ct);
+
+            sw.Stop();
+            return new AskProcessingResult
+            {
+                Success = false,
+                Confidence = SearchConfidence.None,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds,
+                ResponseSent = true
+            };
+        }
+
+        if (normalizedQuestion != item.Question)
+        {
+            logger.LogDebug("[AskProcessing] Query normalized: '{Original}' → '{Normalized}'",
+                item.Question.Length > 60 ? item.Question[..60] + "..." : item.Question,
+                normalizedQuestion.Length > 60 ? normalizedQuestion[..60] + "..." : normalizedQuestion);
+        }
+
         // OPTIMIZATION: Run Intent Classification and default RAG Fusion in parallel
         // Most queries use default search, so we precompute it while classifying intent
         var intentTask = intentClassifier.ClassifyAsync(
-            item.Question, item.AskerName, item.AskerUsername, ct);
+            normalizedQuestion, item.AskerName, item.AskerUsername, ct);
 
         // Start default RAG Fusion search in parallel (will be used for most queries)
         Task<SearchResponse>? defaultSearchTask = null;
         if (item.Command != "smart")
         {
-            defaultSearchTask = searchStrategy.SearchContextOnlyAsync(item.ChatId, item.Question, ct);
+            defaultSearchTask = searchStrategy.SearchContextOnlyAsync(item.ChatId, normalizedQuestion, ct);
         }
 
         // Wait for intent classification
@@ -85,7 +116,7 @@ public partial class AskProcessingService(
                         resolution.OriginalNick, resolution.ResolvedName, resolution.Confidence);
 
                     // Expand the question for better search
-                    expandedQuestion ??= item.Question;
+                    expandedQuestion ??= normalizedQuestion;
                     expandedQuestion = expandedQuestion.Replace(
                         resolution.OriginalNick,
                         resolution.ResolvedName,
@@ -117,7 +148,7 @@ public partial class AskProcessingService(
         };
 
         // Use expanded question for search if nicknames were resolved
-        var searchQuestion = expandedQuestion ?? item.Question;
+        var searchQuestion = expandedQuestion ?? normalizedQuestion;
 
         // Execute search (uses precomputed default search or specialized search based on intent)
         var (memoryContext, searchResponse) = await ExecuteSearchWithPrecomputedAsync(

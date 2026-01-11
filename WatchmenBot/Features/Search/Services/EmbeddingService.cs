@@ -158,7 +158,8 @@ public class EmbeddingService(
                     me.chunk_text as ChunkText,
                     me.metadata as MetadataJson,
                     me.embedding <=> @Embedding::vector as Distance,
-                    1 - (me.embedding <=> @Embedding::vector) as Similarity
+                    1 - (me.embedding <=> @Embedding::vector) as Similarity,
+                    COALESCE(me.is_question, FALSE) as IsQuestionEmbedding
                 FROM message_embeddings me
                 JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
                 WHERE me.chat_id = @ChatId
@@ -172,6 +173,8 @@ public class EmbeddingService(
             return results.Select(r =>
             {
                 r.IsNewsDump = NewsDumpDetector.IsNewsDump(r.ChunkText);
+                // Support both DB flag and legacy ChunkIndex < 0 convention
+                r.IsQuestionEmbedding = r.IsQuestionEmbedding || r.ChunkIndex < 0;
                 return r;
             }).ToList();
         }
@@ -284,6 +287,7 @@ public class EmbeddingService(
                     me.chunk_text,
                     me.metadata,
                     me.embedding <=> @Embedding::vector as distance,
+                    COALESCE(me.is_question, FALSE) as is_question,
                     ROW_NUMBER() OVER (ORDER BY me.embedding <=> @Embedding::vector) as vector_rank
                 FROM message_embeddings me
                 WHERE me.chat_id = @ChatId
@@ -297,6 +301,7 @@ public class EmbeddingService(
                     me.chunk_index,
                     me.chunk_text,
                     me.metadata,
+                    COALESCE(me.is_question, FALSE) as is_question,
                     ts_rank_cd(to_tsvector('russian', me.chunk_text), query) as text_rank,
                     ROW_NUMBER() OVER (ORDER BY ts_rank_cd(to_tsvector('russian', me.chunk_text), query) DESC) as keyword_rank
                 FROM message_embeddings me,
@@ -316,6 +321,8 @@ public class EmbeddingService(
                 -- RRF fusion: sum of reciprocal ranks
                 COALESCE(1.0 / ({rrfK} + v.vector_rank), 0) +
                 COALESCE(1.0 / ({rrfK} + k.keyword_rank), 0) as Similarity,
+                -- Q→A bridge flag (TRUE if either source is a question embedding)
+                COALESCE(v.is_question, k.is_question, FALSE) as IsQuestionEmbedding,
                 -- Debug info
                 v.vector_rank,
                 k.keyword_rank,
@@ -358,7 +365,8 @@ public class EmbeddingService(
                 MetadataJson = r.MetadataJson,
                 Distance = r.Distance,
                 Similarity = r.Similarity,
-                IsNewsDump = NewsDumpDetector.IsNewsDump(r.ChunkText)
+                IsNewsDump = NewsDumpDetector.IsNewsDump(r.ChunkText),
+                IsQuestionEmbedding = r.IsQuestionEmbedding || r.ChunkIndex < 0 // Both DB flag and legacy convention
             }).ToList();
         }
         catch (Exception ex)
@@ -402,6 +410,7 @@ public class EmbeddingService(
         public string? MetadataJson { get; set; }
         public double Distance { get; set; }
         public double Similarity { get; set; }
+        public bool IsQuestionEmbedding { get; set; }
         public int? VectorRank { get; set; }
         public int? KeywordRank { get; set; }
         public double? TextRank { get; set; }
@@ -437,7 +446,8 @@ public class EmbeddingService(
                 me.chunk_text as ChunkText,
                 me.metadata as MetadataJson,
                 me.embedding <=> @Embedding::vector as Distance,
-                m.date_utc as DateUtc
+                m.date_utc as DateUtc,
+                COALESCE(me.is_question, FALSE) as IsQuestionEmbedding
             FROM message_embeddings me
             JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
             WHERE me.chat_id = @ChatId
@@ -505,7 +515,8 @@ public class EmbeddingService(
                 MetadataJson = c.MetadataJson,
                 Distance = c.Distance,
                 Similarity = c.Similarity,
-                IsNewsDump = NewsDumpDetector.IsNewsDump(c.ChunkText)
+                IsNewsDump = NewsDumpDetector.IsNewsDump(c.ChunkText),
+                IsQuestionEmbedding = c.IsQuestionEmbedding || c.ChunkIndex < 0 // Both DB flag and legacy convention
             })
             .ToList();
 
@@ -528,6 +539,7 @@ public class EmbeddingService(
         public double Distance { get; set; }
         public double Similarity { get; set; }
         public DateTime DateUtc { get; set; }
+        public bool IsQuestionEmbedding { get; set; }
     }
 
     /// <summary>

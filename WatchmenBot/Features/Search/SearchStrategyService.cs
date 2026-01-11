@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Search.Services;
 
@@ -17,6 +18,13 @@ public class SearchStrategyService(
     CohereRerankService cohereReranker,
     ILogger<SearchStrategyService> logger)
 {
+    /// <summary>
+    /// Cache for participant names per chat. TTL: 10 minutes, max 100 entries.
+    /// Key: chatId, Value: (names, cachedAt)
+    /// </summary>
+    private static readonly ConcurrentDictionary<long, (List<string> Names, DateTime CachedAt)> ParticipantCache = new();
+    private static readonly TimeSpan ParticipantCacheTtl = TimeSpan.FromMinutes(10);
+    private const int MaxCacheSize = 100;
     /// <summary>
     /// Route search based on classified intent
     /// </summary>
@@ -94,9 +102,31 @@ public class SearchStrategyService(
         logger.LogInformation("[TemporalSearch] Query: '{Query}', Range: {Start:yyyy-MM-dd HH:mm} to {End:yyyy-MM-dd HH:mm}",
             query.Length > 30 ? query[..30] + "..." : query, startUtc, endUtc);
 
-        // Search in message embeddings within time range
-        var results = await embeddingService.SearchSimilarInRangeAsync(
+        // Search in message and context embeddings within time range
+        var messageTask = embeddingService.SearchSimilarInRangeAsync(
             chatId, query, startUtc, endUtc, limit: 15, ct);
+        var contextTask = contextEmbeddingService.SearchContextInRangeAsync(
+            chatId, query, startUtc, endUtc, limit: 10, ct);
+
+        await Task.WhenAll(messageTask, contextTask);
+
+        var messageResults = await messageTask;
+        var contextResults = await contextTask;
+
+        var contextSearchResults = contextResults.Select(cr => new SearchResult
+        {
+            ChatId = cr.ChatId,
+            MessageId = cr.CenterMessageId,
+            ChunkIndex = 0,
+            ChunkText = cr.ContextText,
+            MetadataJson = null,
+            Similarity = cr.Similarity,
+            Distance = cr.Distance,
+            IsNewsDump = false,
+            IsContextWindow = true
+        });
+
+        var results = DeduplicateByMessageId(messageResults.Concat(contextSearchResults));
 
         sw.Stop();
 
@@ -119,8 +149,8 @@ public class SearchStrategyService(
             _ => SearchConfidence.None
         };
 
-        logger.LogInformation("[TemporalSearch] Found {Count} results in {Ms}ms, best={Best:F3}",
-            results.Count, sw.ElapsedMilliseconds, bestSim);
+        logger.LogInformation("[TemporalSearch] Found {Count} results in {Ms}ms (messages={Messages}, context={Context}), best={Best:F3}",
+            results.Count, sw.ElapsedMilliseconds, messageResults.Count, contextResults.Count, bestSim);
 
         return new SearchResponse
         {
@@ -177,11 +207,7 @@ public class SearchStrategyService(
         var allResults = searchResults.SelectMany(r => r).ToList();
 
         // Deduplicate and sort
-        var mergedResults = allResults
-            .GroupBy(r => r.MessageId)
-            .Select(g => g.OrderByDescending(r => r.Similarity).First())
-            .OrderByDescending(r => r.Similarity)
-            .ToList();
+        var mergedResults = DeduplicateByMessageId(allResults);
 
         sw.Stop();
 
@@ -234,6 +260,7 @@ public class SearchStrategyService(
         var combinedQuery = $"{query} {string.Join(" ", people.Take(3))}";
 
         var results = await embeddingService.SearchSimilarAsync(chatId, combinedQuery, limit: 15, ct);
+        results = DeduplicateByMessageId(results);
 
         sw.Stop();
 
@@ -398,11 +425,7 @@ public class SearchStrategyService(
         contextCount += contextWindows.Count;
 
         // Deduplicate by message_id, keeping best similarity
-        var mergedResults = allResults
-            .GroupBy(r => r.MessageId)
-            .Select(g => g.OrderByDescending(r => r.Similarity).First())
-            .OrderByDescending(r => r.Similarity)
-            .ToList();
+        var mergedResults = DeduplicateByMessageId(allResults);
 
         // Step 4: Cross-encoder reranking (if configured)
         // This dramatically improves question→answer matching that bi-encoders miss
@@ -469,9 +492,10 @@ public class SearchStrategyService(
 
         // Step 1: RAG Fusion search (generates variations + RRF merge)
         // Increased resultsPerQuery from 15 to 30 to catch semantically distant matches
+        var participantNames = await GetParticipantNamesAsync(chatId, ct);
         var fusionResponse = await ragFusionService.SearchWithFusionAsync(
             chatId, query,
-            participantNames: null, // Could pass chat participants for better name variation
+            participantNames: participantNames,
             variationCount: 3,
             resultsPerQuery: 30,
             ct);
@@ -514,16 +538,12 @@ public class SearchStrategyService(
             MetadataJson = fr.MetadataJson,
             Similarity = fr.Similarity,
             Distance = fr.Distance,
-            IsNewsDump = fr.IsNewsDump
+            IsNewsDump = fr.IsNewsDump,
+            IsQuestionEmbedding = fr.IsQuestionEmbedding // Preserve Q→A bridge flag for dedup
         }).ToList();
 
         // Merge: context windows + fusion results, deduplicate by message_id
-        var allResults = contextSearchResults
-            .Concat(fusionSearchResults)
-            .GroupBy(r => r.MessageId)
-            .Select(g => g.OrderByDescending(r => r.Similarity).First())
-            .OrderByDescending(r => r.Similarity)
-            .ToList();
+        var allResults = DeduplicateByMessageId(contextSearchResults.Concat(fusionSearchResults));
 
         // Step 3: Cross-encoder reranking (if configured)
         // This dramatically improves question→answer matching that bi-encoders miss
@@ -576,5 +596,134 @@ public class SearchStrategyService(
             BestScore = bestSim,
             ScoreGap = fusionResponse.ScoreGap
         };
+    }
+
+    private async Task<List<string>> GetParticipantNamesAsync(long chatId, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+
+        // Periodic cleanup: remove expired entries when cache grows too large
+        if (ParticipantCache.Count > MaxCacheSize)
+        {
+            CleanupExpiredCacheEntries(now);
+        }
+
+        // Check cache first
+        if (ParticipantCache.TryGetValue(chatId, out var cached))
+        {
+            if (now - cached.CachedAt < ParticipantCacheTtl)
+            {
+                logger.LogDebug("[SearchStrategy] Participant names cache hit for chat {ChatId}", chatId);
+                return cached.Names;
+            }
+
+            // Cache expired, remove stale entry
+            ParticipantCache.TryRemove(chatId, out _);
+        }
+
+        var users = await nicknameResolverService.GetChatUsersAsync(chatId, ct);
+
+        var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var user in users)
+        {
+            AddName(user.DisplayName);
+            if (!string.IsNullOrWhiteSpace(user.Username))
+            {
+                AddName(user.Username);
+                AddName("@" + user.Username);
+            }
+        }
+
+        var result = names.Take(20).ToList();
+
+        // Cache the result (including empty lists to avoid repeated DB calls)
+        ParticipantCache[chatId] = (result, now);
+        logger.LogDebug("[SearchStrategy] Cached {Count} participant names for chat {ChatId}", result.Count, chatId);
+
+        return result;
+
+        void AddName(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            if (seen.Add(name))
+            {
+                names.Add(name);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Remove expired and excess entries from the cache to enforce MaxCacheSize limit.
+    /// Uses LRU-like eviction: removes expired entries first, then oldest entries if still over limit.
+    /// </summary>
+    private static void CleanupExpiredCacheEntries(DateTime now)
+    {
+        // Step 1: Remove expired entries
+        var expiredKeys = ParticipantCache
+            .Where(kvp => now - kvp.Value.CachedAt >= ParticipantCacheTtl)
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var key in expiredKeys)
+        {
+            ParticipantCache.TryRemove(key, out _);
+        }
+
+        // Step 2: If still over limit, remove oldest entries (LRU eviction)
+        if (ParticipantCache.Count > MaxCacheSize)
+        {
+            var entriesToRemove = ParticipantCache.Count - MaxCacheSize;
+            var oldestKeys = ParticipantCache
+                .OrderBy(kvp => kvp.Value.CachedAt)
+                .Take(entriesToRemove)
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            foreach (var key in oldestKeys)
+            {
+                ParticipantCache.TryRemove(key, out _);
+            }
+        }
+    }
+
+    private static List<SearchResult> DeduplicateByMessageId(IEnumerable<SearchResult> results)
+    {
+        return results
+            .GroupBy(r => r.MessageId)
+            .Select(SelectPreferredResult)
+            .OrderByDescending(r => r.Similarity)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Select the preferred result from a group of duplicates (same MessageId).
+    /// Prefers original embeddings over question embeddings.
+    /// Uses the similarity score of the selected result for consistency
+    /// (score should reflect relevance of the text we're returning).
+    /// </summary>
+    private static SearchResult SelectPreferredResult(IGrouping<long, SearchResult> group)
+    {
+        // Prefer non-question embeddings (original message text is more useful for context).
+        // Question embeddings are identified by IsQuestionEmbedding flag.
+        var bestNonQuestion = group
+            .Where(r => !r.IsQuestionEmbedding)
+            .OrderByDescending(r => r.Similarity)
+            .FirstOrDefault();
+
+        if (bestNonQuestion != null)
+        {
+            return bestNonQuestion;
+        }
+
+        // All results are question embeddings - return the best one
+        return group
+            .OrderByDescending(r => r.Similarity)
+            .First();
     }
 }

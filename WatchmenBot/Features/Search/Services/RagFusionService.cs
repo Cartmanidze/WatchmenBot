@@ -178,6 +178,7 @@ public partial class RagFusionService(
                     Distance = r.Distance,
                     Similarity = r.Similarity, // Now contains reranker score
                     IsNewsDump = r.IsNewsDump,
+                    IsQuestionEmbedding = r.IsQuestionEmbedding, // Preserve Q→A bridge flag for dedup
                     FusedScore = r.Similarity, // Use reranker score as fused score
                     MatchedQueryCount = 1,
                     MatchedQueryIndices = [0]
@@ -393,9 +394,12 @@ public partial class RagFusionService(
                 if (fusionScores.TryGetValue(result.MessageId, out var existing))
                 {
                     existing.QueryIndices.Add(queryIndex);
+                    // Prefer non-question embeddings over question embeddings for better dedup later.
+                    // If both are same type (both question or both non-question), use higher similarity.
+                    var preferredResult = SelectBetterResult(existing.Result, result);
                     fusionScores[result.MessageId] = (
                         existing.Score + rrfScore,
-                        result.Similarity > existing.Result.Similarity ? result : existing.Result,
+                        preferredResult,
                         existing.QueryIndices
                     );
                 }
@@ -417,6 +421,7 @@ public partial class RagFusionService(
                 Similarity = kv.Value.Result.Similarity,
                 Distance = kv.Value.Result.Distance,
                 IsNewsDump = kv.Value.Result.IsNewsDump,
+                IsQuestionEmbedding = kv.Value.Result.IsQuestionEmbedding, // Preserve Q→A bridge flag for dedup
                 FusedScore = kv.Value.Score,
                 MatchedQueryCount = kv.Value.QueryIndices.Count,
                 MatchedQueryIndices = kv.Value.QueryIndices
@@ -428,6 +433,25 @@ public partial class RagFusionService(
             allResults.Length, fusedResults.Count);
 
         return fusedResults;
+    }
+
+    /// <summary>
+    /// Select the better result when merging duplicates.
+    /// Prefers non-question embeddings over question embeddings (Q→A bridge).
+    /// If both are same type, selects higher similarity.
+    /// </summary>
+    private static SearchResult SelectBetterResult(SearchResult existing, SearchResult candidate)
+    {
+        // Case 1: existing is non-question, candidate is question → keep existing
+        if (!existing.IsQuestionEmbedding && candidate.IsQuestionEmbedding)
+            return existing;
+
+        // Case 2: existing is question, candidate is non-question → prefer candidate
+        if (existing.IsQuestionEmbedding && !candidate.IsQuestionEmbedding)
+            return candidate;
+
+        // Case 3: both same type → use higher similarity
+        return candidate.Similarity > existing.Similarity ? candidate : existing;
     }
 
     /// <summary>

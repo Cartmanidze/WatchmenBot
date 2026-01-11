@@ -22,4 +22,12 @@ public class SearchResult
     /// Flag: ChunkText already contains full context window (from context_embeddings)
     /// </summary>
     public bool IsContextWindow { get; set; }
+
+    /// <summary>
+    /// Flag: this result comes from a Q→A bridge embedding (generated question pointing to this message).
+    /// When true, the ChunkText may contain the original message but the similarity was boosted
+    /// by matching against a generated question. Used in deduplication to prefer original embeddings.
+    /// Note: ChunkIndex &lt; 0 is also used to indicate question embeddings in the database.
+    /// </summary>
+    public bool IsQuestionEmbedding { get; set; }
 }

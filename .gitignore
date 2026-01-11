@@ -63,3 +63,4 @@ WatchmenBot/appsettings.Development.json
 
 # Claude Code local settings
 .claude/
+.mcp.json

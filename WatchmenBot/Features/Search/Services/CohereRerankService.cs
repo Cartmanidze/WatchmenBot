@@ -141,7 +141,9 @@ public class CohereRerankService
                         MetadataJson = original.MetadataJson,
                         Distance = original.Distance,
                         Similarity = item.RelevanceScore, // Use reranker score
-                        IsNewsDump = original.IsNewsDump
+                        IsNewsDump = original.IsNewsDump,
+                        IsQuestionEmbedding = original.IsQuestionEmbedding, // Preserve Q→A bridge flag for dedup
+                        IsContextWindow = original.IsContextWindow // Preserve context window flag to avoid re-expansion
                     });
                 }
             }

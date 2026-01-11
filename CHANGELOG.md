@@ -4,6 +4,114 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2026-01-11]
+
+### Fixed
+
+- **Complete IsQuestionEmbedding Preservation Through Entire Pipeline** — флаг Q→A bridge теперь сохраняется на всех этапах:
+  - **RAG Fusion**: копирование в `ApplyRrfFusion` при создании `FusedSearchResult`
+  - **RAG Fusion Rerank**: копирование после rerank в `SearchWithFusionAsync`
+  - **Cohere Reranker**: добавлено `IsQuestionEmbedding = original.IsQuestionEmbedding` и `IsContextWindow = original.IsContextWindow` в `CohereRerankService.RerankAsync`
+  - **SearchContextOnlyAsync**: добавлено копирование флага при конвертации `FusedSearchResult → SearchResult`
+  - **Проблема**: флаг терялся в 4 местах пайплайна, дедупликатор не мог различить оригиналы и Q→A bridge
+  - **Результат**: теперь `SelectPreferredResult` корректно выбирает оригинальное сообщение вместо сгенерированного вопроса
+
+- **ApplyRrfFusion Now Prefers Non-Question Embeddings** — RRF fusion выбирает правильного представителя:
+  - Новый метод `SelectBetterResult`: предпочитает non-question embedding даже с меньшим similarity
+  - **Проблема**: при слиянии дубликатов выбирался вариант с highest similarity, который часто был question embedding
+  - **Результат**: оригинальный текст сообщения сохраняется раньше в пайплайне, а не только в финальном dedup
+
+- **HybridSearchAsync Now Selects is_question Column** — гибридный поиск теперь возвращает флаг Q→A bridge:
+  - Добавлено `is_question` в оба CTE: `vector_search` и `keyword_search`
+  - Добавлено `IsQuestionEmbedding` в итоговый SELECT с `COALESCE(v.is_question, k.is_question, FALSE)`
+  - Добавлен флаг в модель `HybridSearchResult` и маппинг в `SearchResult`
+  - **Проблема**: keyword path в RAG Fusion терял информацию о типе embedding
+
+- **MaxCacheSize Now Actually Limits Cache** — кеш participant names теперь реально ограничен:
+  - Добавлена LRU-like eviction: сначала удаляются expired, затем самые старые до `MaxCacheSize`
+  - **Проблема**: `CleanupExpiredCacheEntries` только удалял протухшие записи, но не ограничивал общий размер
+  - **Результат**: при >100 активных чатов кеш не будет расти бесконечно
+
+### Added
+
+- **Unit Tests for IsQuestionEmbedding Preservation** — тесты для проверки сохранения флага:
+  - `FusedSearchResult_InheritsIsQuestionEmbedding_FromBaseClass` — наследование через cast
+  - `FusedSearchResult_ManualCopy_PreservesIsQuestionEmbedding` — ручное копирование как в RRF
+  - `FusedSearchResult_MixedQuestionFlags_EachPreservesOwnFlag` — смешанные флаги
+  - `DeduplicateFusedResults_PreservesIsQuestionEmbedding_ForPreferenceLogic` — интеграция с dedup
+
+- **Unit Tests for SelectBetterResult** — тесты для выбора представителя при слиянии:
+  - `SelectBetterResult_PrefersNonQuestion_OverQuestion` — предпочтение оригинала
+  - `SelectBetterResult_KeepsExistingNonQuestion_WhenCandidateIsQuestion` — сохранение существующего оригинала
+  - `SelectBetterResult_UsesSimilarity_WhenBothAreNonQuestion` — выбор по similarity для одинаковых типов
+  - `SelectBetterResult_UsesSimilarity_WhenBothAreQuestion` — выбор по similarity для вопросов
+
+## [2026-01-10]
+
+### Added
+
+- **Query Normalization** — нормализация запросов перед поиском и классификацией интента:
+  - **QueryNormalizer** — новый статический класс для очистки текста:
+    - Замена невидимых символов (NBSP, tabs, newlines) на пробелы
+    - Удаление zero-width и BOM символов
+    - Нормализация пунктуации (em-dash → обычный дефис, smart quotes → обычные)
+    - Опциональное удаление emoji (по умолчанию сохраняются для контекста)
+    - Схлопывание множественных пробелов
+  - **Проблема**: текст, скопированный из мессенджеров, содержит невидимые символы (NBSP, zero-width spaces), которые ломают точное сравнение и поиск по embeddings
+  - **Результат**: "привет\u00A0мир" теперь матчится с "привет мир" в поиске
+
+- **Participant Names Caching** — кеширование имён участников чата для RAG Fusion:
+  - **ConcurrentDictionary** с TTL 10 минут
+  - **Проблема**: `GetChatUsersAsync` вызывался на каждый `/ask`, создавая лишнюю нагрузку на БД
+  - **Результат**: экономия ~10-20ms на каждый запрос при повторных обращениях
+
+- **IsQuestionEmbedding Flag** — явный флаг в `SearchResult` для идентификации Q→A bridge embeddings:
+  - Раньше использовался `ChunkIndex < 0` как неявный маркер
+  - Теперь `SelectPreferredResult` использует оба критерия: `!r.IsQuestionEmbedding && r.ChunkIndex >= 0`
+  - Улучшает читаемость кода и документирует семантику
+
+### Changed
+
+- **Improved Deduplication Logic** — улучшена логика дедупликации результатов поиска:
+  - `SelectPreferredResult` теперь явно предпочитает оригинальные embeddings
+  - При дедупликации сохраняется лучший similarity score, но текст берётся из оригинала
+  - Добавлена документация метода
+
+### Fixed
+
+- **IsQuestionEmbedding Now Populated from DB** — флаг `is_question` теперь загружается из базы данных:
+  - Добавлено `COALESCE(me.is_question, FALSE) as IsQuestionEmbedding` в SQL запросы EmbeddingService
+  - Поддержка legacy конвенции: `IsQuestionEmbedding = db_flag || ChunkIndex < 0`
+  - **Проблема**: флаг не заполнялся при поиске, dedup логика полагалась только на ChunkIndex
+
+- **Dedup Score Consistency** — исправлена непоследовательность Similarity в дедупликации:
+  - `SelectPreferredResult` теперь возвращает результат с его собственным score
+  - **Проблема**: score брался от question-embedding, а текст — от оригинала (несоответствие)
+
+- **Cache Limits and Cleanup** — добавлены лимиты для кеша participant names:
+  - `MaxCacheSize = 100` для ограничения памяти
+  - `CleanupExpiredCacheEntries()` удаляет устаревшие записи при добавлении
+  - **Проблема**: кеш рос бесконечно, очистка только при чтении
+
+- **Empty Normalization Handling** — обработка пустого результата нормализации:
+  - Если запрос состоит только из невидимых символов — возвращаем ошибку пользователю
+  - **Проблема**: fallback на зашумлённый оригинал не давал полезных результатов поиска
+
+- **Normalization Logging** — добавлено логирование когда нормализация изменила запрос:
+  - Уровень `Debug` чтобы не засорять production логи
+  - Показывает до/после для диагностики проблем с copy-paste текстом
+
+### Tests
+
+- **QueryNormalizerTests** — 22 unit-теста для нормализации запросов:
+  - Null/empty input, whitespace handling, zero-width chars, punctuation, emoji removal
+  - Покрытие edge cases и real-world сценариев (copy-paste из Word/Telegram)
+
+- **SearchDedupTests** — 8 unit-тестов для логики дедупликации:
+  - Предпочтение original embeddings над question embeddings
+  - Проверка consistency score'а
+  - Edge cases: одинаковые scores, только question embeddings
+
 ## [2026-01-08]
 
 ### Fixed
