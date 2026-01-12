@@ -329,10 +329,12 @@ public class DatabaseInitializer(
         await connection.ExecuteAsync(addRetryColumnsSql);
 
         // Index for efficient pending query with retry support
+        // Note: Cannot use NOW() in partial index predicate (not IMMUTABLE)
+        // The time-based condition is evaluated at query time instead
         const string addRetryIndexSql = """
             CREATE INDEX IF NOT EXISTS idx_ask_queue_ready
             ON ask_queue (next_run_at)
-            WHERE processed = FALSE AND (picked_at IS NULL OR picked_at < NOW() - INTERVAL '5 minutes');
+            WHERE processed = FALSE;
             """;
         await connection.ExecuteAsync(addRetryIndexSql);
 
@@ -378,10 +380,11 @@ public class DatabaseInitializer(
             """;
         await connection.ExecuteAsync(addRetryColumnsSql);
 
+        // Note: Cannot use NOW() in partial index predicate (not IMMUTABLE)
         const string addRetryIndexSql = """
             CREATE INDEX IF NOT EXISTS idx_summary_queue_ready
             ON summary_queue (next_run_at)
-            WHERE processed = FALSE AND (picked_at IS NULL OR picked_at < NOW() - INTERVAL '10 minutes');
+            WHERE processed = FALSE;
             """;
         await connection.ExecuteAsync(addRetryIndexSql);
     }
@@ -419,10 +422,11 @@ public class DatabaseInitializer(
             """;
         await connection.ExecuteAsync(addRetryColumnsSql);
 
+        // Note: Cannot use NOW() in partial index predicate (not IMMUTABLE)
         const string addRetryIndexSql = """
             CREATE INDEX IF NOT EXISTS idx_truth_queue_ready
             ON truth_queue (next_run_at)
-            WHERE processed = FALSE AND (picked_at IS NULL OR picked_at < NOW() - INTERVAL '5 minutes');
+            WHERE processed = FALSE;
             """;
         await connection.ExecuteAsync(addRetryIndexSql);
     }

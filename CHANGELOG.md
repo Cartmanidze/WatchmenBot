@@ -51,6 +51,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - `SummaryQueueItem.AttemptCount` и `TruthQueueItem.AttemptCount`
     - `PickNextAsync` возвращает `attempt_count` из RETURNING clause
     - `RecordTaskFailed` теперь использует реальный `item.AttemptCount` вместо hardcoded `1`
+  - **PostgreSQL partial index fix** — убран `NOW()` из предикатов индексов:
+    - `NOW()` не является IMMUTABLE функцией, PostgreSQL не позволяет её в partial index
+    - Исправлены индексы: `idx_ask_queue_ready`, `idx_summary_queue_ready`, `idx_truth_queue_ready`
+    - Условие по времени (`picked_at < NOW() - INTERVAL`) проверяется в запросе, не в индексе
 
 ## [2026-01-11]
 

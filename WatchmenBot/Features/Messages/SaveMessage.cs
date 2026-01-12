@@ -203,7 +203,7 @@ public class SaveMessageHandler(
                     }.Where(x => !string.IsNullOrWhiteSpace(x)));
                 break;
 
-            case Telegram.Bot.Types.MessageOriginChannel channelOrigin:
+            case MessageOriginChannel channelOrigin:
                 record.ForwardOriginType = "channel";
                 record.ForwardFromId = channelOrigin.Chat.Id;
                 record.ForwardFromName = channelOrigin.Chat.Title ?? channelOrigin.AuthorSignature;
