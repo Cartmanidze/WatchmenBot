@@ -55,6 +55,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - `NOW()` не является IMMUTABLE функцией, PostgreSQL не позволяет её в partial index
     - Исправлены индексы: `idx_ask_queue_ready`, `idx_summary_queue_ready`, `idx_truth_queue_ready`
     - Условие по времени (`picked_at < NOW() - INTERVAL`) проверяется в запросе, не в индексе
+  - **ON CONFLICT predicate mismatch** — исправлено несовпадение предиката:
+    - `ON CONFLICT (idempotency_key) WHERE processed = FALSE` не работал
+    - PostgreSQL требует **точное** совпадение предиката с partial unique index
+    - Индекс: `WHERE processed = FALSE AND idempotency_key IS NOT NULL`
+    - Добавлен `AND idempotency_key IS NOT NULL` в ON CONFLICT clause
 
 ## [2026-01-11]
 

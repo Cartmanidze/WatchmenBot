@@ -55,10 +55,11 @@ public class AskQueueService(
             // Use ON CONFLICT to handle idempotency:
             // - If same request exists and not processed, skip (already queued)
             // - If same request was processed, allow new one (user retrying)
+            // Note: ON CONFLICT predicate must EXACTLY match the partial unique index predicate
             var inserted = await connection.ExecuteAsync("""
                 INSERT INTO ask_queue (chat_id, reply_to_message_id, question, command, asker_id, asker_name, asker_username, idempotency_key)
                 VALUES (@ChatId, @ReplyToMessageId, @Question, @Command, @AskerId, @AskerName, @AskerUsername, @IdempotencyKey)
-                ON CONFLICT (idempotency_key) WHERE processed = FALSE DO NOTHING
+                ON CONFLICT (idempotency_key) WHERE processed = FALSE AND idempotency_key IS NOT NULL DO NOTHING
                 """,
                 new
                 {
