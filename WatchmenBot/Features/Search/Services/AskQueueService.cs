@@ -1,13 +1,15 @@
 using Dapper;
 using Telegram.Bot.Types;
 using WatchmenBot.Infrastructure.Database;
+using WatchmenBot.Infrastructure.Queue;
 
 namespace WatchmenBot.Features.Search.Services;
 
 /// <summary>
-/// Request for background /ask processing
+/// Request for background /ask processing.
+/// Implements IQueueItem for resilient queue processing.
 /// </summary>
-public class AskQueueItem
+public class AskQueueItem : IQueueItem
 {
     public int Id { get; init; }
     public required long ChatId { get; init; }
@@ -17,7 +19,18 @@ public class AskQueueItem
     public required long AskerId { get; init; }
     public required string AskerName { get; init; }
     public string? AskerUsername { get; init; }
-    public DateTimeOffset RequestedAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+
+    // IQueueItem implementation for retry support
+    public int AttemptCount { get; init; }
+    public string? Error { get; init; }
+
+    /// <summary>
+    /// Generate idempotency key for deduplication.
+    /// Based on chat + message + command to prevent duplicate processing.
+    /// </summary>
+    public string GenerateIdempotencyKey() =>
+        $"{ChatId}:{ReplyToMessageId}:{Command}";
 }
 
 /// <summary>
@@ -29,17 +42,23 @@ public class AskQueueService(
     ILogger<AskQueueService> logger)
 {
     /// <summary>
-    /// Enqueue /ask request for background processing (persisted to DB)
+    /// Enqueue /ask request for background processing (persisted to DB).
+    /// Uses idempotency key to prevent duplicate processing of the same request.
     /// </summary>
     public async Task<bool> EnqueueAsync(AskQueueItem item)
     {
         try
         {
             using var connection = await connectionFactory.CreateConnectionAsync();
+            var idempotencyKey = item.GenerateIdempotencyKey();
 
-            await connection.ExecuteAsync("""
-                INSERT INTO ask_queue (chat_id, reply_to_message_id, question, command, asker_id, asker_name, asker_username)
-                VALUES (@ChatId, @ReplyToMessageId, @Question, @Command, @AskerId, @AskerName, @AskerUsername)
+            // Use ON CONFLICT to handle idempotency:
+            // - If same request exists and not processed, skip (already queued)
+            // - If same request was processed, allow new one (user retrying)
+            var inserted = await connection.ExecuteAsync("""
+                INSERT INTO ask_queue (chat_id, reply_to_message_id, question, command, asker_id, asker_name, asker_username, idempotency_key)
+                VALUES (@ChatId, @ReplyToMessageId, @Question, @Command, @AskerId, @AskerName, @AskerUsername, @IdempotencyKey)
+                ON CONFLICT (idempotency_key) WHERE processed = FALSE DO NOTHING
                 """,
                 new
                 {
@@ -49,12 +68,20 @@ public class AskQueueService(
                     item.Command,
                     item.AskerId,
                     item.AskerName,
-                    item.AskerUsername
+                    item.AskerUsername,
+                    IdempotencyKey = idempotencyKey
                 });
 
-            logger.LogInformation("[AskQueue] Enqueued /{Command} from @{User}: {Question}",
-                item.Command, item.AskerUsername ?? item.AskerName,
-                item.Question.Length > 50 ? item.Question[..50] + "..." : item.Question);
+            if (inserted > 0)
+            {
+                logger.LogInformation("[AskQueue] Enqueued /{Command} from @{User}: {Question}",
+                    item.Command, item.AskerUsername ?? item.AskerName,
+                    item.Question.Length > 50 ? item.Question[..50] + "..." : item.Question);
+            }
+            else
+            {
+                logger.LogDebug("[AskQueue] Skipped duplicate /{Command} (already queued)", item.Command);
+            }
 
             return true;
         }
@@ -87,7 +114,9 @@ public class AskQueueService(
     }
 
     /// <summary>
-    /// Get pending requests from queue (for background worker)
+    /// Get pending requests from queue (for background worker).
+    /// Note: BackgroundAskWorker now uses ResilientQueueService.PickAsync instead.
+    /// This method is kept for backwards compatibility and testing.
     /// </summary>
     public async Task<List<AskQueueItem>> GetPendingAsync(int limit = 10)
     {
@@ -105,7 +134,9 @@ public class AskQueueService(
                     asker_id as AskerId,
                     asker_name as AskerName,
                     asker_username as AskerUsername,
-                    created_at as RequestedAt
+                    created_at as CreatedAt,
+                    attempt_count as AttemptCount,
+                    error as Error
                 FROM ask_queue
                 WHERE processed = FALSE
                 ORDER BY created_at

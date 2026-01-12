@@ -12,6 +12,7 @@ using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Features.Onboarding;
 using WatchmenBot.Infrastructure.Database;
+using WatchmenBot.Infrastructure.Queue;
 using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Webhook.Services;
@@ -239,6 +240,12 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<PostgresNotificationService>();
         services.AddHostedService(sp => sp.GetRequiredService<PostgresNotificationService>());
 
+        // Resilient Queue Infrastructure (retry, lease, metrics)
+        // Note: ResilientQueueService is Singleton because it's injected into hosted services.
+        // It creates new DB connections per operation (using var connection = ...) so no connection leaks.
+        services.AddSingleton<QueueMetrics>();
+        services.AddSingleton<ResilientQueueService>();
+
         // Summary Queue (background processing to avoid nginx timeout)
         services.AddSingleton<SummaryQueueService>();
         services.AddHostedService<BackgroundSummaryWorker>();
@@ -268,6 +275,7 @@ public static class ServiceCollectionExtensions
             registry.Register<ReportCommand>("report");
             registry.Register<ChatsCommand>("chats");
             registry.Register<IndexingCommand>("indexing");
+            registry.Register<QueuesCommand>("queues");
             registry.Register<HelpCommand>("help");
 
             // Debug commands
@@ -323,6 +331,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ReportCommand>();
         services.AddScoped<ChatsCommand>();
         services.AddScoped<IndexingCommand>();
+        services.AddScoped<QueuesCommand>();
         services.AddScoped<HelpCommand>();
         services.AddScoped<DebugCommand>();
         services.AddScoped<SetSummaryTimeCommand>();

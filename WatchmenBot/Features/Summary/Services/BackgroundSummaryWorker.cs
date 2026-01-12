@@ -4,6 +4,7 @@ using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Infrastructure.Database;
+using WatchmenBot.Infrastructure.Queue;
 
 namespace WatchmenBot.Features.Summary.Services;
 
@@ -14,68 +15,77 @@ namespace WatchmenBot.Features.Summary.Services;
 public partial class BackgroundSummaryWorker(
     SummaryQueueService queue,
     PostgresNotificationService notifications,
+    QueueMetrics queueMetrics,
     ITelegramBotClient bot,
     IServiceProvider serviceProvider,
     LogCollector logCollector,
     ILogger<BackgroundSummaryWorker> logger)
     : BackgroundService
 {
+    private const string QueueName = "summary";
     private static readonly TimeSpan NotificationTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan StaleRecoveryInterval = TimeSpan.FromMinutes(2);
     private DateTime _lastCleanup = DateTime.UtcNow;
+    private DateTime _lastStaleRecovery = DateTime.UtcNow;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("[BackgroundSummary] Worker started (LISTEN/NOTIFY + polling fallback)");
+        logger.LogInformation("[BackgroundSummary] Worker started (atomic pick + LISTEN/NOTIFY)");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                // Strategy: Wait for notification OR timeout, then check DB
-                // This ensures we don't miss items even if notification is lost
-                await WaitForNotificationOrTimeoutAsync(stoppingToken);
+                // Periodically recover stale tasks (crashed workers)
+                await PeriodicStaleRecoveryAsync();
 
-                // Get pending requests from DB (notification is just a hint)
-                var items = await queue.GetPendingAsync(limit: 5);
+                // Atomic pick: SELECT + UPDATE in one query, no race conditions
+                var item = await queue.PickNextAsync();
 
-                if (items.Count == 0)
+                if (item == null)
                 {
+                    // Queue empty — wait for notification OR timeout before next check
+                    queueMetrics.UpdatePendingCount(QueueName, 0);
+                    await WaitForNotificationOrTimeoutAsync(stoppingToken);
                     await PeriodicCleanupAsync();
                     continue;
                 }
 
-                // Process each request
-                foreach (var item in items)
+                // Task already marked as started by PickNextAsync
+                var startTime = DateTimeOffset.UtcNow;
+                queueMetrics.RecordTaskPicked(QueueName);
+
+                try
                 {
-                    if (stoppingToken.IsCancellationRequested) break;
+                    await ProcessSummaryRequestAsync(item, stoppingToken);
+                    await queue.MarkAsCompletedAsync(item.Id);
+
+                    var duration = DateTimeOffset.UtcNow - startTime;
+                    var waitTime = startTime - item.RequestedAt;
+                    queueMetrics.RecordTaskCompleted(QueueName, duration, waitTime);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "[BackgroundSummary] Failed to process summary for chat {ChatId}", item.ChatId);
+
+                    await queue.MarkAsFailedAsync(item.Id, ex.Message);
+                    queueMetrics.RecordTaskFailed(QueueName, item.AttemptCount, ex.GetType().Name);
 
                     try
                     {
-                        await queue.MarkAsStartedAsync(item.Id);
-                        await ProcessSummaryRequestAsync(item, stoppingToken);
-                        await queue.MarkAsCompletedAsync(item.Id);
+                        await bot.SendMessage(
+                            chatId: item.ChatId,
+                            text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
+                            replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
+                            cancellationToken: stoppingToken);
                     }
-                    catch (Exception ex)
+                    catch (Exception sendEx)
                     {
-                        logger.LogError(ex, "[BackgroundSummary] Failed to process summary for chat {ChatId}", item.ChatId);
-
-                        await queue.MarkAsFailedAsync(item.Id, ex.Message);
-
-                        try
-                        {
-                            await bot.SendMessage(
-                                chatId: item.ChatId,
-                                text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
-                                replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
-                                cancellationToken: stoppingToken);
-                        }
-                        catch (Exception sendEx)
-                        {
-                            logger.LogWarning(sendEx, "[BackgroundSummary] Failed to send error notification to chat {ChatId}", item.ChatId);
-                        }
+                        logger.LogWarning(sendEx, "[BackgroundSummary] Failed to send error notification to chat {ChatId}", item.ChatId);
                     }
                 }
+                // Continue immediately to drain queue (no wait between items)
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -123,6 +133,15 @@ public partial class BackgroundSummaryWorker(
         {
             await queue.CleanupOldAsync(daysToKeep: 7);
             _lastCleanup = DateTime.UtcNow;
+        }
+    }
+
+    private async Task PeriodicStaleRecoveryAsync()
+    {
+        if (DateTime.UtcNow - _lastStaleRecovery > StaleRecoveryInterval)
+        {
+            await queue.RecoverStaleTasksAsync();
+            _lastStaleRecovery = DateTime.UtcNow;
         }
     }
 

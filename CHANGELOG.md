@@ -4,9 +4,90 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2026-01-12]
+
+### Fixed
+
+- **Resilient Queue Infrastructure fixes** — критические исправления в системе очередей:
+  - **Dapper snake_case mapping** — включен `DefaultTypeMap.MatchNamesWithUnderscores = true` глобально:
+    - Без этой настройки `RETURNING *` не маппил snake_case колонки (chat_id, attempt_count) в PascalCase свойства
+    - Задачи получали нулевые ChatId/AttemptCount/CreatedAt → оставались навсегда необработанными
+  - **Drain-then-wait pattern** — воркеры теперь обрабатывают весь backlog перед ожиданием NOTIFY:
+    - Раньше: ждали 30с перед каждым pick → backlog из 10 задач = 5 минут
+    - Теперь: drain очередь до пустоты → backlog обрабатывается мгновенно
+    - Исправлено во всех воркерах: BackgroundAskWorker, BackgroundSummaryWorker, BackgroundTruthWorker
+  - **Scoped → Singleton** — ResilientQueueService теперь Singleton (корректно для hosted services)
+  - **Stale exhausted tasks** — задачи с max attempts, зависшие после crash воркера, теперь помечаются `[DEAD]`
+  - **Metrics fixes**:
+    - `waitTime` теперь корректно считается как `started_at - created_at` (было всегда 0)
+    - `duration` теперь от `started_at`, а не от `created_at`
+    - `error` очищается при успешном retry (исправлен подсчёт success rate)
+  - **Pending count** — исключает in-progress задачи, stuck-детектор теперь работает корректно
+  - **GetPendingAsync маппинг** — исправлен алиас `created_at as CreatedAt` (было `RequestedAt`)
+  - **Summary/Truth dashboard compatibility**:
+    - `MarkAsStartedAsync` теперь устанавливает `picked_at` (не только `started_at`)
+    - Добавлен `QueueMetrics` в BackgroundSummaryWorker и BackgroundTruthWorker
+    - Теперь `/admin queues` показывает корректные InProgress/Pending для всех очередей
+    - Stuck-детектор работает для всех трёх очередей (ask, summary, truth)
+  - **Race condition fix** — `SummaryQueueService.GetPendingAsync` теперь фильтрует `started_at IS NULL`:
+    - Предотвращает двойную обработку одной задачи при нескольких воркерах
+    - `TruthQueueService` уже имел этот фильтр
+  - **attempt_count consistency** — добавлен фильтр `attempt_count < 3` в GetPendingAsync:
+    - Summary/Truth теперь консистентны с ResilientQueueService
+    - Задачи с max attempts не будут "зависать" в Pending на dashboard
+  - **Atomic task picking** — Summary/Truth теперь используют паттерн `UPDATE...RETURNING`:
+    - `PickNextAsync()` — атомарный захват одной задачи (SELECT + UPDATE в одном запросе)
+    - `FOR UPDATE SKIP LOCKED` внутри subquery гарантирует блокировку до завершения UPDATE
+    - Исключает race conditions между конкурентными воркерами
+    - `GetPendingAsync` и `MarkAsStartedAsync` помечены как `[Obsolete]`
+  - **Stale task recovery** — восстановление зависших задач встроено в `PickNextAsync`:
+    - Условие `started_at IS NULL OR started_at < NOW() - LeaseTimeout` автоматически подхватывает stale задачи
+    - `RecoverStaleTasksAsync()` теперь использует константы `MaxAttempts` и `LeaseTimeout`
+    - Исчерпавшие попытки (>= MaxAttempts) помечаются как `[DEAD]`
+  - **Константы конфигурации** — добавлены в SummaryQueueService и TruthQueueService:
+    - `MaxAttempts = 3` — максимум попыток обработки
+    - `LeaseTimeout = 10 min` — увеличено с 5 до 10 мин для длительных summary/truth задач
+  - **Корректные метрики retry** — добавлено свойство `AttemptCount` в queue items:
+    - `SummaryQueueItem.AttemptCount` и `TruthQueueItem.AttemptCount`
+    - `PickNextAsync` возвращает `attempt_count` из RETURNING clause
+    - `RecordTaskFailed` теперь использует реальный `item.AttemptCount` вместо hardcoded `1`
+
 ## [2026-01-11]
 
 ### Added
+
+- **Resilient Queue Infrastructure** — надёжная система очередей с retry и lease:
+  - **ResilientQueueService** — базовый сервис с:
+    - Atomic task picking (`SELECT FOR UPDATE SKIP LOCKED`) — предотвращает дублирование обработки
+    - Lease timeout — автоматическое восстановление "зависших" задач при падении воркера
+    - Exponential backoff retry — повторные попытки с увеличивающейся задержкой (30s → 60s → 120s...)
+    - Stale task recovery — периодическая проверка и возврат задач с истёкшим lease
+  - **QueueMetrics** — метрики очередей:
+    - Счётчики: picked, completed, failed, retried, requeued, dead
+    - Timing: avg processing time, avg wait time
+    - Last activity timestamps для обнаружения "зависших" очередей
+  - **Idempotency** — предотвращение дублирования:
+    - Unique partial index по `idempotency_key WHERE processed = FALSE`
+    - `ON CONFLICT DO NOTHING` при повторном enqueue того же запроса
+  - **DB Migration** — новые колонки для всех queue таблиц:
+    - `attempt_count` — счётчик попыток
+    - `max_attempts` — максимум попыток (по умолчанию 3)
+    - `next_run_at` — когда можно взять задачу (для backoff)
+    - `picked_at` — когда воркер взял задачу (для lease timeout)
+    - `idempotency_key` — ключ дедупликации
+  - **BackgroundAskWorker** обновлён для использования новой инфраструктуры:
+    - Использует `resilientQueue.PickAsync` вместо `queue.GetPendingAsync`
+    - Retry logic с уведомлением пользователя только при финальном провале
+    - Автоматическое восстановление stale tasks каждую минуту
+
+- **Admin Queue Dashboard** — команда `/admin queues`:
+  - Статистика по каждой очереди (ask, summary, truth):
+    - Pending, In Progress, Done/h, Fail/h
+    - Dead tasks (превысившие max attempts)
+    - Oldest pending (для обнаружения заторов)
+    - Avg processing time
+  - Session metrics: completed/picked с success rate
+  - Stuck queue detection: предупреждение если очередь idle >5 min с pending items
 
 - **Onboarding /start Command** — приветствие и онбординг для новых пользователей:
   - `StartCommandHandler.cs` — обработчик команды /start

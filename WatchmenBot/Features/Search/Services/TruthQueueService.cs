@@ -15,6 +15,7 @@ public class TruthQueueItem
     public int MessageCount { get; init; } = 5;
     public required string RequestedBy { get; init; }
     public DateTimeOffset RequestedAt { get; init; } = DateTimeOffset.UtcNow;
+    public int AttemptCount { get; init; }
 }
 
 /// <summary>
@@ -25,6 +26,12 @@ public class TruthQueueService(
     IDbConnectionFactory connectionFactory,
     ILogger<TruthQueueService> logger)
 {
+    /// <summary>Maximum retry attempts before marking task as dead.</summary>
+    public const int MaxAttempts = 3;
+
+    /// <summary>How long a task can be "in progress" before considered stale.
+    /// Set to 10 minutes to accommodate long-running fact-checking.</summary>
+    public static readonly TimeSpan LeaseTimeout = TimeSpan.FromMinutes(10);
     /// <summary>
     /// Enqueue /truth request for background processing (persisted to DB)
     /// </summary>
@@ -74,34 +81,123 @@ public class TruthQueueService(
     }
 
     /// <summary>
-    /// Get pending items for processing (not yet started)
+    /// Atomically pick next pending task from queue.
+    /// Single UPDATE...RETURNING ensures no race conditions between concurrent workers.
     /// </summary>
-    public async Task<List<TruthQueueItem>> GetPendingAsync(int limit = 5)
+    public async Task<TruthQueueItem?> PickNextAsync()
     {
-        using var connection = await connectionFactory.CreateConnectionAsync();
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
 
-        var items = await connection.QueryAsync<TruthQueueItem>("""
-            SELECT id, chat_id AS ChatId, reply_to_message_id AS ReplyToMessageId,
-                   message_count AS MessageCount, requested_by AS RequestedBy, created_at AS RequestedAt
-            FROM truth_queue
-            WHERE processed = FALSE AND started_at IS NULL
-            ORDER BY created_at
-            LIMIT @Limit
-            """,
-            new { Limit = limit });
+            // Atomic pick: find ready task, set started_at, increment attempt
+            // FOR UPDATE SKIP LOCKED inside subquery ensures lock until UPDATE completes
+            var item = await connection.QueryFirstOrDefaultAsync<TruthQueueItem>("""
+                UPDATE truth_queue
+                SET started_at = NOW(),
+                    picked_at = NOW(),
+                    attempt_count = attempt_count + 1
+                WHERE id = (
+                    SELECT id FROM truth_queue
+                    WHERE processed = FALSE
+                      AND (started_at IS NULL OR started_at < NOW() - @LeaseTimeout)
+                      AND attempt_count < @MaxAttempts
+                    ORDER BY created_at
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING
+                    id AS Id,
+                    chat_id AS ChatId,
+                    reply_to_message_id AS ReplyToMessageId,
+                    message_count AS MessageCount,
+                    requested_by AS RequestedBy,
+                    created_at AS RequestedAt,
+                    attempt_count AS AttemptCount
+                """,
+                new { LeaseTimeout, MaxAttempts });
 
-        return items.ToList();
+            if (item != null)
+            {
+                logger.LogDebug("[TruthQueue] Picked task {Id} for chat {ChatId}", item.Id, item.ChatId);
+            }
+
+            return item;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "[TruthQueue] Failed to pick next task");
+            return null;
+        }
     }
 
     /// <summary>
-    /// Mark item as started (in progress)
+    /// Recover stale tasks that were started but never completed (worker crash).
+    /// Uses LeaseTimeout and MaxAttempts constants.
     /// </summary>
+    public async Task<int> RecoverStaleTasksAsync()
+    {
+        try
+        {
+            using var connection = await connectionFactory.CreateConnectionAsync();
+
+            // Reset tasks that have been "in progress" for too long (but still have attempts left)
+            var recovered = await connection.ExecuteAsync("""
+                UPDATE truth_queue
+                SET started_at = NULL, picked_at = NULL
+                WHERE processed = FALSE
+                  AND started_at IS NOT NULL
+                  AND started_at < NOW() - @LeaseTimeout
+                  AND attempt_count < @MaxAttempts
+                """,
+                new { LeaseTimeout, MaxAttempts });
+
+            if (recovered > 0)
+            {
+                logger.LogWarning("[TruthQueue] Recovered {Count} stale tasks", recovered);
+            }
+
+            // Mark exhausted tasks as dead (too many attempts)
+            var dead = await connection.ExecuteAsync("""
+                UPDATE truth_queue
+                SET processed = TRUE,
+                    completed_at = NOW(),
+                    error = '[DEAD] Max attempts exceeded after worker crash'
+                WHERE processed = FALSE
+                  AND started_at IS NOT NULL
+                  AND started_at < NOW() - @LeaseTimeout
+                  AND attempt_count >= @MaxAttempts
+                """,
+                new { LeaseTimeout, MaxAttempts });
+
+            if (dead > 0)
+            {
+                logger.LogError("[TruthQueue] Marked {Count} tasks as DEAD (max attempts)", dead);
+            }
+
+            return recovered;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[TruthQueue] Failed to recover stale tasks");
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// [DEPRECATED] Use PickNextAsync instead for atomic picking.
+    /// </summary>
+    [Obsolete("Use PickNextAsync for atomic task picking")]
     public async Task MarkAsStartedAsync(int id)
     {
         using var connection = await connectionFactory.CreateConnectionAsync();
 
         await connection.ExecuteAsync("""
-            UPDATE truth_queue SET started_at = NOW() WHERE id = @Id
+            UPDATE truth_queue
+            SET started_at = NOW(),
+                picked_at = NOW(),
+                attempt_count = attempt_count + 1
+            WHERE id = @Id
             """,
             new { Id = id });
     }

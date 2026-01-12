@@ -317,6 +317,32 @@ public class DatabaseInitializer(
             """;
 
         await connection.ExecuteAsync(createTableSql);
+
+        // Migration: add retry and lease columns for robust queue processing
+        const string addRetryColumnsSql = """
+            ALTER TABLE ask_queue ADD COLUMN IF NOT EXISTS attempt_count INT DEFAULT 0;
+            ALTER TABLE ask_queue ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 3;
+            ALTER TABLE ask_queue ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ DEFAULT NOW();
+            ALTER TABLE ask_queue ADD COLUMN IF NOT EXISTS picked_at TIMESTAMPTZ;
+            ALTER TABLE ask_queue ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64);
+            """;
+        await connection.ExecuteAsync(addRetryColumnsSql);
+
+        // Index for efficient pending query with retry support
+        const string addRetryIndexSql = """
+            CREATE INDEX IF NOT EXISTS idx_ask_queue_ready
+            ON ask_queue (next_run_at)
+            WHERE processed = FALSE AND (picked_at IS NULL OR picked_at < NOW() - INTERVAL '5 minutes');
+            """;
+        await connection.ExecuteAsync(addRetryIndexSql);
+
+        // Unique partial index for idempotency (only for non-processed items)
+        const string addIdempotencyIndexSql = """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_queue_idempotency
+            ON ask_queue (idempotency_key)
+            WHERE processed = FALSE AND idempotency_key IS NOT NULL;
+            """;
+        await connection.ExecuteAsync(addIdempotencyIndexSql);
     }
 
     private static async Task CreateSummaryQueueTableAsync(System.Data.IDbConnection connection)
@@ -341,6 +367,23 @@ public class DatabaseInitializer(
             """;
 
         await connection.ExecuteAsync(createTableSql);
+
+        // Migration: add retry and lease columns
+        const string addRetryColumnsSql = """
+            ALTER TABLE summary_queue ADD COLUMN IF NOT EXISTS attempt_count INT DEFAULT 0;
+            ALTER TABLE summary_queue ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 3;
+            ALTER TABLE summary_queue ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ DEFAULT NOW();
+            ALTER TABLE summary_queue ADD COLUMN IF NOT EXISTS picked_at TIMESTAMPTZ;
+            ALTER TABLE summary_queue ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64);
+            """;
+        await connection.ExecuteAsync(addRetryColumnsSql);
+
+        const string addRetryIndexSql = """
+            CREATE INDEX IF NOT EXISTS idx_summary_queue_ready
+            ON summary_queue (next_run_at)
+            WHERE processed = FALSE AND (picked_at IS NULL OR picked_at < NOW() - INTERVAL '10 minutes');
+            """;
+        await connection.ExecuteAsync(addRetryIndexSql);
     }
 
     private static async Task CreateTruthQueueTableAsync(System.Data.IDbConnection connection)
@@ -365,6 +408,23 @@ public class DatabaseInitializer(
             """;
 
         await connection.ExecuteAsync(createTableSql);
+
+        // Migration: add retry and lease columns
+        const string addRetryColumnsSql = """
+            ALTER TABLE truth_queue ADD COLUMN IF NOT EXISTS attempt_count INT DEFAULT 0;
+            ALTER TABLE truth_queue ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 3;
+            ALTER TABLE truth_queue ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ DEFAULT NOW();
+            ALTER TABLE truth_queue ADD COLUMN IF NOT EXISTS picked_at TIMESTAMPTZ;
+            ALTER TABLE truth_queue ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64);
+            """;
+        await connection.ExecuteAsync(addRetryColumnsSql);
+
+        const string addRetryIndexSql = """
+            CREATE INDEX IF NOT EXISTS idx_truth_queue_ready
+            ON truth_queue (next_run_at)
+            WHERE processed = FALSE AND (picked_at IS NULL OR picked_at < NOW() - INTERVAL '5 minutes');
+            """;
+        await connection.ExecuteAsync(addRetryIndexSql);
     }
 
     private async Task CreateQueueNotifyTriggersAsync(System.Data.IDbConnection connection)
