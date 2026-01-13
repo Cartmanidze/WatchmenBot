@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-01-13]
 
+### Added
+
+- **Seq log server integration** — веб-интерфейс для просмотра логов с фильтрацией, поиском и алертами:
+  - **Serilog.AspNetCore** — структурированное логирование с контекстом
+  - **Serilog.Sinks.Seq** — отправка логов в Seq server
+  - **Seq container** — добавлен в `docker-compose.server.yml`
+  - UI доступен на порту `5341` после деплоя
+  - Поддержка поиска по уровню (`Level = "Error"`), SourceContext, и другим полям
+
 ### Changed
 
 - **Migrated background jobs from PostgreSQL LISTEN/NOTIFY to Hangfire** — полный рефакторинг системы фоновых задач:
