@@ -1,4 +1,5 @@
 using Dapper;
+using Hangfire;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Telegram.Bot;
@@ -31,7 +32,7 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
     public async Task HandleAsync_EmptyQuestion_SendsHelpText()
     {
         // Arrange
-        var (handler, _, sentMessages) = CreateAskHandler();
+        var (handler, _, sentMessages, _) = CreateAskHandler();
         var message = CreateTestMessage(chatId: 12345L, userId: 67890L, text: "/ask");
 
         // Act
@@ -155,12 +156,12 @@ public class AskHandlerE2ETests(DatabaseFixture dbFixture)
 
     #region Factory Methods
 
-    private (AskHandler handler, Mock<ITelegramBotClient> botMock, List<SendMessageRequest> sentMessages) CreateAskHandler()
+    private (AskHandler handler, Mock<ITelegramBotClient> botMock, List<SendMessageRequest> sentMessages, Mock<IBackgroundJobClient> jobClientMock) CreateAskHandler()
     {
         var (botMock, sentMessages) = CreateTelegramBotMock();
-        var askQueue = new AskQueueService(dbFixture.ConnectionFactory!, NullLogger<AskQueueService>.Instance);
-        var handler = new AskHandler(botMock.Object, askQueue, NullLogger<AskHandler>.Instance);
-        return (handler, botMock, sentMessages);
+        var jobClientMock = new Mock<IBackgroundJobClient>();
+        var handler = new AskHandler(botMock.Object, jobClientMock.Object, NullLogger<AskHandler>.Instance);
+        return (handler, botMock, sentMessages, jobClientMock);
     }
 
     private (AskProcessingService service, Mock<ITelegramBotClient> botMock, List<SendMessageRequest> sentMessages) CreateProcessingService()

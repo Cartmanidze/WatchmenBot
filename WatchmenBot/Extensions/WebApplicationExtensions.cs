@@ -1,3 +1,5 @@
+using WatchmenBot.Infrastructure.Hangfire;
+
 namespace WatchmenBot.Extensions;
 
 public static class WebApplicationExtensions
@@ -10,14 +12,17 @@ public static class WebApplicationExtensions
         {
             options.SwaggerEndpoint("/swagger/v1/swagger.json", "WatchmenBot API v1");
         });
-        
+
+        // Hangfire Dashboard (with optional basic auth)
+        app.UseHangfireDashboard(app.Configuration);
+
         // Health check endpoints
-        app.MapGet("/", () => new { 
-            service = "WatchmenBot", 
+        app.MapGet("/", () => new {
+            service = "WatchmenBot",
             status = "running",
-            timestamp = DateTimeOffset.UtcNow 
+            timestamp = DateTimeOffset.UtcNow
         });
-        
+
         app.MapHealthChecks("/health");
 
         // Map controllers for webhook and admin endpoints

@@ -1,16 +1,18 @@
+using Hangfire;
 using Telegram.Bot;
 using Telegram.Bot.Types;
+using WatchmenBot.Features.Search.Jobs;
 using WatchmenBot.Features.Search.Services;
 
 namespace WatchmenBot.Features.Search;
 
 /// <summary>
 /// Handler for /truth command - enqueues fact-check requests for background processing.
-/// Actual processing is done by BackgroundTruthWorker.
+/// Actual processing is done by TruthJob → TruthProcessingService.
 /// </summary>
 public class FactCheckHandler(
     ITelegramBotClient bot,
-    TruthQueueService queueService,
+    IBackgroundJobClient jobClient,
     ILogger<FactCheckHandler> logger)
 {
     /// <summary>
@@ -25,20 +27,19 @@ public class FactCheckHandler(
 
         logger.LogInformation("[TRUTH] Enqueueing fact-check for last {Count} messages in chat {ChatId}", count, chatId);
 
-        // Enqueue for background processing
-        var enqueued = await queueService.EnqueueFromMessageAsync(message, count);
-
-        if (!enqueued)
+        // Create queue item for Hangfire job
+        var item = new TruthQueueItem
         {
-            await bot.SendMessage(
-                chatId: chatId,
-                text: "Не удалось поставить запрос в очередь. Попробуйте позже.",
-                replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-                cancellationToken: ct);
-            return;
-        }
+            ChatId = chatId,
+            ReplyToMessageId = message.MessageId,
+            MessageCount = count,
+            RequestedBy = message.From?.Username ?? message.From?.FirstName ?? "Unknown"
+        };
 
-        // Send acknowledgment - response will come from BackgroundTruthWorker
+        // Enqueue for background processing via Hangfire
+        jobClient.Enqueue<TruthJob>(job => job.ProcessAsync(item, CancellationToken.None));
+
+        // Send acknowledgment - response will come from TruthJob
         await bot.SendMessage(
             chatId: chatId,
             text: $"🔍 Проверяю последние {count} сообщений на факты...",

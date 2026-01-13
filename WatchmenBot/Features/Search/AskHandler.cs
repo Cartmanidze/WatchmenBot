@@ -1,18 +1,21 @@
+using Hangfire;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Features.Search.Jobs;
 using WatchmenBot.Features.Search.Services;
+using WatchmenBot.Infrastructure.Queue;
 
 namespace WatchmenBot.Features.Search;
 
 /// <summary>
 /// Handler for /ask and /smart commands.
-/// Enqueues requests for background processing to avoid Telegram webhook timeout.
-/// Actual processing is done by BackgroundAskWorker.
+/// Enqueues requests for background processing via Hangfire.
+/// Actual processing is done by AskJob → AskProcessingService.
 /// </summary>
 public class AskHandler(
     ITelegramBotClient bot,
-    AskQueueService askQueue,
+    IBackgroundJobClient jobClient,
     ILogger<AskHandler> logger)
 {
     /// <summary>
@@ -38,24 +41,26 @@ public class AskHandler(
             return;
         }
 
-        // Enqueue for background processing (avoids Telegram webhook timeout)
-        if (await askQueue.EnqueueFromMessageAsync(message, command, question))
+        // Create queue item for Hangfire job
+        var item = new AskQueueItem
         {
-            logger.LogInformation("[{Command}] Enqueued: {Question} in chat {ChatId}",
-                command.ToUpper(), question, chatId);
+            ChatId = chatId,
+            ReplyToMessageId = message.MessageId,
+            Question = question,
+            Command = command,
+            AskerId = message.From?.Id ?? 0,
+            AskerName = message.From?.FirstName ?? message.From?.Username ?? "Unknown",
+            AskerUsername = message.From?.Username
+        };
 
-            // Send typing indicator - response will come from BackgroundAskWorker
-            await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
-        }
-        else
-        {
-            // Queue is full
-            await bot.SendMessage(
-                chatId: chatId,
-                text: "Слишком много запросов, попробуй через минуту.",
-                replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-                cancellationToken: ct);
-        }
+        // Enqueue for background processing via Hangfire (avoids Telegram webhook timeout)
+        jobClient.Enqueue<AskJob>(job => job.ProcessAsync(item, CancellationToken.None));
+
+        logger.LogInformation("[{Command}] Enqueued via Hangfire: {Question} in chat {ChatId}",
+            command.ToUpper(), question, chatId);
+
+        // Send typing indicator - response will come from AskJob
+        await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
     }
 
     private async Task SendHelpTextAsync(long chatId, string command, int messageId, CancellationToken ct)

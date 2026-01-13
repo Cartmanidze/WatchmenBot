@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2026-01-13]
+
+### Changed
+
+- **Migrated background jobs from PostgreSQL LISTEN/NOTIFY to Hangfire** — полный рефакторинг системы фоновых задач:
+  - **Hangfire integration** — добавлены пакеты `Hangfire.Core`, `Hangfire.AspNetCore`, `Hangfire.PostgreSql`
+  - **New infrastructure**:
+    - `HangfireExtensions.cs` — конфигурация Hangfire с PostgreSQL storage
+    - `HangfireBasicAuthFilter.cs` — Basic Auth для Hangfire Dashboard
+  - **Processing Services** (core logic, testable):
+    - `SummaryProcessingService` — извлечён из BackgroundSummaryWorker
+    - `TruthProcessingService` — извлечён из BackgroundTruthWorker
+    - `AskProcessingService` — уже существовал
+  - **Thin Job wrappers** (Hangfire integration):
+    - `AskJob` → AskProcessingService
+    - `SummaryJob` → SummaryProcessingService
+    - `TruthJob` → TruthProcessingService
+  - **Handler updates** — используют `IBackgroundJobClient.Enqueue<Job>()`:
+    - `AskHandler` — /ask, /smart команды
+    - `FactCheckHandler` — /truth команда
+    - `ProcessTelegramUpdateHandler` — /summary команда
+  - **Hangfire Dashboard** — доступен на `/hangfire` с Basic Auth
+
+### Removed
+
+- **PostgresNotificationService** — удалён (был источник connection pool exhaustion bug)
+- **BackgroundAskWorker** — заменён на AskJob + Hangfire
+- **BackgroundSummaryWorker** — заменён на SummaryJob + Hangfire
+- **BackgroundTruthWorker** — заменён на TruthJob + Hangfire
+
+### Fixed
+
+- **Connection pool exhaustion** — устранена утечка соединений PostgreSQL:
+  - Причина: при reconnect `PostgresNotificationService.ConnectAndListenAsync` создавал новый `ListenLoopAsync` task, а старый продолжал работать
+  - Экспоненциальный рост tasks → exhaustion 100 connections
+  - Решение: полная замена на Hangfire с persistent job storage
+
 ## [2026-01-12]
 
 ### Fixed

@@ -12,6 +12,7 @@ using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Webhook;
 using WatchmenBot.Features.Onboarding;
 using WatchmenBot.Infrastructure.Database;
+using WatchmenBot.Infrastructure.Hangfire;
 using WatchmenBot.Infrastructure.Queue;
 using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Admin.Services;
@@ -236,27 +237,15 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<ProfileWorkerService>();
         services.AddHostedService<ProfileGeneratorService>();
 
-        // PostgreSQL LISTEN/NOTIFY for real-time queue notifications
-        services.AddSingleton<PostgresNotificationService>();
-        services.AddHostedService(sp => sp.GetRequiredService<PostgresNotificationService>());
+        // Hangfire for background job processing (replaces custom workers)
+        services.AddHangfireServices(configuration);
 
-        // Resilient Queue Infrastructure (retry, lease, metrics)
-        // Note: ResilientQueueService is Singleton because it's injected into hosted services.
-        // It creates new DB connections per operation (using var connection = ...) so no connection leaks.
+        // Processing Services (core logic, used by Hangfire jobs)
+        services.AddScoped<SummaryProcessingService>();
+        services.AddScoped<TruthProcessingService>();
+
+        // Queue metrics (kept for admin dashboard)
         services.AddSingleton<QueueMetrics>();
-        services.AddSingleton<ResilientQueueService>();
-
-        // Summary Queue (background processing to avoid nginx timeout)
-        services.AddSingleton<SummaryQueueService>();
-        services.AddHostedService<BackgroundSummaryWorker>();
-
-        // Ask Queue (background processing to avoid Telegram webhook timeout)
-        services.AddSingleton<AskQueueService>();
-        services.AddHostedService<BackgroundAskWorker>();
-
-        // Truth Queue (background processing for /truth fact-checking)
-        services.AddSingleton<TruthQueueService>();
-        services.AddHostedService<BackgroundTruthWorker>();
 
         // Background Services
         services.AddHostedService<DailySummaryService>();
@@ -372,7 +361,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DebugReportCollector>();
         services.AddScoped<ConfidenceGateService>();
 
-        // Ask Processing Service (core /ask logic, used by BackgroundAskWorker and tests)
+        // Ask Processing Service (core /ask logic, used by AskJob and tests)
         services.AddScoped<AskProcessingService>();
 
         // Search Handlers (embedding-based)

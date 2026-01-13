@@ -1,4 +1,5 @@
 using System.Net;
+using Hangfire;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -8,6 +9,7 @@ using WatchmenBot.Features.Messages;
 using WatchmenBot.Features.Onboarding;
 using WatchmenBot.Features.Search;
 using WatchmenBot.Features.Summary;
+using WatchmenBot.Features.Summary.Jobs;
 using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Admin.Services;
 
@@ -34,7 +36,7 @@ public class ProcessTelegramUpdateHandler(
     IConfiguration configuration,
     IServiceProvider serviceProvider,
     ITelegramBotClient bot,
-    SummaryQueueService summaryQueue,
+    IBackgroundJobClient jobClient,
     LogCollector logCollector,
     ILogger<ProcessTelegramUpdateHandler> logger)
 {
@@ -130,8 +132,15 @@ public class ProcessTelegramUpdateHandler(
                     replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
                     cancellationToken: cancellationToken);
 
-                // Добавляем в очередь для фоновой обработки
-                await summaryQueue.EnqueueFromMessageAsync(message, hours);
+                // Create queue item and enqueue via Hangfire
+                var summaryItem = new SummaryQueueItem
+                {
+                    ChatId = message.Chat.Id,
+                    ReplyToMessageId = message.MessageId,
+                    Hours = hours,
+                    RequestedBy = message.From?.Username ?? message.From?.FirstName ?? "Unknown"
+                };
+                jobClient.Enqueue<SummaryJob>(job => job.ProcessAsync(summaryItem, CancellationToken.None));
 
                 return ProcessTelegramUpdateResponse.Success();
             }
