@@ -151,11 +151,13 @@ public static class ServiceCollectionExtensions
             // Polly Resilience: Concurrency Limiter + Timeout + Retry + Circuit Breaker
             .AddResilienceHandler("jina-resilience", builder =>
             {
-                // 1. Concurrency Limiter — Jina allows max 2 concurrent requests
+                // 1. Concurrency Limiter — Jina allows max 2 concurrent, but we use 1 for safety
+                // Multiple callers (batch, questions, individual) compete for slots,
+                // so limit to 1 to guarantee no 429 errors
                 builder.AddConcurrencyLimiter(new ConcurrencyLimiterOptions
                 {
-                    PermitLimit = 2,
-                    QueueLimit = 100, // Queue up to 100 requests when limit reached
+                    PermitLimit = 1, // Only 1 concurrent request to avoid 429
+                    QueueLimit = 200, // Larger queue since we're slower now
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                 });
 
