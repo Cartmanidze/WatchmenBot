@@ -1,4 +1,8 @@
+using System.Net;
+using System.Threading.RateLimiting;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.OpenApi.Models;
+using Polly;
 using Telegram.Bot;
 using WatchmenBot.Policies;
 using WatchmenBot.Features.Admin;
@@ -140,6 +144,45 @@ public static class ServiceCollectionExtensions
                 }
 
                 return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, provider, logger);
+            })
+            // Polly Resilience: Concurrency Limiter + Retry + Circuit Breaker
+            .AddResilienceHandler("jina-resilience", builder =>
+            {
+                // 1. Concurrency Limiter — Jina allows max 2 concurrent requests
+                builder.AddConcurrencyLimiter(new ConcurrencyLimiterOptions
+                {
+                    PermitLimit = 2,
+                    QueueLimit = 100, // Queue up to 100 requests when limit reached
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+                });
+
+                // 2. Retry with exponential backoff for transient errors and rate limiting
+                builder.AddRetry(new HttpRetryStrategyOptions
+                {
+                    MaxRetryAttempts = 3,
+                    BackoffType = DelayBackoffType.Exponential,
+                    UseJitter = true, // Add randomness to prevent thundering herd
+                    Delay = TimeSpan.FromMilliseconds(500),
+                    ShouldHandle = args => ValueTask.FromResult(
+                        args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
+                        args.Outcome.Result?.StatusCode == HttpStatusCode.RequestTimeout ||
+                        args.Outcome.Result?.StatusCode == HttpStatusCode.BadGateway ||
+                        args.Outcome.Result?.StatusCode == HttpStatusCode.ServiceUnavailable ||
+                        args.Outcome.Result?.StatusCode == HttpStatusCode.GatewayTimeout ||
+                        args.Outcome.Exception is HttpRequestException or TaskCanceledException)
+                });
+
+                // 3. Circuit Breaker — stop hammering when Jina is down
+                builder.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
+                {
+                    SamplingDuration = TimeSpan.FromSeconds(30),
+                    FailureRatio = 0.5, // Open circuit if 50% of requests fail
+                    MinimumThroughput = 5, // Minimum requests before evaluating
+                    BreakDuration = TimeSpan.FromSeconds(30),
+                    ShouldHandle = args => ValueTask.FromResult(
+                        args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
+                        args.Outcome.Exception is HttpRequestException or TaskCanceledException)
+                });
             });
 
         // Q→A Semantic Bridge (question generation for better search)

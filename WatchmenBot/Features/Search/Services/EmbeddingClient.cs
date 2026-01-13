@@ -91,7 +91,8 @@ public class EmbeddingClient
             _dimensions = dimensions > 0 ? dimensions : 1536;
         }
 
-        _logger.LogInformation("Embeddings configured: Provider={Provider}, Dimensions={Dimensions}",
+        // Debug level to avoid log spam (EmbeddingClient is scoped, created per request)
+        _logger.LogDebug("Embeddings configured: Provider={Provider}, Dimensions={Dimensions}",
             _provider, _dimensions);
     }
 
@@ -366,7 +367,8 @@ public class EmbeddingClient
     }
 
     /// <summary>
-    /// Send a single batch to Jina API
+    /// Send a single batch to Jina API.
+    /// Resilience (concurrency limiting, retry, circuit breaker) is handled by Polly in HTTP pipeline.
     /// </summary>
     private async Task<List<float[]>> GetEmbeddingsJinaSingleBatchAsync(
         List<string> textList,
@@ -374,16 +376,15 @@ public class EmbeddingClient
         bool lateChunking,
         CancellationToken ct)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/embeddings");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
-
-        // Jina API format with task-specific adapter
         var taskString = task switch
         {
             EmbeddingTask.RetrievalQuery => "retrieval.query",
             EmbeddingTask.RetrievalPassage => "retrieval.passage",
             _ => "retrieval.passage"
         };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/embeddings");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
         // Build request body - include late_chunking only when true
         object body = lateChunking

@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - UI доступен на порту `5341` после деплоя
   - Поддержка поиска по уровню (`Level = "Error"`), SourceContext, и другим полям
 
+### Fixed
+
+- **Jina API rate limiting (RATE_CONCURRENCY_LIMIT_EXCEEDED)** — исправлена частая ошибка при параллельных запросах к Jina Embeddings API:
+  - **Root cause:** Jina ограничивает до 2 concurrent запросов, а background indexing + /ask команды превышали этот лимит
+  - **Polly ResilienceHandler** — enterprise-grade решение через HTTP pipeline:
+    - `ConcurrencyLimiter(2)` — максимум 2 параллельных запроса с очередью до 100
+    - `Retry` с exponential backoff + jitter для 429, timeout и transient errors
+    - `CircuitBreaker` — автоматическое отключение при каскадных ошибках (50% failure ratio)
+  - **Separation of Concerns** — resilience логика вынесена из EmbeddingClient в HTTP pipeline
+  - **Уменьшен лог-спам** — `"Embeddings configured"` перенесён на Debug уровень
+
 ### Changed
 
 - **Migrated background jobs from PostgreSQL LISTEN/NOTIFY to Hangfire** — полный рефакторинг системы фоновых задач:
