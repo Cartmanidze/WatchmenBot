@@ -39,6 +39,10 @@ public class EmbeddingClient
     private static int _totalRequests;
     private static readonly object _statsLock = new();
 
+    // Global rate limiter for Jina API (static to work across all instances)
+    // Jina allows max 2 concurrent requests, we use 1 for safety margin
+    private static readonly SemaphoreSlim _jinaRateLimiter = new(1, 1);
+
     // Pricing varies by provider
     private const double OpenAiPricePerThousandTokens = 0.00002; // text-embedding-3-small
     private const double HuggingFacePricePerThousandTokens = 0.0; // Free tier
@@ -368,7 +372,8 @@ public class EmbeddingClient
 
     /// <summary>
     /// Send a single batch to Jina API.
-    /// Resilience (concurrency limiting, retry, circuit breaker) is handled by Polly in HTTP pipeline.
+    /// Uses global SemaphoreSlim to ensure only 1 concurrent request across all instances.
+    /// Polly handles retry with backoff when we do get rate limited.
     /// </summary>
     private async Task<List<float[]>> GetEmbeddingsJinaSingleBatchAsync(
         List<string> textList,
@@ -376,87 +381,96 @@ public class EmbeddingClient
         bool lateChunking,
         CancellationToken ct)
     {
-        var taskString = task switch
+        // Acquire global semaphore to ensure only 1 request at a time
+        await _jinaRateLimiter.WaitAsync(ct);
+        try
         {
-            EmbeddingTask.RetrievalQuery => "retrieval.query",
-            EmbeddingTask.RetrievalPassage => "retrieval.passage",
-            _ => "retrieval.passage"
-        };
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/embeddings");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
-
-        // Build request body - include late_chunking only when true
-        object body = lateChunking
-            ? new
+            var taskString = task switch
             {
-                model = _model,
-                task = taskString,
-                dimensions = _dimensions,
-                input = textList,
-                late_chunking = true
-            }
-            : new
-            {
-                model = _model,
-                task = taskString,
-                dimensions = _dimensions,
-                input = textList
+                EmbeddingTask.RetrievalQuery => "retrieval.query",
+                EmbeddingTask.RetrievalPassage => "retrieval.passage",
+                _ => "retrieval.passage"
             };
 
-        request.Content = new StringContent(
-            JsonSerializer.Serialize(body, JsonOptions),
-            Encoding.UTF8,
-            "application/json");
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/embeddings");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
-        var sw = Stopwatch.StartNew();
+            // Build request body - include late_chunking only when true
+            object body = lateChunking
+                ? new
+                {
+                    model = _model,
+                    task = taskString,
+                    dimensions = _dimensions,
+                    input = textList,
+                    late_chunking = true
+                }
+                : new
+                {
+                    model = _model,
+                    task = taskString,
+                    dimensions = _dimensions,
+                    input = textList
+                };
 
-        using var response = await _httpClient.SendAsync(request, ct);
-        var json = await response.Content.ReadAsStringAsync(ct);
-        sw.Stop();
+            request.Content = new StringContent(
+                JsonSerializer.Serialize(body, JsonOptions),
+                Encoding.UTF8,
+                "application/json");
 
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogError("[Jina] Embeddings API error {StatusCode}: {Response}", response.StatusCode, json);
-            response.EnsureSuccessStatusCode();
-        }
+            var sw = Stopwatch.StartNew();
 
-        // Jina response format is OpenAI-compatible
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+            using var response = await _httpClient.SendAsync(request, ct);
+            var json = await response.Content.ReadAsStringAsync(ct);
+            sw.Stop();
 
-        var result = new List<float[]>();
-        var dataArray = root.GetProperty("data");
-
-        foreach (var item in dataArray.EnumerateArray().OrderBy(x => x.GetProperty("index").GetInt32()))
-        {
-            var embeddingArray = item.GetProperty("embedding");
-            var embedding = new float[embeddingArray.GetArrayLength()];
-            var i = 0;
-            foreach (var value in embeddingArray.EnumerateArray())
+            if (!response.IsSuccessStatusCode)
             {
-                embedding[i++] = value.GetSingle();
+                _logger.LogError("[Jina] Embeddings API error {StatusCode}: {Response}", response.StatusCode, json);
+                response.EnsureSuccessStatusCode();
             }
-            result.Add(embedding);
-        }
 
-        // Track usage
-        var tokens = 0;
-        if (root.TryGetProperty("usage", out var usage) &&
-            usage.TryGetProperty("total_tokens", out var totalTokens))
-        {
-            tokens = totalTokens.GetInt32();
-            lock (_statsLock)
+            // Jina response format is OpenAI-compatible
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var result = new List<float[]>();
+            var dataArray = root.GetProperty("data");
+
+            foreach (var item in dataArray.EnumerateArray().OrderBy(x => x.GetProperty("index").GetInt32()))
             {
-                _totalTokensUsed += tokens;
-                _totalRequests++;
+                var embeddingArray = item.GetProperty("embedding");
+                var embedding = new float[embeddingArray.GetArrayLength()];
+                var i = 0;
+                foreach (var value in embeddingArray.EnumerateArray())
+                {
+                    embedding[i++] = value.GetSingle();
+                }
+                result.Add(embedding);
             }
+
+            // Track usage
+            var tokens = 0;
+            if (root.TryGetProperty("usage", out var usage) &&
+                usage.TryGetProperty("total_tokens", out var totalTokens))
+            {
+                tokens = totalTokens.GetInt32();
+                lock (_statsLock)
+                {
+                    _totalTokensUsed += tokens;
+                    _totalRequests++;
+                }
+            }
+
+            _logger.LogDebug("[Jina] Embeddings: {Count} texts, {Tokens} tokens, {Ms}ms, task={Task}, lateChunking={LateChunking}",
+                textList.Count, tokens, sw.ElapsedMilliseconds, taskString, lateChunking);
+
+            return result;
         }
-
-        _logger.LogDebug("[Jina] Embeddings: {Count} texts, {Tokens} tokens, {Ms}ms, task={Task}, lateChunking={LateChunking}",
-            textList.Count, tokens, sw.ElapsedMilliseconds, taskString, lateChunking);
-
-        return result;
+        finally
+        {
+            _jinaRateLimiter.Release();
+        }
     }
 
     /// <summary>
