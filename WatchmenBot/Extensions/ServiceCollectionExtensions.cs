@@ -170,7 +170,7 @@ public static class ServiceCollectionExtensions
                     MaxRetryAttempts = 5, // More retries since we fail faster now
                     BackoffType = DelayBackoffType.Exponential,
                     UseJitter = true, // Add randomness to prevent thundering herd
-                    Delay = TimeSpan.FromSeconds(1), // Start with 1s delay
+                    Delay = TimeSpan.FromSeconds(3), // Start with 3s delay, give Jina time to recover
                     ShouldHandle = args => ValueTask.FromResult(
                         args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
                         args.Outcome.Result?.StatusCode == HttpStatusCode.RequestTimeout ||
@@ -180,19 +180,22 @@ public static class ServiceCollectionExtensions
                         args.Outcome.Exception is HttpRequestException or TaskCanceledException or TimeoutRejectedException)
                 });
 
-                // 4. Circuit Breaker — stop hammering when Jina is down
-                // Less aggressive: only opens on sustained failures, not transient connection issues
+                // 4. Circuit Breaker — DISABLED for now to let retry handle rate limiting
+                // The 429 errors are expected during high load, retry with backoff handles them
+                // Circuit breaker was opening too aggressively and blocking all requests
+                // TODO: Re-enable with better tuning once rate limiting is stable
+                /*
                 builder.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
                 {
-                    SamplingDuration = TimeSpan.FromSeconds(60), // Longer sampling window
-                    FailureRatio = 0.8, // Open circuit only if 80% of requests fail
-                    MinimumThroughput = 10, // Need at least 10 requests before evaluating
-                    BreakDuration = TimeSpan.FromSeconds(15), // Shorter break, try again sooner
+                    SamplingDuration = TimeSpan.FromSeconds(60),
+                    FailureRatio = 0.8,
+                    MinimumThroughput = 10,
+                    BreakDuration = TimeSpan.FromSeconds(15),
                     ShouldHandle = args => ValueTask.FromResult(
-                        // Only break on actual API errors, not connection issues (handled by retry)
                         args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
                         args.Outcome.Result?.StatusCode == HttpStatusCode.ServiceUnavailable)
                 });
+                */
             });
 
         // Q→A Semantic Bridge (question generation for better search)
