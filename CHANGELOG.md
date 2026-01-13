@@ -21,7 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Root cause:** Jina ограничивает до 2 concurrent запросов, а background indexing + /ask команды превышали этот лимит
   - **Polly ResilienceHandler** — enterprise-grade решение через HTTP pipeline:
     - `ConcurrencyLimiter(2)` — максимум 2 параллельных запроса с очередью до 100
-    - `Retry` с exponential backoff + jitter для 429, timeout и transient errors
+    - `AddTimeout(30s)` — per-attempt timeout для быстрого fail-fast вместо ожидания
+    - `Retry(5)` с exponential backoff + jitter для 429, timeout и transient errors
     - `CircuitBreaker` — автоматическое отключение при каскадных ошибках (50% failure ratio)
   - **Separation of Concerns** — resilience логика вынесена из EmbeddingClient в HTTP pipeline
   - **Уменьшен лог-спам** — `"Embeddings configured"` перенесён на Debug уровень

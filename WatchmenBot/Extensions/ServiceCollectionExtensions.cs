@@ -3,6 +3,7 @@ using System.Threading.RateLimiting;
 using Microsoft.Extensions.Http.Resilience;
 using Microsoft.OpenApi.Models;
 using Polly;
+using Polly.Timeout;
 using Telegram.Bot;
 using WatchmenBot.Policies;
 using WatchmenBot.Features.Admin;
@@ -113,8 +114,10 @@ public static class ServiceCollectionExtensions
             {
                 AutomaticDecompression = System.Net.DecompressionMethods.GZip |
                                        System.Net.DecompressionMethods.Deflate,
-                PooledConnectionLifetime = TimeSpan.FromMinutes(2), // Prevent stale connections
-                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1)
+                // Aggressive connection refresh to prevent stale connections with Jina API
+                PooledConnectionLifetime = TimeSpan.FromSeconds(30), // Refresh connections every 30s
+                PooledConnectionIdleTimeout = TimeSpan.FromSeconds(15), // Close idle connections after 15s
+                ConnectTimeout = TimeSpan.FromSeconds(10) // Fast fail on connection issues
             })
             .ConfigureHttpClient(client =>
             {
@@ -145,7 +148,7 @@ public static class ServiceCollectionExtensions
 
                 return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, provider, logger);
             })
-            // Polly Resilience: Concurrency Limiter + Retry + Circuit Breaker
+            // Polly Resilience: Concurrency Limiter + Timeout + Retry + Circuit Breaker
             .AddResilienceHandler("jina-resilience", builder =>
             {
                 // 1. Concurrency Limiter — Jina allows max 2 concurrent requests
@@ -156,32 +159,37 @@ public static class ServiceCollectionExtensions
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                 });
 
-                // 2. Retry with exponential backoff for transient errors and rate limiting
+                // 2. Per-attempt timeout — fail fast and retry instead of waiting
+                builder.AddTimeout(TimeSpan.FromSeconds(30));
+
+                // 3. Retry with exponential backoff for transient errors and rate limiting
                 builder.AddRetry(new HttpRetryStrategyOptions
                 {
-                    MaxRetryAttempts = 3,
+                    MaxRetryAttempts = 5, // More retries since we fail faster now
                     BackoffType = DelayBackoffType.Exponential,
                     UseJitter = true, // Add randomness to prevent thundering herd
-                    Delay = TimeSpan.FromMilliseconds(500),
+                    Delay = TimeSpan.FromSeconds(1), // Start with 1s delay
                     ShouldHandle = args => ValueTask.FromResult(
                         args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
                         args.Outcome.Result?.StatusCode == HttpStatusCode.RequestTimeout ||
                         args.Outcome.Result?.StatusCode == HttpStatusCode.BadGateway ||
                         args.Outcome.Result?.StatusCode == HttpStatusCode.ServiceUnavailable ||
                         args.Outcome.Result?.StatusCode == HttpStatusCode.GatewayTimeout ||
-                        args.Outcome.Exception is HttpRequestException or TaskCanceledException)
+                        args.Outcome.Exception is HttpRequestException or TaskCanceledException or TimeoutRejectedException)
                 });
 
-                // 3. Circuit Breaker — stop hammering when Jina is down
+                // 4. Circuit Breaker — stop hammering when Jina is down
+                // Less aggressive: only opens on sustained failures, not transient connection issues
                 builder.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
                 {
-                    SamplingDuration = TimeSpan.FromSeconds(30),
-                    FailureRatio = 0.5, // Open circuit if 50% of requests fail
-                    MinimumThroughput = 5, // Minimum requests before evaluating
-                    BreakDuration = TimeSpan.FromSeconds(30),
+                    SamplingDuration = TimeSpan.FromSeconds(60), // Longer sampling window
+                    FailureRatio = 0.8, // Open circuit only if 80% of requests fail
+                    MinimumThroughput = 10, // Need at least 10 requests before evaluating
+                    BreakDuration = TimeSpan.FromSeconds(15), // Shorter break, try again sooner
                     ShouldHandle = args => ValueTask.FromResult(
+                        // Only break on actual API errors, not connection issues (handled by retry)
                         args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
-                        args.Outcome.Exception is HttpRequestException or TaskCanceledException)
+                        args.Outcome.Result?.StatusCode == HttpStatusCode.ServiceUnavailable)
                 });
             });
 
