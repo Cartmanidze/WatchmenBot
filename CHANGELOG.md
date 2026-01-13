@@ -41,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Экспоненциальный рост tasks → exhaustion 100 connections
   - Решение: полная замена на Hangfire с persistent job storage
 
+- **Dapper type mismatch в NicknameResolverService** — `COUNT(*)` возвращает `bigint` (Int64), но `ChatUser.MessageCount` был `int` (Int32):
+  - Dapper не мог найти matching constructor для materialization
+  - Исправлено: `int MessageCount` → `long MessageCount`
+
 ## [2026-01-12]
 
 ### Fixed

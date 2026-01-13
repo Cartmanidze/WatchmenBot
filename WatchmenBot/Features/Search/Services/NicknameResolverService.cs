@@ -38,7 +38,7 @@ public class NicknameResolverService(
     /// <summary>
     /// Chat user info for nickname resolution
     /// </summary>
-    public record ChatUser(string DisplayName, string? Username, int MessageCount);
+    public record ChatUser(string DisplayName, string? Username, long MessageCount);
 
     /// <summary>
     /// Result of nickname resolution
