@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using WatchmenBot.Tests.Fixtures;
 using Xunit;
 
@@ -7,10 +8,13 @@ namespace WatchmenBot.Tests;
 public class EmbeddingClientIntegrationTests
 {
     private readonly TestConfiguration _config;
+    private readonly int _expectedDimensions;
 
     public EmbeddingClientIntegrationTests(TestConfiguration config)
     {
         _config = config;
+        // Read expected dimensions from config (1024 for Jina, 1536 for OpenAI)
+        _expectedDimensions = config.Configuration.GetValue("Embeddings:Dimensions", 1024);
     }
 
     [Fact]
@@ -25,7 +29,7 @@ public class EmbeddingClientIntegrationTests
         var embedding = await client.GetEmbeddingAsync("Привет, это тест embeddings!", ct: cts.Token);
 
         Assert.NotNull(embedding);
-        Assert.Equal(1536, embedding.Length);
+        Assert.Equal(_expectedDimensions, embedding.Length);
         Assert.Contains(embedding, x => x != 0);
     }
 
@@ -48,7 +52,7 @@ public class EmbeddingClientIntegrationTests
         var embeddings = await client.GetEmbeddingsAsync(texts, ct: cts.Token);
 
         Assert.Equal(3, embeddings.Count);
-        Assert.All(embeddings, e => Assert.Equal(1536, e.Length));
+        Assert.All(embeddings, e => Assert.Equal(_expectedDimensions, e.Length));
     }
 
     [Fact]
