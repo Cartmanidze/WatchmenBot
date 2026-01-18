@@ -331,9 +331,10 @@ public class SearchStrategyService(
     /// <summary>
     /// Hybrid search for personal questions:
     /// 1. Resolve nickname/name to stable user_id via user_aliases table
-    /// 2. Try finding user's messages via message_embeddings (precise targeting by user_id)
-    /// 3. Expand with context windows via context_embeddings (full dialog context)
-    /// 4. If no personal messages found, fallback to context-only search (user might have participated in dialogs)
+    /// 2. Collect ALL name variants: original from query + LLM-normalized + all DB aliases
+    /// 3. Try finding user's messages via message_embeddings (precise targeting by user_id)
+    /// 4. Expand with context windows via context_embeddings (full dialog context)
+    /// 5. If no personal messages found, fallback to context-only search (user might have participated in dialogs)
     /// </summary>
     public async Task<SearchResponse> SearchPersonalWithHybridAsync(
         long chatId,
@@ -351,13 +352,45 @@ public class SearchStrategyService(
         var resolvedUserId = resolved.UserId;
         var resolvedName = resolved.ResolvedName ?? displayName ?? usernameOrName;
 
-        logger.LogInformation("[HybridPersonal] Resolved '{Name}' → user_id={UserId} ({ResolvedName}), confidence={Conf:F2}",
-            usernameOrName, resolvedUserId?.ToString() ?? "null", resolvedName, resolved.Confidence);
+        // Step 0.5: Collect ALL name variants for search (B + C solution)
+        // This ensures we find messages regardless of which name form is used in text
+        var allSearchNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Add LLM-normalized name
+        if (!string.IsNullOrWhiteSpace(usernameOrName))
+            allSearchNames.Add(usernameOrName.TrimStart('@'));
+
+        if (!string.IsNullOrWhiteSpace(resolvedName))
+            allSearchNames.Add(resolvedName.TrimStart('@'));
+
+        // Variant B: Extract original name mentions from query text
+        // This preserves names exactly as written (e.g., "жеки" not normalized to "Женя")
+        var originalMentions = NicknameResolverService.ExtractOriginalMentionsFromQuery(query);
+        foreach (var mention in originalMentions)
+        {
+            allSearchNames.Add(mention);
+        }
+
+        // Variant C: Add all known aliases from database
+        if (resolved.AllAliases is { Count: > 0 })
+        {
+            foreach (var alias in resolved.AllAliases)
+            {
+                allSearchNames.Add(alias.TrimStart('@'));
+            }
+        }
+
+        var searchNamesList = allSearchNames.Take(10).ToList(); // Limit to prevent SQL explosion
+
+        logger.LogInformation(
+            "[HybridPersonal] Resolved '{Name}' → user_id={UserId} ({ResolvedName}), confidence={Conf:F2}, searchNames=[{Names}]",
+            usernameOrName, resolvedUserId?.ToString() ?? "null", resolvedName, resolved.Confidence,
+            string.Join(", ", searchNamesList));
 
         // Step 1: Try finding user's relevant messages using message_embeddings
-        // Pass user_id for precise filtering that works across name changes
+        // Pass ALL search names for comprehensive ILIKE matching
         var personalTask = embeddingService.GetPersonalContextAsync(
-            chatId, usernameOrName, resolvedName, query, days, resolvedUserId, ct);
+            chatId, searchNamesList, query, days, resolvedUserId, ct);
 
         // Step 2: Parallel search in context embeddings (user might be in dialogs)
         // Fetch more candidates for reranking - cross-encoder will improve relevance

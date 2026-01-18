@@ -356,35 +356,37 @@ public class TelegramPollingService(
             // Check current webhook status
             var webhookInfo = await bot.GetWebhookInfo(ct);
 
-            if (webhookInfo.Url == webhookUrl)
+            // Log current state
+            if (webhookInfo.PendingUpdateCount > 0)
             {
-                logger.LogInformation("[Telegram] Webhook already configured: {Url}", webhookUrl);
-
-                if (webhookInfo.PendingUpdateCount > 0)
-                {
-                    logger.LogInformation("[Telegram] Pending updates in queue: {Count}", webhookInfo.PendingUpdateCount);
-                }
-
-                if (!string.IsNullOrEmpty(webhookInfo.LastErrorMessage))
-                {
-                    logger.LogWarning("[Telegram] Last webhook error: {Error} at {Date}",
-                        webhookInfo.LastErrorMessage, webhookInfo.LastErrorDate);
-                }
-
-                return;
+                logger.LogInformation("[Telegram] Pending updates in queue: {Count}", webhookInfo.PendingUpdateCount);
             }
 
-            // Webhook URL is different or empty - need to register
-            if (string.IsNullOrEmpty(webhookInfo.Url))
+            if (!string.IsNullOrEmpty(webhookInfo.LastErrorMessage))
             {
-                logger.LogWarning("[Telegram] Webhook was not set - registering now...");
+                logger.LogWarning("[Telegram] Last webhook error: {Error} at {Date}",
+                    webhookInfo.LastErrorMessage, webhookInfo.LastErrorDate);
+            }
+
+            // ALWAYS re-register webhook on startup to ensure it's active
+            // Telegram may deactivate webhook after repeated errors (502, timeouts, etc.)
+            // Even if URL matches, the webhook might be in a broken state
+            if (webhookInfo.Url == webhookUrl && string.IsNullOrEmpty(webhookInfo.LastErrorMessage))
+            {
+                logger.LogInformation("[Telegram] Webhook already configured and healthy: {Url}", webhookUrl);
             }
             else
             {
-                logger.LogWarning("[Telegram] Webhook URL mismatch. Current: {Current}, Expected: {Expected}. Re-registering...",
-                    webhookInfo.Url, webhookUrl);
+                var reason = string.IsNullOrEmpty(webhookInfo.Url)
+                    ? "not set"
+                    : webhookInfo.Url != webhookUrl
+                        ? $"URL mismatch (current: {webhookInfo.Url})"
+                        : "recent errors detected";
+
+                logger.LogWarning("[Telegram] Re-registering webhook ({Reason})...", reason);
             }
 
+            // Always set webhook to ensure it's active
             await bot.SetWebhook(
                 url: webhookUrl,
                 allowedUpdates: [UpdateType.Message],

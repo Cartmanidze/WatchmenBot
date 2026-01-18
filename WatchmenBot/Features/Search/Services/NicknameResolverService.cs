@@ -57,7 +57,8 @@ public class NicknameResolverService(
         long? UserId,
         string? ResolvedName,
         double Confidence,
-        string? Reasoning);
+        string? Reasoning,
+        List<string>? AllAliases = null);
 
     /// <summary>
     /// Resolve a nickname to user_id using user_aliases table first, then LLM fallback.
@@ -85,10 +86,14 @@ public class NicknameResolverService(
                 // Get the primary display name for this user
                 var primaryName = await userAliasService.GetPrimaryNameAsync(chatId, userId, ct);
 
-                logger.LogInformation("[NicknameResolver] Alias match: '{Nick}' → user {UserId} ({Name})",
-                    nickname, userId, primaryName ?? "unknown");
+                // Get ALL known aliases for this user (Variant C: use all aliases for search)
+                var allAliasInfos = await userAliasService.GetUserAliasesAsync(chatId, userId, ct);
+                var allAliases = allAliasInfos.Select(a => a.Alias).Distinct().ToList();
 
-                return new ResolvedUser(nickname, userId, primaryName, 1.0, "Alias table match");
+                logger.LogInformation("[NicknameResolver] Alias match: '{Nick}' → user {UserId} ({Name}), aliases: [{Aliases}]",
+                    nickname, userId, primaryName ?? "unknown", string.Join(", ", allAliases.Take(5)));
+
+                return new ResolvedUser(nickname, userId, primaryName, 1.0, "Alias table match", allAliases);
             }
 
             // Step 2: Fallback to LLM resolution
@@ -101,12 +106,17 @@ public class NicknameResolverService(
 
                 if (resolvedUserIds.Count > 0)
                 {
+                    // Get ALL known aliases for this user
+                    var allAliasInfos = await userAliasService.GetUserAliasesAsync(chatId, resolvedUserIds[0], ct);
+                    var allAliases = allAliasInfos.Select(a => a.Alias).Distinct().ToList();
+
                     return new ResolvedUser(
                         nickname,
                         resolvedUserIds[0],
                         llmResult.ResolvedName,
                         llmResult.Confidence,
-                        $"LLM resolved + alias lookup: {llmResult.Reasoning}");
+                        $"LLM resolved + alias lookup: {llmResult.Reasoning}",
+                        allAliases);
                 }
 
                 // LLM found a name but we don't have user_id - still useful for text search
@@ -195,6 +205,73 @@ public class NicknameResolverService(
             logger.LogWarning(ex, "[NicknameResolver] Failed to resolve '{Nick}'", nickname);
             return new ResolvedNickname(nickname, null, 0, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Extract original name mentions from query text using common Russian patterns.
+    /// This preserves the original form as written in the question (e.g., "жеки" not "Женя").
+    /// Used to ensure we search for names exactly as they appear in chat messages.
+    /// </summary>
+    public static List<string> ExtractOriginalMentionsFromQuery(string query)
+    {
+        var mentions = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(query))
+            return mentions;
+
+        // Common Russian patterns for name mentions:
+        // "у X", "про X", "о X", "от X", "для X", "что X", "кто X", "где X"
+        // "X сказал", "X говорил", "X думает", "X любит"
+        var patterns = new[]
+        {
+            @"\b[уУ]\s+([А-Яа-яЁё][А-Яа-яЁё]+)",           // "у жеки", "у Глеба"
+            @"\b[пП]ро\s+([А-Яа-яЁё][А-Яа-яЁё]+)",         // "про жеку"
+            @"\b[оО]\s+([А-Яа-яЁё][А-Яа-яЁё]+)",           // "о жеке"
+            @"\b[оО]т\s+([А-Яа-яЁё][А-Яа-яЁё]+)",          // "от жеки"
+            @"\b[дД]ля\s+([А-Яа-яЁё][А-Яа-яЁё]+)",         // "для жеки"
+            @"\b[кК]то\s+(?:такой\s+)?([А-Яа-яЁё][А-Яа-яЁё]+)", // "кто жеки", "кто такой жеки"
+            @"\b([А-Яа-яЁё][А-Яа-яЁё]+)\s+(?:сказал|говорил|думает|любит|считает)", // "жеки сказал"
+            @"@(\w+)",                                       // "@username"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var matches = System.Text.RegularExpressions.Regex.Matches(
+                query, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            foreach (System.Text.RegularExpressions.Match match in matches)
+            {
+                if (match.Groups.Count > 1)
+                {
+                    var name = match.Groups[1].Value.Trim();
+                    // Filter out common non-name words
+                    if (!IsCommonWord(name) && name.Length >= 2)
+                    {
+                        mentions.Add(name);
+                    }
+                }
+            }
+        }
+
+        return mentions.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Check if a word is a common non-name word that should be filtered out
+    /// </summary>
+    private static bool IsCommonWord(string word)
+    {
+        var commonWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "это", "что", "как", "где", "когда", "почему", "зачем",
+            "кто", "его", "её", "их", "меня", "тебя", "нас", "вас",
+            "сам", "сама", "само", "сами", "весь", "вся", "всё", "все",
+            "мой", "твой", "наш", "ваш", "свой", "этот", "тот", "такой",
+            "какой", "который", "чей", "любой", "каждый", "другой",
+            "него", "неё", "них", "ней", "ним", "ними"
+        };
+
+        return commonWords.Contains(word);
     }
 
     /// <summary>

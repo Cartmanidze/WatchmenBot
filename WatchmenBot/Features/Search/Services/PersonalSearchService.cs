@@ -19,10 +19,39 @@ public class PersonalSearchService(
     /// Now with proper vector search within the pool!
     /// Supports both user_id (preferred, stable) and name-based search (fallback)
     /// </summary>
-    public async Task<SearchResponse> GetPersonalContextAsync(
+    public Task<SearchResponse> GetPersonalContextAsync(
         long chatId,
         string usernameOrName,
         string? displayName,
+        string question,  // The actual question to search for relevance
+        int days = 7,
+        long? userId = null,  // If provided, uses stable user_id for search
+        CancellationToken ct = default)
+    {
+        // Build search names from the two string parameters
+        var searchNames = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(usernameOrName))
+            searchNames.Add(usernameOrName.TrimStart('@'));
+
+        if (!string.IsNullOrWhiteSpace(displayName) &&
+            !searchNames.Any(n => n.Equals(displayName, StringComparison.OrdinalIgnoreCase)))
+            searchNames.Add(displayName);
+
+        // Delegate to the list-based overload
+        return GetPersonalContextAsync(chatId, searchNames, question, days, userId, ct);
+    }
+
+    /// <summary>
+    /// Combined personal retrieval with multiple search names (B+C solution).
+    /// Searches for user's messages + mentions using ALL provided name variants:
+    /// - LLM-normalized name (e.g., "Женя")
+    /// - Original mentions from query (e.g., "жеки")
+    /// - All known aliases from database
+    /// </summary>
+    public async Task<SearchResponse> GetPersonalContextAsync(
+        long chatId,
+        List<string> searchNames,
         string question,  // The actual question to search for relevance
         int days = 7,
         long? userId = null,  // If provided, uses stable user_id for search
@@ -32,16 +61,12 @@ public class PersonalSearchService(
 
         try
         {
-            var searchNames = new List<string>();
-
-            // Add username if provided
-            if (!string.IsNullOrWhiteSpace(usernameOrName))
-                searchNames.Add(usernameOrName.TrimStart('@'));
-
-            // Add display name if different from username
-            if (!string.IsNullOrWhiteSpace(displayName) &&
-                !searchNames.Any(n => n.Equals(displayName, StringComparison.OrdinalIgnoreCase)))
-                searchNames.Add(displayName);
+            // Ensure searchNames is not empty and clean up entries
+            searchNames = searchNames
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => n.TrimStart('@'))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             // Step 1: Collect pool of message IDs from user's messages + mentions
             // If user_id is provided, use it for precise filtering (works across name changes)
@@ -94,7 +119,7 @@ public class PersonalSearchService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to get personal context for: {User}", usernameOrName);
+            logger.LogWarning(ex, "Failed to get personal context for: {Names}", string.Join(", ", searchNames));
             response.Confidence = SearchConfidence.None;
             response.ConfidenceReason = "Ошибка поиска";
             return response;

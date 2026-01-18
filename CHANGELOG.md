@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-01-18]
 
+### Fixed
+
+- **Поиск по уменьшительным именам (решение B+C)** — исправлена критическая проблема когда поиск `/ask "какое любимое сми у жеки?"` не находил сообщение "у жеки 3 любимых сми":
+  - **Проблема**: LLM IntentClassifier нормализует имена ("жеки" → "Женя"), но SQL ILIKE использует только нормализованную форму — `%Женя%` не находит "жеки"
+  - **Решение B**: Извлечение оригинальных упоминаний из вопроса regex-паттернами:
+    - Русские конструкции: "у жеки", "про женю", "что думает андрей", "о саше", etc.
+    - Английские patterns: "@username", "what does john", etc.
+    - `NicknameResolverService.ExtractOriginalMentionsFromQuery()` — новый статический метод
+  - **Решение C**: Возврат всех алиасов пользователя из БД:
+    - `ResolvedUser.AllAliases` — новое поле со всеми известными псевдонимами
+    - `NicknameResolverService.ResolveToUserIdAsync()` теперь загружает aliases из `user_aliases` таблицы
+  - **Интеграция**: `SearchStrategyService.SearchPersonalWithHybridAsync()` собирает ВСЕ варианты имён:
+    - LLM-нормализованное (Женя)
+    - Оригинальные упоминания из query (жеки)
+    - Все алиасы из БД (Евгений, Жека, etc.)
+  - **PersonalSearchService**: новая перегрузка `GetPersonalContextAsync(List<string> searchNames)` для поиска по всем вариантам
+  - **Результат**: ILIKE теперь генерирует `%жеки% OR %Женя% OR %Евгений%` — находит сообщения с любой формой имени
+
 ### Changed
 
 - **Question generation moved to Hangfire background job** — генерация Q→A вопросов вынесена из синхронного pipeline индексации:
@@ -38,12 +56,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Симптом**: Personal search fallback'ился на context-only search, теряя персональные сообщения
   - **Файл**: `Features/Search/Services/PersonalSearchService.cs:125` — добавлены скобки вокруг subqueries
 
-- **Auto-register Telegram webhook on startup** — исправлена критическая проблема когда webhook не восстанавливался после рестарта контейнера:
-  - **Проблема**: Telegram сбрасывает webhook при ошибках 5xx, но при рестарте приложения он не регистрировался заново
-  - **Решение**: `TelegramPollingService.EnsureWebhookRegisteredAsync()` — автоматическая проверка и регистрация webhook при старте в webhook mode
-  - Проверяет текущий статус webhook через `getWebhookInfo`
-  - Логирует pending updates и последние ошибки
-  - Перерегистрирует webhook если URL пустой или отличается от конфигурации
+- **Always re-register Telegram webhook on startup** — исправлена критическая проблема когда webhook переставал работать после ошибок 502/503:
+  - **Проблема**: Telegram деактивирует webhook после многократных ошибок (502 Bad Gateway, timeouts), но старый код проверял только URL — если URL совпадал, не перерегистрировал
+  - **Симптом**: Сообщения не доходят до бота, но логи показывают "Webhook already configured"
+  - **Решение**: `TelegramPollingService.EnsureWebhookRegisteredAsync()` теперь **ВСЕГДА** вызывает `setWebhook` при старте
+  - Логирует причину перерегистрации: "not set", "URL mismatch", "recent errors detected"
+  - Только если URL совпадает И нет `LastErrorMessage` — логирует "Webhook already configured and healthy"
 
 ## [2026-01-16]
 
