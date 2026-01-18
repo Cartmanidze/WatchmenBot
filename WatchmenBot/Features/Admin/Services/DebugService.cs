@@ -165,6 +165,9 @@ public class DebugService(
         sb.AppendLine(FormatPrompts(report));
         sb.AppendLine(FormatLlmResponse(report));
 
+        // Add verdict section at the end
+        sb.AppendLine(FormatVerdict(report));
+
         return sb.ToString();
     }
 
@@ -233,25 +236,87 @@ public class DebugService(
 
         sb.AppendLine();
 
-        // Confidence assessment
+        // Confidence assessment with detailed explanation
         if (!string.IsNullOrEmpty(report.SearchConfidence))
         {
-            var confEmoji = report.SearchConfidence switch
-            {
-                "High" => "🟢",
-                "Medium" => "🟡",
-                "Low" => "🟠",
-                _ => "🔴"
-            };
-            sb.AppendLine($"{confEmoji} <b>Confidence:</b> {report.SearchConfidence}");
-            sb.AppendLine($"   Best: {report.BestScore:F3} | Gap: {report.ScoreGap:F3} | FullText: {report.HasFullTextMatch}");
-            if (!string.IsNullOrEmpty(report.SearchConfidenceReason))
-                sb.AppendLine($"   <i>{EscapeHtml(report.SearchConfidenceReason)}</i>");
-            sb.AppendLine();
+            sb.AppendLine(FormatConfidenceSection(report));
         }
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Format confidence section with human-readable explanations
+    /// </summary>
+    private static string FormatConfidenceSection(DebugReport report)
+    {
+        var sb = new StringBuilder();
+
+        var (emoji, label, explanation) = report.SearchConfidence switch
+        {
+            "High" => ("🟢", "ВЫСОКАЯ",
+                "Найдены очень релевантные результаты. Ответ скорее всего точный."),
+            "Medium" => ("🟡", "СРЕДНЯЯ",
+                "Найдены частично релевантные результаты. Ответ может быть неполным."),
+            "Low" => ("🟠", "НИЗКАЯ",
+                "Мало релевантных результатов. Ответ может быть неточным или основан на косвенных данных."),
+            "None" => ("🔴", "НЕТ ДАННЫХ",
+                "Релевантных результатов не найдено. LLM ответит на основе общих знаний."),
+            _ => ("❓", report.SearchConfidence ?? "Unknown",
+                "Неизвестный уровень уверенности.")
+        };
+
+        sb.AppendLine($"<b>═══ УВЕРЕННОСТЬ В ОТВЕТЕ ═══</b>");
+        sb.AppendLine($"{emoji} <b>{label}</b>");
+        sb.AppendLine($"   <i>{explanation}</i>");
+        sb.AppendLine();
+
+        // Technical metrics with explanations
+        sb.AppendLine("<b>📊 Метрики:</b>");
+        sb.AppendLine($"   • Best Score: <b>{report.BestScore:F3}</b> {GetScoreExplanation(report.BestScore)}");
+        sb.AppendLine($"   • Gap: <b>{report.ScoreGap:F3}</b> {GetGapExplanation(report.ScoreGap)}");
+        sb.AppendLine($"   • FullText: {(report.HasFullTextMatch ? "✅ да" : "❌ нет")} {GetFullTextExplanation(report.HasFullTextMatch)}");
+
+        if (!string.IsNullOrEmpty(report.SearchConfidenceReason))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"<b>💡 Причина:</b> <i>{EscapeHtml(report.SearchConfidenceReason)}</i>");
+        }
+
+        sb.AppendLine();
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Get explanation for similarity score
+    /// </summary>
+    private static string GetScoreExplanation(double score) => score switch
+    {
+        >= 0.85 => "(отлично — почти точное совпадение)",
+        >= 0.75 => "(хорошо — семантически близко)",
+        >= 0.65 => "(средне — частичное совпадение)",
+        >= 0.50 => "(слабо — косвенная релевантность)",
+        _ => "(очень слабо — возможно нерелевантно)"
+    };
+
+    /// <summary>
+    /// Get explanation for score gap
+    /// </summary>
+    private static string GetGapExplanation(double gap) => gap switch
+    {
+        >= 0.15 => "(лидер явно лучше остальных)",
+        >= 0.08 => "(лидер немного лучше)",
+        >= 0.03 => "(несколько похожих результатов)",
+        _ => "(много одинаково релевантных)"
+    };
+
+    /// <summary>
+    /// Get explanation for full-text match
+    /// </summary>
+    private static string GetFullTextExplanation(bool hasMatch) =>
+        hasMatch
+            ? "(точное совпадение слов — высокая точность)"
+            : "(только семантический поиск)";
 
     private static string FormatSearchResults(DebugReport report)
     {
@@ -260,42 +325,108 @@ public class DebugService(
         var included = report.SearchResults.Where(r => r.IncludedInContext).ToList();
         var excluded = report.SearchResults.Where(r => !r.IncludedInContext).ToList();
 
-        sb.AppendLine($"<b>🎯 Результаты поиска ({report.SearchResults.Count}):</b>");
-        sb.AppendLine($"   ✅ В контексте: {included.Count} | ❌ Исключено: {excluded.Count}");
+        sb.AppendLine($"<b>═══ РЕЗУЛЬТАТЫ ПОИСКА ═══</b>");
+        sb.AppendLine($"📊 Всего: {report.SearchResults.Count} | ✅ В контексте: {included.Count} | ❌ Исключено: {excluded.Count}");
         sb.AppendLine();
 
+        var rank = 0;
         foreach (var result in report.SearchResults.Take(10))
         {
+            rank++;
             var scoreBar = GetScoreBar(result.Similarity);
-            var newsFlag = result.IsNewsDump ? " 📰" : "";
-            var contextFlag = result.IncludedInContext ? "✅" : $"❌{result.ExcludedReason}";
-            sb.AppendLine($"{scoreBar} sim=<b>{result.Similarity:F3}</b> dist={result.Distance:F3}{newsFlag} [{contextFlag}]");
-            sb.AppendLine($"   ids: {string.Join(",", result.MessageIds.Take(3))}");
-            sb.AppendLine($"   <i>{EscapeHtml(TruncateText(result.Text, 100))}</i>");
+            var qualityLabel = GetResultQualityLabel(result.Similarity);
+            var newsFlag = result.IsNewsDump ? " 📰<i>новости</i>" : "";
+            var contextFlag = result.IncludedInContext
+                ? "✅ в контексте"
+                : $"❌ {GetExclusionReasonLabel(result.ExcludedReason)}";
+
+            sb.AppendLine($"<b>#{rank}</b> {scoreBar} <b>{result.Similarity:F3}</b> {qualityLabel}{newsFlag}");
+            sb.AppendLine($"   [{contextFlag}]");
+
+            // Show timestamp if available
+            if (result.Timestamp.HasValue)
+            {
+                var age = DateTime.UtcNow - result.Timestamp.Value.UtcDateTime;
+                var ageStr = age.TotalDays switch
+                {
+                    < 1 => $"{age.Hours}ч назад",
+                    < 7 => $"{(int)age.TotalDays}д назад",
+                    < 30 => $"{(int)(age.TotalDays / 7)}нед назад",
+                    _ => $"{(int)(age.TotalDays / 30)}мес назад"
+                };
+                sb.AppendLine($"   🕐 {result.Timestamp.Value:dd.MM HH:mm} ({ageStr})");
+            }
+
+            sb.AppendLine($"   💬 <i>{EscapeHtml(TruncateText(result.Text, 120))}</i>");
+            sb.AppendLine();
         }
 
         if (report.SearchResults.Count > 10)
         {
-            sb.AppendLine($"   ... и ещё {report.SearchResults.Count - 10}");
+            sb.AppendLine($"<i>... и ещё {report.SearchResults.Count - 10} результатов</i>");
+            sb.AppendLine();
         }
 
-        // Show excluded reasons summary
+        // Show excluded reasons summary with explanations
         if (excluded.Count > 0)
         {
-            sb.AppendLine();
-            sb.AppendLine("<b>❌ Исключённые:</b>");
+            sb.AppendLine("<b>📋 Причины исключения:</b>");
             var byReason = excluded.GroupBy(r => r.ExcludedReason ?? "unknown")
                 .OrderByDescending(g => g.Count());
             foreach (var group in byReason)
             {
-                var ids = string.Join(",", group.SelectMany(r => r.MessageIds).Take(5));
-                sb.AppendLine($"   {group.Key}: {group.Count()} (ids: {ids})");
+                var label = GetExclusionReasonLabel(group.Key);
+                var explanation = GetExclusionReasonExplanation(group.Key);
+                sb.AppendLine($"   • {label}: {group.Count()} шт.");
+                sb.AppendLine($"     <i>{explanation}</i>");
             }
         }
 
         sb.AppendLine();
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Get quality label for result based on similarity score
+    /// </summary>
+    private static string GetResultQualityLabel(double similarity) => similarity switch
+    {
+        >= 0.85 => "🌟 отлично",
+        >= 0.75 => "👍 хорошо",
+        >= 0.65 => "🤔 средне",
+        >= 0.50 => "😐 слабо",
+        _ => "❓ сомнительно"
+    };
+
+    /// <summary>
+    /// Get human-readable label for exclusion reason
+    /// </summary>
+    private static string GetExclusionReasonLabel(string? reason) => reason switch
+    {
+        "ok" => "включено",
+        "no_text" => "пустой текст",
+        "duplicate" => "дубликат",
+        "low_score" => "низкий score",
+        "news_dump" => "новостной дамп",
+        "not_tracked" => "не отслеживается",
+        "filtered_by_rerank" => "отфильтрован rerank",
+        null => "неизвестно",
+        _ => reason
+    };
+
+    /// <summary>
+    /// Get explanation for exclusion reason
+    /// </summary>
+    private static string GetExclusionReasonExplanation(string? reason) => reason switch
+    {
+        "no_text" => "Сообщение без текста (возможно медиа)",
+        "duplicate" => "Повторяющееся содержание",
+        "low_score" => "Слишком низкая релевантность для контекста",
+        "news_dump" => "Автоматическая новостная рассылка",
+        "not_tracked" => "Результат не попал в трекинг контекста",
+        "filtered_by_rerank" => "Cross-encoder оценил как нерелевантное",
+        _ => "Причина не указана"
+    };
 
     private static string FormatPrompts(DebugReport report)
     {
@@ -335,6 +466,152 @@ public class DebugService(
         sb.AppendLine($"<pre>{EscapeHtml(TruncateText(report.LlmResponse ?? "", 800))}</pre>");
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Format final verdict section - explains why this answer was given
+    /// </summary>
+    private static string FormatVerdict(DebugReport report)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("<b>═══ ВЕРДИКТ ═══</b>");
+        sb.AppendLine();
+
+        // Determine answer quality based on multiple factors
+        var (quality, icon, explanation, recommendations) = AnalyzeAnswerQuality(report);
+
+        sb.AppendLine($"{icon} <b>Качество ответа: {quality}</b>");
+        sb.AppendLine();
+        sb.AppendLine($"<b>📋 Анализ:</b>");
+        foreach (var line in explanation)
+        {
+            sb.AppendLine($"   • {line}");
+        }
+
+        if (recommendations.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("<b>💡 Рекомендации:</b>");
+            foreach (var rec in recommendations)
+            {
+                sb.AppendLine($"   • {rec}");
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Analyze answer quality based on search results and confidence
+    /// </summary>
+    private static (string quality, string icon, List<string> explanation, List<string> recommendations)
+        AnalyzeAnswerQuality(DebugReport report)
+    {
+        var explanation = new List<string>();
+        var recommendations = new List<string>();
+        var qualityScore = 0;
+
+        // Factor 1: Search confidence
+        switch (report.SearchConfidence)
+        {
+            case "High":
+                qualityScore += 3;
+                explanation.Add("✅ Высокая уверенность в найденных результатах");
+                break;
+            case "Medium":
+                qualityScore += 2;
+                explanation.Add("🟡 Средняя уверенность — результаты частично релевантны");
+                break;
+            case "Low":
+                qualityScore += 1;
+                explanation.Add("🟠 Низкая уверенность — мало релевантных данных");
+                recommendations.Add("Попробуйте переформулировать вопрос более конкретно");
+                break;
+            default:
+                explanation.Add("🔴 Релевантных данных не найдено");
+                recommendations.Add("Вопрос может быть вне контекста чата");
+                break;
+        }
+
+        // Factor 2: Best similarity score
+        if (report.BestScore >= 0.85)
+        {
+            qualityScore += 2;
+            explanation.Add($"✅ Найдено почти точное совпадение (score {report.BestScore:F3})");
+        }
+        else if (report.BestScore >= 0.75)
+        {
+            qualityScore += 1;
+            explanation.Add($"👍 Хорошее семантическое совпадение (score {report.BestScore:F3})");
+        }
+        else if (report.BestScore >= 0.65)
+        {
+            explanation.Add($"🤔 Частичное совпадение (score {report.BestScore:F3})");
+        }
+        else if (report.BestScore > 0)
+        {
+            explanation.Add($"😐 Слабое совпадение (score {report.BestScore:F3})");
+            recommendations.Add("Результаты могут быть косвенно связаны с вопросом");
+        }
+
+        // Factor 3: Full-text match
+        if (report.HasFullTextMatch)
+        {
+            qualityScore += 1;
+            explanation.Add("✅ Найдено точное совпадение ключевых слов");
+        }
+
+        // Factor 4: Number of results in context
+        var includedCount = report.SearchResults.Count(r => r.IncludedInContext);
+        if (includedCount >= 5)
+        {
+            qualityScore += 1;
+            explanation.Add($"✅ Богатый контекст ({includedCount} сообщений)");
+        }
+        else if (includedCount >= 2)
+        {
+            explanation.Add($"👍 Достаточный контекст ({includedCount} сообщений)");
+        }
+        else if (includedCount == 1)
+        {
+            explanation.Add($"🟠 Минимальный контекст (1 сообщение)");
+            recommendations.Add("Ответ основан на ограниченных данных");
+        }
+        else
+        {
+            explanation.Add("🔴 Контекст пуст");
+            recommendations.Add("LLM отвечает на основе общих знаний");
+        }
+
+        // Factor 5: News dump presence
+        var newsDumpCount = report.SearchResults.Count(r => r.IsNewsDump);
+        if (newsDumpCount > 0)
+        {
+            explanation.Add($"📰 Обнаружено {newsDumpCount} новостных дампов (понижен приоритет)");
+        }
+
+        // Factor 6: Score gap (distinctiveness)
+        if (report.ScoreGap >= 0.15)
+        {
+            qualityScore += 1;
+            explanation.Add("✅ Лучший результат явно выделяется");
+        }
+        else if (report.ScoreGap < 0.03 && includedCount > 1)
+        {
+            explanation.Add("🔄 Много одинаково релевантных результатов");
+            recommendations.Add("Ответ может объединять информацию из разных источников");
+        }
+
+        // Determine final quality rating
+        return qualityScore switch
+        {
+            >= 7 => ("ОТЛИЧНОЕ", "🌟", explanation, recommendations),
+            >= 5 => ("ХОРОШЕЕ", "👍", explanation, recommendations),
+            >= 3 => ("СРЕДНЕЕ", "🤔", explanation, recommendations),
+            >= 1 => ("НИЗКОЕ", "😐", explanation, recommendations),
+            _ => ("НЕОПРЕДЕЛЁННОЕ", "❓", explanation, recommendations)
+        };
     }
 
     private static string GetScoreBar(double score)

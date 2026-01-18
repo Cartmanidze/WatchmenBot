@@ -34,7 +34,6 @@ public partial class RagFusionService(
     public async Task<RagFusionResponse> SearchWithFusionAsync(
         long chatId,
         string query,
-        List<string>? participantNames = null,
         int variationCount = 3,
         int resultsPerQuery = ResultsPerQuery,
         CancellationToken ct = default)
@@ -45,7 +44,7 @@ public partial class RagFusionService(
         try
         {
             // Step 1: Generate structural variations (NO LLM - just patterns)
-            var variations = GenerateStructuralVariations(query, participantNames);
+            var variations = GenerateStructuralVariations(query);
             response.QueryVariations = variations;
 
             logger.LogInformation("[RAG Fusion] Generated {Count} structural variations for: {Query}",
@@ -127,17 +126,6 @@ public partial class RagFusionService(
             }
 
             var fusedResults = ApplyRrfFusion(allResultsForFusion.ToArray());
-
-            // Step 5.5: Entity boost for "who is X" questions
-            if (IsWhoQuestion(query) && participantNames is { Count: > 0 })
-            {
-                var entityWord = ExtractEntityWord(query);
-                if (!string.IsNullOrEmpty(entityWord))
-                {
-                    ApplyEntityBoost(fusedResults, entityWord, participantNames);
-                    fusedResults = fusedResults.OrderByDescending(r => r.FusedScore).ToList();
-                }
-            }
 
             // Filter near-exact matches
             var filteredResults = fusedResults
@@ -234,24 +222,14 @@ public partial class RagFusionService(
 
     /// <summary>
     /// Generate structural variations without LLM.
-    /// Uses morphology patterns and entity-based variations.
+    /// Uses keyword extraction and word reordering patterns.
     /// </summary>
-    private static List<string> GenerateStructuralVariations(string query, List<string>? participantNames)
+    private static List<string> GenerateStructuralVariations(string query)
     {
         var variations = new List<string>();
         var normalized = query.ToLowerInvariant().Trim();
 
-        // 1. For "who is X" questions - generate "[name] X" patterns
-        if (IsWhoQuestion(normalized) && participantNames is { Count: > 0 })
-        {
-            var entityWord = ExtractEntityWord(query);
-            if (!string.IsNullOrEmpty(entityWord))
-            {
-                variations.AddRange(GenerateEntityVariations(entityWord, participantNames));
-            }
-        }
-
-        // 2. Extract significant words and create variations
+        // Extract significant words and create variations
         var words = ExtractSignificantWords(normalized);
 
         if (words.Count >= 1)
@@ -265,10 +243,6 @@ public partial class RagFusionService(
                 variations.Add(string.Join(" ", words.Take(2).Reverse()));
             }
         }
-
-        // 3. For questions with specific structure, add answer patterns
-        // "кто сосун" → "сосун", "[name] сосун"
-        // "что обсуждали" → "обсуждали", "говорили о"
 
         return variations.Distinct().Take(10).ToList(); // Limit to avoid too many queries
     }
@@ -329,49 +303,6 @@ public partial class RagFusionService(
             .Select(m => m.Value)
             .Where(w => w.Length >= 3 && !stopWords.Contains(w))
             .ToList();
-    }
-
-    /// <summary>
-    /// Check if query is a "who is X" type question.
-    /// </summary>
-    private static bool IsWhoQuestion(string query)
-    {
-        var normalized = query.ToLowerInvariant().Trim();
-        var whoPatterns = new[] { "кто ", "кто?", "а кто", "кого ", "кому ", "who ", "who's ", "who is " };
-        return whoPatterns.Any(p => normalized.StartsWith(p) || normalized.Contains($" {p.Trim()}"));
-    }
-
-    /// <summary>
-    /// Extract the entity word from a "who is X" question.
-    /// </summary>
-    private static string? ExtractEntityWord(string query)
-    {
-        var normalized = query.ToLowerInvariant().Trim();
-        var stopWords = new[] { "кто", "а", "же", "тут", "здесь", "у", "нас", "из", "них", "там", "who", "is", "the" };
-
-        var words = normalized
-            .Split([' ', '?', '!', ',', '.'], StringSplitOptions.RemoveEmptyEntries)
-            .Where(w => w.Length > 2 && !stopWords.Contains(w))
-            .ToList();
-
-        return words.LastOrDefault();
-    }
-
-    /// <summary>
-    /// Generate "[name] [entity]" variations for "who is X" questions.
-    /// </summary>
-    private static List<string> GenerateEntityVariations(string entityWord, List<string> participantNames)
-    {
-        var variations = new List<string>();
-
-        foreach (var name in participantNames.Take(5))
-        {
-            variations.Add($"{name} {entityWord}");
-            variations.Add($"{entityWord} {name}");
-            variations.Add($"{name} это {entityWord}");
-        }
-
-        return variations;
     }
 
     /// <summary>
@@ -452,33 +383,6 @@ public partial class RagFusionService(
 
         // Case 3: both same type → use higher similarity
         return candidate.Similarity > existing.Similarity ? candidate : existing;
-    }
-
-    /// <summary>
-    /// Boost results containing both entity word and participant name.
-    /// </summary>
-    private void ApplyEntityBoost(List<FusedSearchResult> results, string entityWord, List<string> participantNames)
-    {
-        const double boostMultiplier = 1.5;
-        var boostedCount = 0;
-
-        foreach (var result in results)
-        {
-            var text = result.ChunkText?.ToLowerInvariant() ?? "";
-            if (!text.Contains(entityWord.ToLowerInvariant())) continue;
-
-            var matchedName = participantNames.FirstOrDefault(n => text.Contains(n.ToLowerInvariant()));
-            if (matchedName != null)
-            {
-                result.FusedScore *= boostMultiplier;
-                boostedCount++;
-            }
-        }
-
-        if (boostedCount > 0)
-        {
-            logger.LogInformation("[Entity Boost] Boosted {Count} results for '{Entity}'", boostedCount, entityWord);
-        }
     }
 
     /// <summary>

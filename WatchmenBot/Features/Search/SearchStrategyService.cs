@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Search.Services;
 
@@ -18,13 +17,6 @@ public class SearchStrategyService(
     CohereRerankService cohereReranker,
     ILogger<SearchStrategyService> logger)
 {
-    /// <summary>
-    /// Cache for participant names per chat. TTL: 10 minutes, max 100 entries.
-    /// Key: chatId, Value: (names, cachedAt)
-    /// </summary>
-    private static readonly ConcurrentDictionary<long, (List<string> Names, DateTime CachedAt)> ParticipantCache = new();
-    private static readonly TimeSpan ParticipantCacheTtl = TimeSpan.FromMinutes(10);
-    private const int MaxCacheSize = 100;
     /// <summary>
     /// Route search based on classified intent
     /// </summary>
@@ -525,13 +517,11 @@ public class SearchStrategyService(
 
         // Step 1: RAG Fusion search (generates variations + RRF merge)
         // Increased resultsPerQuery from 15 to 30 to catch semantically distant matches
-        var participantNames = await GetParticipantNamesAsync(chatId, ct);
         var fusionResponse = await ragFusionService.SearchWithFusionAsync(
             chatId, query,
-            participantNames: participantNames,
             variationCount: 3,
             resultsPerQuery: 30,
-            ct);
+            ct: ct);
 
         // Step 2: Context embeddings search (for dialog context)
         // Fetch more candidates for reranking if cross-encoder is configured
@@ -629,100 +619,6 @@ public class SearchStrategyService(
             BestScore = bestSim,
             ScoreGap = fusionResponse.ScoreGap
         };
-    }
-
-    private async Task<List<string>> GetParticipantNamesAsync(long chatId, CancellationToken ct)
-    {
-        var now = DateTime.UtcNow;
-
-        // Periodic cleanup: remove expired entries when cache grows too large
-        if (ParticipantCache.Count > MaxCacheSize)
-        {
-            CleanupExpiredCacheEntries(now);
-        }
-
-        // Check cache first
-        if (ParticipantCache.TryGetValue(chatId, out var cached))
-        {
-            if (now - cached.CachedAt < ParticipantCacheTtl)
-            {
-                logger.LogDebug("[SearchStrategy] Participant names cache hit for chat {ChatId}", chatId);
-                return cached.Names;
-            }
-
-            // Cache expired, remove stale entry
-            ParticipantCache.TryRemove(chatId, out _);
-        }
-
-        var users = await nicknameResolverService.GetChatUsersAsync(chatId, ct);
-
-        var names = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var user in users)
-        {
-            AddName(user.DisplayName);
-            if (!string.IsNullOrWhiteSpace(user.Username))
-            {
-                AddName(user.Username);
-                AddName("@" + user.Username);
-            }
-        }
-
-        var result = names.Take(20).ToList();
-
-        // Cache the result (including empty lists to avoid repeated DB calls)
-        ParticipantCache[chatId] = (result, now);
-        logger.LogDebug("[SearchStrategy] Cached {Count} participant names for chat {ChatId}", result.Count, chatId);
-
-        return result;
-
-        void AddName(string? name)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                return;
-            }
-
-            if (seen.Add(name))
-            {
-                names.Add(name);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Remove expired and excess entries from the cache to enforce MaxCacheSize limit.
-    /// Uses LRU-like eviction: removes expired entries first, then oldest entries if still over limit.
-    /// </summary>
-    private static void CleanupExpiredCacheEntries(DateTime now)
-    {
-        // Step 1: Remove expired entries
-        var expiredKeys = ParticipantCache
-            .Where(kvp => now - kvp.Value.CachedAt >= ParticipantCacheTtl)
-            .Select(kvp => kvp.Key)
-            .ToList();
-
-        foreach (var key in expiredKeys)
-        {
-            ParticipantCache.TryRemove(key, out _);
-        }
-
-        // Step 2: If still over limit, remove oldest entries (LRU eviction)
-        if (ParticipantCache.Count > MaxCacheSize)
-        {
-            var entriesToRemove = ParticipantCache.Count - MaxCacheSize;
-            var oldestKeys = ParticipantCache
-                .OrderBy(kvp => kvp.Value.CachedAt)
-                .Take(entriesToRemove)
-                .Select(kvp => kvp.Key)
-                .ToList();
-
-            foreach (var key in oldestKeys)
-            {
-                ParticipantCache.TryRemove(key, out _);
-            }
-        }
     }
 
     private static List<SearchResult> DeduplicateByMessageId(IEnumerable<SearchResult> results)
