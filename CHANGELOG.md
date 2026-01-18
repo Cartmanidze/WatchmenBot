@@ -23,14 +23,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **Silent exception swallowing in EmbeddingStorageService** — исправлена проблема когда ошибки эмбеддинга проглатывались без уведомления caller:
-  - `StoreMessageEmbeddingAsync` теперь пробрасывает исключения наверх
-  - Caller (`SaveMessage`) сам решает как обрабатывать ошибки
-  - Логирование "Created embedding" теперь только при реальном успехе
+  - `StoreMessageEmbeddingAsync` теперь возвращает `Task<bool>` — `true` если сохранено, `false` если пропущено
+  - Исключения пробрасываются наверх (caller решает как обрабатывать)
+  - Логирование "Created embedding" теперь только при `embeddingCreated == true`
+  - `QuestionGenerationJob` логирует пропущенные empty embeddings: `"Stored 2/3 questions"`
 
 - **Mixed error contexts in SaveMessage** — разделены try-catch блоки для embedding и Hangfire enqueue:
   - Ошибка embedding логируется как `[Embedding] Failed...`
   - Ошибка Hangfire enqueue логируется как `[QuestionGen] Failed to enqueue...`
   - Убрана дублирующая проверка длины сообщения (>= 10) — `QuestionGenerationService.ShouldGenerateQuestions` сам фильтрует
+
+- **SQL syntax error in PersonalSearchService** — исправлена ошибка PostgreSQL `syntax error at or near "UNION"`:
+  - **Причина**: `LIMIT` внутри `UNION` требует скобок в PostgreSQL
+  - **Симптом**: Personal search fallback'ился на context-only search, теряя персональные сообщения
+  - **Файл**: `Features/Search/Services/PersonalSearchService.cs:125` — добавлены скобки вокруг subqueries
 
 - **Auto-register Telegram webhook on startup** — исправлена критическая проблема когда webhook не восстанавливался после рестарта контейнера:
   - **Проблема**: Telegram сбрасывает webhook при ошибках 5xx, но при рестарте приложения он не регистрировался заново

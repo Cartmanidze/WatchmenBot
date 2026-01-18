@@ -122,35 +122,38 @@ public class PersonalSearchService(
             var cleanNames = searchNames.Select(n => n.TrimStart('@')).ToArray();
 
             // OPTIMIZATION: Single query with UNION to get both user's messages and mentions
+            // Note: PostgreSQL requires parentheses around subqueries when using LIMIT with UNION
             var messageIds = await connection.QueryAsync<long>(
                 """
-                -- User's own messages (by username or display name)
-                SELECT DISTINCT me.message_id
-                FROM message_embeddings me
-                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
-                WHERE me.chat_id = @ChatId
-                  AND m.date_utc >= @StartDate
-                  AND (
-                      me.metadata->>'Username' = ANY(@Names)
-                      OR me.metadata->>'DisplayName' = ANY(@Names)
-                      OR me.chunk_text ILIKE ANY(@TextPatterns)
-                  )
-                LIMIT 100
-
+                (
+                    -- User's own messages (by username or display name)
+                    SELECT DISTINCT me.message_id
+                    FROM message_embeddings me
+                    JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                    WHERE me.chat_id = @ChatId
+                      AND m.date_utc >= @StartDate
+                      AND (
+                          me.metadata->>'Username' = ANY(@Names)
+                          OR me.metadata->>'DisplayName' = ANY(@Names)
+                          OR me.chunk_text ILIKE ANY(@TextPatterns)
+                      )
+                    LIMIT 100
+                )
                 UNION
-
-                -- Mentions of user (text contains name, but NOT from user themselves)
-                SELECT DISTINCT me.message_id
-                FROM message_embeddings me
-                JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
-                WHERE me.chat_id = @ChatId
-                  AND m.date_utc >= @StartDate
-                  AND me.chunk_text ILIKE ANY(@MentionPatterns)
-                  AND NOT (
-                      me.metadata->>'Username' = ANY(@Names)
-                      OR me.metadata->>'DisplayName' = ANY(@Names)
-                  )
-                LIMIT 50
+                (
+                    -- Mentions of user (text contains name, but NOT from user themselves)
+                    SELECT DISTINCT me.message_id
+                    FROM message_embeddings me
+                    JOIN messages m ON me.chat_id = m.chat_id AND me.message_id = m.id
+                    WHERE me.chat_id = @ChatId
+                      AND m.date_utc >= @StartDate
+                      AND me.chunk_text ILIKE ANY(@MentionPatterns)
+                      AND NOT (
+                          me.metadata->>'Username' = ANY(@Names)
+                          OR me.metadata->>'DisplayName' = ANY(@Names)
+                      )
+                    LIMIT 50
+                )
                 """,
                 new
                 {
