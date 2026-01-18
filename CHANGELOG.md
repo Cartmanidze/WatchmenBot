@@ -6,7 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-01-18]
 
+### Changed
+
+- **Question generation moved to Hangfire background job** — генерация Q→A вопросов вынесена из синхронного pipeline индексации:
+  - **Проблема:** `SaveMessage` имел 3-секундный таймаут для эмбеддинга, но генерация вопросов (LLM + эмбеддинги) занимала 2-4 секунды, вызывая `TaskCanceledException`
+  - **Решение:** Создан `QuestionGenerationJob` для Hangfire с отдельной очередью `low` priority
+  - **Результат:**
+    - Сообщения индексируются мгновенно (~300-500ms для эмбеддинга)
+    - Вопросы генерируются асинхронно без таймаутов
+    - Retry при ошибках (2 попытки с задержками 10s, 30s)
+  - **Файлы:**
+    - `Features/Search/Jobs/QuestionGenerationJob.cs` — новый Hangfire job
+    - `Features/Search/Services/EmbeddingStorageService.cs` — добавлен `StoreQuestionEmbeddingAsync`
+    - `Features/Messages/SaveMessage.cs` — enqueue job после создания эмбеддинга
+
 ### Fixed
+
+- **Silent exception swallowing in EmbeddingStorageService** — исправлена проблема когда ошибки эмбеддинга проглатывались без уведомления caller:
+  - `StoreMessageEmbeddingAsync` теперь пробрасывает исключения наверх
+  - Caller (`SaveMessage`) сам решает как обрабатывать ошибки
+  - Логирование "Created embedding" теперь только при реальном успехе
+
+- **Mixed error contexts in SaveMessage** — разделены try-catch блоки для embedding и Hangfire enqueue:
+  - Ошибка embedding логируется как `[Embedding] Failed...`
+  - Ошибка Hangfire enqueue логируется как `[QuestionGen] Failed to enqueue...`
+  - Убрана дублирующая проверка длины сообщения (>= 10) — `QuestionGenerationService.ShouldGenerateQuestions` сам фильтрует
 
 - **Auto-register Telegram webhook on startup** — исправлена критическая проблема когда webhook не восстанавливался после рестарта контейнера:
   - **Проблема**: Telegram сбрасывает webhook при ошибках 5xx, но при рестарте приложения он не регистрировался заново

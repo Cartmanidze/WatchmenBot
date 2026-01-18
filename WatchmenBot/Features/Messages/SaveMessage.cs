@@ -1,6 +1,8 @@
+using Hangfire;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using WatchmenBot.Features.Profile.Services;
+using WatchmenBot.Features.Search.Jobs;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Models;
 using WatchmenBot.Features.Messages.Services;
@@ -41,6 +43,7 @@ public class SaveMessageHandler(
     RelationshipExtractionService relationshipExtractionService,
     EmbeddingService embeddingService,
     ProfileQueueService profileQueueService,
+    IBackgroundJobClient jobClient,
     LogCollector logCollector,
     ILogger<SaveMessageHandler> logger)
 {
@@ -120,15 +123,19 @@ public class SaveMessageHandler(
             // Create embedding immediately with timeout (don't block webhook too long)
             // Skip very short messages (< 6 chars) - they add noise to embeddings
             // Note: >= 6 allows short but meaningful messages like "бек гондон" (10 chars)
+            var embeddingCreated = false;
             if (!string.IsNullOrWhiteSpace(record.Text) && record.Text.Length >= 6)
             {
                 try
                 {
                     // Use separate timeout token to avoid cancellation when webhook completes
                     using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                    await embeddingService.StoreMessageEmbeddingAsync(record, timeoutCts.Token);
-                    logCollector.IncrementEmbeddings();
-                    logger.LogDebug("[Embedding] Created embedding for msg #{MessageId}", message.MessageId);
+                    embeddingCreated = await embeddingService.StoreMessageEmbeddingAsync(record, timeoutCts.Token);
+                    if (embeddingCreated)
+                    {
+                        logCollector.IncrementEmbeddings();
+                        logger.LogDebug("[Embedding] Created embedding for msg #{MessageId}", message.MessageId);
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -137,6 +144,28 @@ public class SaveMessageHandler(
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "[Embedding] Failed to create embedding for msg #{MessageId} - will retry in background", message.MessageId);
+                }
+            }
+
+            // Enqueue Q→A semantic bridge generation via Hangfire (separate from embedding)
+            // QuestionGenerationService.ShouldGenerateQuestions handles all filtering (length, stop words, etc.)
+            if (embeddingCreated && !record.IsForwarded)
+            {
+                try
+                {
+                    var questionItem = new QuestionGenerationItem
+                    {
+                        ChatId = record.ChatId,
+                        MessageId = record.Id,
+                        MessageText = record.Text!,
+                        IsForwarded = record.IsForwarded
+                    };
+                    jobClient.Enqueue<QuestionGenerationJob>(job => job.ProcessAsync(questionItem, CancellationToken.None));
+                }
+                catch (Exception ex)
+                {
+                    // Hangfire enqueue failure is not critical - questions are enhancement only
+                    logger.LogWarning(ex, "[QuestionGen] Failed to enqueue job for msg #{MessageId}", message.MessageId);
                 }
             }
 

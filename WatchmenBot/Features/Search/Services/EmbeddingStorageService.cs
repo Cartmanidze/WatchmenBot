@@ -10,62 +10,58 @@ namespace WatchmenBot.Features.Search.Services;
 /// <summary>
 /// Service for storing and managing embeddings in the database.
 /// Handles all CRUD operations for message_embeddings table.
-/// Now includes Q→A semantic bridge via question generation.
+/// Q→A semantic bridge is handled by QuestionGenerationJob (Hangfire).
 /// </summary>
 public class EmbeddingStorageService(
     EmbeddingClient embeddingClient,
     IDbConnectionFactory connectionFactory,
-    QuestionGenerationService questionGenerator,
     ILogger<EmbeddingStorageService> logger)
 {
     /// <summary>
-    /// Stores embedding for a single message
+    /// Stores embedding for a single message.
+    /// Returns true if embedding was stored, false if skipped (empty text/embedding).
+    /// Throws on API or database failure — caller is responsible for error handling.
     /// </summary>
-    public async Task StoreMessageEmbeddingAsync(MessageRecord message, CancellationToken ct = default)
+    /// <returns>True if embedding was stored, false if skipped</returns>
+    /// <exception cref="HttpRequestException">Embedding API failure</exception>
+    /// <exception cref="PostgresException">Database write failure</exception>
+    public async Task<bool> StoreMessageEmbeddingAsync(MessageRecord message, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(message.Text))
-            return;
+            return false;
 
-        try
+        var text = FormatMessageForEmbedding(message);
+        var embedding = await embeddingClient.GetEmbeddingAsync(text, EmbeddingTask.RetrievalPassage, ct);
+
+        if (embedding.Length == 0)
         {
-            var text = FormatMessageForEmbedding(message);
-            var embedding = await embeddingClient.GetEmbeddingAsync(text, EmbeddingTask.RetrievalPassage, ct);
+            logger.LogWarning("[Embedding] Empty embedding returned for message {MessageId}", message.Id);
+            return false;
+        }
 
-            if (embedding.Length == 0)
+        await StoreEmbeddingAsync(
+            message.ChatId,
+            message.Id,
+            0,
+            text,
+            embedding,
+            new
             {
-                logger.LogWarning("Empty embedding returned for message {MessageId}", message.Id);
-                return;
-            }
+                message.FromUserId,
+                message.Username,
+                message.DisplayName,
+                message.DateUtc,
+                message.IsForwarded,
+                message.ForwardFromName,
+                message.ForwardOriginType
+            },
+            isQuestion: false,
+            sourceMessageId: null,
+            ct);
 
-            await StoreEmbeddingAsync(
-                message.ChatId,
-                message.Id,
-                0,
-                text,
-                embedding,
-                new
-                {
-                    message.FromUserId,
-                    message.Username,
-                    message.DisplayName,
-                    message.DateUtc,
-                    message.IsForwarded,
-                    message.ForwardFromName,
-                    message.ForwardOriginType
-                },
-                isQuestion: false,
-                sourceMessageId: null,
-                ct);
-
-            // Generate and store questions for Q→A semantic bridge
-            await GenerateAndStoreQuestionsAsync(message.ChatId, message.Id, message.Text, message.IsForwarded, ct);
-
-            logger.LogDebug("Stored embedding for message {MessageId} in chat {ChatId}", message.Id, message.ChatId);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to store embedding for message {MessageId}", message.Id);
-        }
+        // Note: Question generation moved to QuestionGenerationJob (Hangfire)
+        // This allows faster message processing without LLM timeout issues
+        return true;
     }
 
     /// <summary>
@@ -298,66 +294,31 @@ public class EmbeddingStorageService(
     }
 
     /// <summary>
-    /// Generate questions for a message and store their embeddings.
-    /// Questions are stored with is_question=true and source_message_id pointing to the answer.
+    /// Store a question embedding (called from QuestionGenerationJob).
+    /// Questions use negative chunk_index to distinguish from message chunks.
     /// </summary>
-    private async Task GenerateAndStoreQuestionsAsync(
+    public async Task StoreQuestionEmbeddingAsync(
         long chatId,
         long sourceMessageId,
-        string? messageText,
-        bool isForwarded,
+        int questionIndex,
+        string questionText,
+        float[] embedding,
         CancellationToken ct)
     {
-        if (!questionGenerator.ShouldGenerateQuestions(messageText, isForwarded))
-            return;
+        // Use negative chunk_index to distinguish questions from message chunks
+        // This ensures unique constraint (chat_id, message_id, chunk_index) is satisfied
+        var chunkIndex = -(questionIndex + 1);
 
-        try
-        {
-            var questions = await questionGenerator.GenerateQuestionsAsync(messageText!, ct);
-
-            if (questions.Count == 0)
-                return;
-
-            // Get embeddings for all questions at once
-            var embeddings = await embeddingClient.GetEmbeddingsAsync(
-                questions,
-                EmbeddingTask.RetrievalQuery, // Questions use query mode
-                lateChunking: false,
-                ct);
-
-            // Store each question embedding
-            for (var i = 0; i < questions.Count && i < embeddings.Count; i++)
-            {
-                if (embeddings[i].Length == 0)
-                    continue;
-
-                // Use negative chunk_index to distinguish questions from message chunks
-                // This ensures unique constraint (chat_id, message_id, chunk_index) is satisfied
-                var chunkIndex = -(i + 1);
-
-                await StoreEmbeddingAsync(
-                    chatId,
-                    sourceMessageId,
-                    chunkIndex,
-                    questions[i],
-                    embeddings[i],
-                    new { GeneratedQuestion = true, QuestionIndex = i },
-                    isQuestion: true,
-                    sourceMessageId: sourceMessageId,
-                    ct);
-            }
-
-            logger.LogDebug(
-                "[QuestionGen] Stored {Count} questions for message {MsgId} in chat {ChatId}",
-                questions.Count, sourceMessageId, chatId);
-        }
-        catch (Exception ex)
-        {
-            // Don't fail the main embedding if question generation fails
-            logger.LogWarning(ex,
-                "[QuestionGen] Failed for message {MsgId} in chat {ChatId}",
-                sourceMessageId, chatId);
-        }
+        await StoreEmbeddingAsync(
+            chatId,
+            sourceMessageId,
+            chunkIndex,
+            questionText,
+            embedding,
+            new { GeneratedQuestion = true, QuestionIndex = questionIndex },
+            isQuestion: true,
+            sourceMessageId: sourceMessageId,
+            ct);
     }
 
     /// <summary>

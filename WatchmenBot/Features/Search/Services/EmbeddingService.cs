@@ -21,9 +21,10 @@ public class EmbeddingService(
     #region Delegated Operations
 
     /// <summary>
-    /// Stores embedding for a message (delegates to EmbeddingStorageService)
+    /// Stores embedding for a message (delegates to EmbeddingStorageService).
+    /// Returns true if embedding was stored, false if skipped.
     /// </summary>
-    public Task StoreMessageEmbeddingAsync(MessageRecord message, CancellationToken ct = default)
+    public Task<bool> StoreMessageEmbeddingAsync(MessageRecord message, CancellationToken ct = default)
         => storageService.StoreMessageEmbeddingAsync(message, ct);
 
     /// <summary>
