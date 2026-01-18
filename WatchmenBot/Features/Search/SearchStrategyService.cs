@@ -27,53 +27,72 @@ public class SearchStrategyService(
         string askerName,
         CancellationToken ct)
     {
-        logger.LogInformation("[SearchStrategy] Intent: {Intent}, Temporal: {Temporal}, People: {People}",
-            classified.Intent, classified.HasTemporal, classified.MentionedPeople.Count);
-
-        return classified.Intent switch
+        try
         {
-            // Personal question about self
-            QueryIntent.PersonalSelf => await SearchPersonalWithHybridAsync(
-                chatId,
-                askerUsername ?? askerName,
-                askerName,
-                classified.OriginalQuestion,
-                GetDaysFromTemporal(classified),
-                ct),
+            logger.LogInformation("[SearchStrategy] Intent: {Intent}, Temporal: {Temporal}, People: {People}",
+                classified.Intent, classified.HasTemporal, classified.MentionedPeople.Count);
 
-            // Personal question about someone else
-            QueryIntent.PersonalOther when classified.MentionedPeople.Count > 0 => await SearchPersonalWithHybridAsync(
-                chatId,
-                classified.MentionedPeople[0],
-                null,
-                classified.OriginalQuestion,
-                GetDaysFromTemporal(classified),
-                ct),
+            return classified.Intent switch
+            {
+                // Personal question about self
+                QueryIntent.PersonalSelf => await SearchPersonalWithHybridAsync(
+                    chatId,
+                    askerUsername ?? askerName,
+                    askerName,
+                    classified.OriginalQuestion,
+                    GetDaysFromTemporal(classified),
+                    ct),
 
-            // Time-bound question
-            QueryIntent.Temporal when classified.HasTemporal => await SearchWithTimeRangeAsync(
-                chatId,
-                classified.OriginalQuestion,
-                classified.TemporalRef!,
-                ct),
+                // Personal question about someone else
+                QueryIntent.PersonalOther when classified.MentionedPeople.Count > 0 => await SearchPersonalWithHybridAsync(
+                    chatId,
+                    classified.MentionedPeople[0],
+                    null,
+                    classified.OriginalQuestion,
+                    GetDaysFromTemporal(classified),
+                    ct),
 
-            // Comparison between entities
-            QueryIntent.Comparison when classified.Entities.Count >= 2 => await SearchComparisonAsync(
-                chatId,
-                classified.Entities,
-                classified.OriginalQuestion,
-                ct),
+                // Time-bound question
+                QueryIntent.Temporal when classified.HasTemporal => await SearchWithTimeRangeAsync(
+                    chatId,
+                    classified.OriginalQuestion,
+                    classified.TemporalRef!,
+                    ct),
 
-            // Multi-entity question
-            QueryIntent.MultiEntity when classified.MentionedPeople.Count >= 2 => await SearchMultiEntityAsync(
-                chatId,
-                classified.MentionedPeople,
-                classified.OriginalQuestion,
-                ct),
+                // Comparison between entities
+                QueryIntent.Comparison when classified.Entities.Count >= 2 => await SearchComparisonAsync(
+                    chatId,
+                    classified.Entities,
+                    classified.OriginalQuestion,
+                    ct),
 
-            // Default: context-only search (HyDE handles Q→A semantic gap)
-            _ => await SearchContextOnlyAsync(chatId, classified.OriginalQuestion, ct)
-        };
+                // Multi-entity question
+                QueryIntent.MultiEntity when classified.MentionedPeople.Count >= 2 => await SearchMultiEntityAsync(
+                    chatId,
+                    classified.MentionedPeople,
+                    classified.OriginalQuestion,
+                    ct),
+
+                // Default: context-only search (HyDE handles Q→A semantic gap)
+                _ => await SearchContextOnlyAsync(chatId, classified.OriginalQuestion, ct)
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            // Propagate cancellation properly - don't treat as error
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "[SearchStrategy] Failed for intent {Intent}, query: {Query}",
+                classified.Intent, classified.OriginalQuestion);
+
+            return new SearchResponse
+            {
+                Confidence = SearchConfidence.None,
+                ConfidenceReason = "Search failed due to internal error"
+            };
+        }
     }
 
     /// <summary>
@@ -452,16 +471,7 @@ public class SearchStrategyService(
         // Deduplicate by message_id, keeping best similarity
         var mergedResults = DeduplicateByMessageId(allResults);
 
-        // Step 4: Cross-encoder reranking (if configured)
-        // This dramatically improves question→answer matching that bi-encoders miss
-        if (cohereReranker.IsConfigured && mergedResults.Count > 0)
-        {
-            var beforeRerank = sw.ElapsedMilliseconds;
-            mergedResults = await cohereReranker.RerankAsync(query, mergedResults, topN: 15, ct);
-            logger.LogInformation(
-                "[HybridPersonal] Reranked {Count} results in {Ms}ms",
-                mergedResults.Count, sw.ElapsedMilliseconds - beforeRerank);
-        }
+        // Note: Cohere reranking already done in RagFusionService, no need to rerank again
 
         sw.Stop();
 
@@ -568,16 +578,7 @@ public class SearchStrategyService(
         // Merge: context windows + fusion results, deduplicate by message_id
         var allResults = DeduplicateByMessageId(contextSearchResults.Concat(fusionSearchResults));
 
-        // Step 3: Cross-encoder reranking (if configured)
-        // This dramatically improves question→answer matching that bi-encoders miss
-        if (cohereReranker.IsConfigured && allResults.Count > 0)
-        {
-            var beforeRerank = sw.ElapsedMilliseconds;
-            allResults = await cohereReranker.RerankAsync(query, allResults, topN: 15, ct);
-            logger.LogInformation(
-                "[RAG+Context] Reranked {Count} results in {Ms}ms",
-                allResults.Count, sw.ElapsedMilliseconds - beforeRerank);
-        }
+        // Note: Cohere reranking already done in RagFusionService, no need to rerank again
 
         sw.Stop();
 

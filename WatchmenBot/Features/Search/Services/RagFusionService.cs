@@ -7,12 +7,10 @@ namespace WatchmenBot.Features.Search.Services;
 /// Simplified RAG Fusion service: Keyword + Vector search with RRF fusion and Reranking.
 ///
 /// Pipeline:
-/// Query → Keyword Search (GIN) ─────────────┐
-///       → Vector Search (original)          │
-///       → Vector Search (structural vars)   ├─→ RRF Fusion → Reranker → Top-N
-///       → Vector Search (entity vars)       │
+/// Query → Keyword Search (GIN) ─┬─→ RRF Fusion → Reranker → Top-N
+///       → Vector Search         ─┘
 ///
-/// No LLM calls for variations (faster, no hallucinations).
+/// No query variations — single vector search + keyword search.
 /// Cross-encoder reranker provides final relevance scoring.
 /// </summary>
 public partial class RagFusionService(
@@ -29,12 +27,13 @@ public partial class RagFusionService(
     private const int RerankerTopN = 100;
 
     /// <summary>
-    /// Search with simplified RAG Fusion: structural variations + keyword search + reranking.
+    /// Search with RAG Fusion: vector search + keyword search + reranking.
+    /// No query variations — single embedding for better performance.
     /// </summary>
     public async Task<RagFusionResponse> SearchWithFusionAsync(
         long chatId,
         string query,
-        int variationCount = 3,
+        int variationCount = 3, // Kept for API compatibility, ignored
         int resultsPerQuery = ResultsPerQuery,
         CancellationToken ct = default)
     {
@@ -43,62 +42,47 @@ public partial class RagFusionService(
 
         try
         {
-            // Step 1: Generate structural variations (NO LLM - just patterns)
-            var variations = GenerateStructuralVariations(query);
-            response.QueryVariations = variations;
+            // No variations — just the original query
+            response.QueryVariations = [];
 
-            logger.LogInformation("[RAG Fusion] Generated {Count} structural variations for: {Query}",
-                variations.Count, TruncateForLog(query, 50));
-
-            // Step 2: Build all queries for embedding
-            var allQueries = new List<string> { query };
-            allQueries.AddRange(variations);
-
-            // Step 3: Get embeddings in batch
+            // Step 1: Get single embedding for query
             var embeddingsSw = System.Diagnostics.Stopwatch.StartNew();
-            var allEmbeddings = await embeddingService.GetBatchEmbeddingsAsync(allQueries, ct);
+            var embeddings = await embeddingService.GetBatchEmbeddingsAsync([query], ct);
             embeddingsSw.Stop();
 
-            logger.LogInformation("[RAG Fusion] Batch embeddings: {Count} queries in {Ms}ms",
-                allQueries.Count, embeddingsSw.ElapsedMilliseconds);
-
-            if (allEmbeddings.Count != allQueries.Count)
+            if (embeddings.Count == 0)
             {
-                logger.LogWarning("[RAG Fusion] Embedding count mismatch: expected {Expected}, got {Actual}",
-                    allQueries.Count, allEmbeddings.Count);
+                logger.LogWarning("[RAG Fusion] Failed to get embedding for query");
                 return CreateEmptyResponse(response, sw, "Embedding generation failed");
             }
 
-            // Step 4: Parallel search - Vector + Keyword
+            var queryEmbedding = embeddings[0];
+            logger.LogInformation("[RAG Fusion] Embedding in {Ms}ms for: {Query}",
+                embeddingsSw.ElapsedMilliseconds, TruncateForLog(query, 50));
+
+            // Step 2: Parallel search - Vector + Keyword
             var searchSw = System.Diagnostics.Stopwatch.StartNew();
 
-            // 4.1: Vector searches in parallel
-            var vectorResults = new List<SearchResult>[allQueries.Count];
-            var vectorTasks = allQueries.Select((q, i) => Task.Run(async () =>
-            {
-                try
-                {
-                    vectorResults[i] = await embeddingService.SearchByVectorAsync(
-                        chatId, allEmbeddings[i], resultsPerQuery, ct, queryText: q);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "[RAG Fusion] Vector search {Index} failed", i);
-                    vectorResults[i] = [];
-                }
-            }, ct));
+            // 2.1: Vector search
+            var vectorTask = embeddingService.SearchByVectorAsync(
+                chatId, queryEmbedding, resultsPerQuery, ct, queryText: query);
 
-            // 4.2: Keyword search (extracts significant words from query)
+            // 2.2: Keyword search
             var keywordTask = Task.Run(async () =>
             {
-                var keywords = ExtractKeywords(query, variations);
+                var keywords = ExtractKeywords(query);
                 if (string.IsNullOrEmpty(keywords))
                     return new List<SearchResult>();
 
                 try
                 {
                     return await embeddingService.HybridSearchAsync(
-                        chatId, allEmbeddings[0], keywords, resultsPerQuery * 2, ct);
+                        chatId, queryEmbedding, keywords, resultsPerQuery * 2, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Propagate cancellation - don't swallow
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -107,19 +91,19 @@ public partial class RagFusionService(
                 }
             }, ct);
 
-            await Task.WhenAll(vectorTasks.Concat([keywordTask]));
+            await Task.WhenAll(vectorTask, keywordTask);
+
+            var vectorResults = await vectorTask;
             var keywordResults = await keywordTask;
 
             searchSw.Stop();
 
-            // Log search results
-            var vectorTotalResults = vectorResults.Sum(r => r?.Count ?? 0);
             logger.LogInformation(
-                "[RAG Fusion] Search completed in {Ms}ms: vector={VectorCount} from {Queries} queries, keyword={KeywordCount}",
-                searchSw.ElapsedMilliseconds, vectorTotalResults, allQueries.Count, keywordResults.Count);
+                "[RAG Fusion] Search completed in {Ms}ms: vector={VectorCount}, keyword={KeywordCount}",
+                searchSw.ElapsedMilliseconds, vectorResults.Count, keywordResults.Count);
 
-            // Step 5: RRF Fusion
-            var allResultsForFusion = vectorResults.ToList();
+            // Step 3: RRF Fusion (merge vector + keyword results)
+            var allResultsForFusion = new List<List<SearchResult>> { vectorResults };
             if (keywordResults.Count > 0)
             {
                 allResultsForFusion.Add(keywordResults);
@@ -192,8 +176,9 @@ public partial class RagFusionService(
                 }
                 else
                 {
+                    // queryCount = 2 (vector + keyword search)
                     (response.Confidence, response.ConfidenceReason) = EvaluateFusionConfidence(
-                        bestScore, response.Results.Count, allQueries.Count);
+                        bestScore, response.Results.Count, queryCount: 2);
                 }
             }
             else
@@ -212,6 +197,11 @@ public partial class RagFusionService(
 
             return response;
         }
+        catch (OperationCanceledException)
+        {
+            // Propagate cancellation properly - don't treat as error
+            throw;
+        }
         catch (Exception ex)
         {
             sw.Stop();
@@ -221,37 +211,10 @@ public partial class RagFusionService(
     }
 
     /// <summary>
-    /// Generate structural variations without LLM.
-    /// Uses keyword extraction and word reordering patterns.
-    /// </summary>
-    private static List<string> GenerateStructuralVariations(string query)
-    {
-        var variations = new List<string>();
-        var normalized = query.ToLowerInvariant().Trim();
-
-        // Extract significant words and create variations
-        var words = ExtractSignificantWords(normalized);
-
-        if (words.Count >= 1)
-        {
-            // Pattern: just the main keyword(s)
-            variations.Add(string.Join(" ", words.Take(2)));
-
-            // Pattern: reversed order
-            if (words.Count >= 2)
-            {
-                variations.Add(string.Join(" ", words.Take(2).Reverse()));
-            }
-        }
-
-        return variations.Distinct().Take(10).ToList(); // Limit to avoid too many queries
-    }
-
-    /// <summary>
     /// Extract keywords for hybrid search from query.
     /// Returns OR query for PostgreSQL tsquery.
     /// </summary>
-    private static string ExtractKeywords(string query, List<string> variations)
+    private static string ExtractKeywords(string query)
     {
         var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -261,48 +224,16 @@ public partial class RagFusionService(
             "был", "была", "было", "были", "есть", "будет", "может", "нужно", "надо"
         };
 
-        var allWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        // Extract from query
-        var queryWords = Regex.Matches(query.ToLowerInvariant(), @"[\p{L}]+")
-            .Select(m => m.Value)
-            .Where(w => w.Length >= 3 && !stopWords.Contains(w));
-
-        foreach (var word in queryWords)
-            allWords.Add(word);
-
-        // Extract from variations
-        foreach (var variation in variations)
-        {
-            var varWords = Regex.Matches(variation.ToLowerInvariant(), @"[\p{L}]+")
-                .Select(m => m.Value)
-                .Where(w => w.Length >= 3 && !stopWords.Contains(w));
-
-            foreach (var word in varWords)
-                allWords.Add(word);
-        }
-
-        if (allWords.Count == 0)
-            return "";
-
-        return string.Join(" | ", allWords);
-    }
-
-    /// <summary>
-    /// Extract significant words from query (filter stop words).
-    /// </summary>
-    private static List<string> ExtractSignificantWords(string text)
-    {
-        var stopWords = new HashSet<string>
-        {
-            "а", "и", "в", "на", "с", "к", "о", "у", "кто", "что", "как", "где", "когда",
-            "не", "это", "за", "из", "по", "до", "от", "для", "же", "ли", "бы"
-        };
-
-        return Regex.Matches(text, @"[\p{L}]+")
+        var words = Regex.Matches(query.ToLowerInvariant(), @"[\p{L}]+")
             .Select(m => m.Value)
             .Where(w => w.Length >= 3 && !stopWords.Contains(w))
+            .Distinct()
             .ToList();
+
+        if (words.Count == 0)
+            return "";
+
+        return string.Join(" | ", words);
     }
 
     /// <summary>

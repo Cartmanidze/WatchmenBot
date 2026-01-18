@@ -35,9 +35,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - `ParticipantCache` — кеш имён участников чата
     - `GetParticipantNamesAsync()` — загрузка имён для вариаций
     - `CleanupExpiredCacheEntries()` — очистка кеша
-  - **Результат**: RAG Fusion теперь использует только keyword search + структурные вариации (перестановка слов), что даёт более релевантные результаты
+  - **Результат**: RAG Fusion упрощён до keyword search, без вариаций имён
+
+- **Structural variations в RAG Fusion** — удалена логика перестановки слов запроса:
+  - **Что удалено** из `RagFusionService`:
+    - `GenerateStructuralVariations()` — генерация перестановок слов (напр. "что делает кот" → "кот делает что")
+    - Параметр `variations` из `ExtractKeywords()` — больше не нужен
+    - Batch-получение эмбеддингов для вариаций — теперь только 1 embedding для оригинального запроса
+  - **Результат**: Упрощённый pipeline: Query → Vector + Keyword Search → RRF → Reranker
+
+- **Второй Cohere reranking** — удалён избыточный reranking в `SearchStrategyService`:
+  - **Проблема**: Reranking выполнялся дважды — в `RagFusionService` и повторно в `SearchStrategyService`
+  - **Что удалено**:
+    - Reranking в `SearchPersonalWithHybridAsync()` (строка 460)
+    - Reranking в `SearchContextOnlyAsync()` (строка 576)
+  - **Результат**: Экономия ~200-500ms на запрос (1 API call к Cohere вместо 2-3)
 
 ### Fixed
+
+- **Обработка исключений в Search pipeline** — исправлены silent failures и неправильная обработка отмены:
+  - **Проблема**: `OperationCanceledException` ловилась и маскировалась как ошибка поиска
+  - **Исправлено в `SearchStrategyService`**:
+    - Добавлен try-catch в `SearchWithIntentAsync()` — точка входа для всех поисков
+    - `OperationCanceledException` теперь пробрасывается корректно (rethrow)
+    - Остальные ошибки логируются на уровне Error и возвращают graceful response
+  - **Исправлено в `RagFusionService`**:
+    - Keyword search больше не глотает `OperationCanceledException`
+    - Outer catch также пробрасывает cancellation
+  - **Результат**: Корректная отмена запросов без маскирования под ошибки
 
 - **Поиск по уменьшительным именам (решение B+C)** — исправлена критическая проблема когда поиск `/ask "какое любимое сми у жеки?"` не находил сообщение "у жеки 3 любимых сми":
   - **Проблема**: LLM IntentClassifier нормализует имена ("жеки" → "Женя"), но SQL ILIKE использует только нормализованную форму — `%Женя%` не находит "жеки"
