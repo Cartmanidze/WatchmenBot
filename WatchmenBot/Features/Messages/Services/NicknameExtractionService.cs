@@ -24,19 +24,57 @@ public partial class NicknameExtractionService(
         "ты", "вы", "он", "она", "они", "мы", "я",
         "это", "то", "что", "как", "так", "вот", "там", "тут", "где",
         "ещё", "еще", "уже", "тоже", "также", "потом", "сейчас", "завтра", "вчера",
-        "блин", "черт", "чёрт", "бля", "нах",
         "все", "всё", "кто", "чего", "зачем", "почему", "когда",
+        "вон", "вроде", "типа", "короче", "ладно", "давай", "пока", "привет",
+
+        // Russian swear words / exclamations (мат и экспрессивная лексика)
+        "блин", "черт", "чёрт", "бля", "нах", "блять", "сука", "пиздец", "хуй",
+        "нахуй", "пздц", "ебать", "ёпт", "епт", "пиздос", "хуйня", "блядь",
+
+        // Common Russian verbs (часто встречающиеся глаголы)
+        "смотри", "смотрите", "слушай", "слушайте", "погоди", "подожди",
+        "иди", "идите", "давайте", "держи", "держите", "возьми", "возьмите",
+        "скажи", "скажите", "расскажи", "покажи", "глянь", "гляньте",
+        "стой", "стоп", "хватит", "прекрати", "заткнись", "молчи",
+        "читай", "читайте", "пиши", "пишите", "думай", "думайте",
+
+        // Common Russian nouns and adjectives
+        "много", "мало", "больше", "меньше", "лучше", "хуже",
+        "хорошо", "плохо", "отлично", "класс", "супер", "круто", "клёво",
+        "правда", "неправда", "ложь", "факт", "бред", "чушь", "фигня",
+        "время", "день", "ночь", "утро", "вечер", "сегодня",
+        "чел", "челик", "чувак", "мужик", "бро", "братан", "друг",
+        "девочка", "мальчик", "парень", "девушка", "человек", "люди",
+
         // English
         "ok", "no", "yes", "hey", "hi", "yo", "lol", "omg", "wtf", "bruh",
         "the", "a", "an", "is", "are", "was", "were", "be", "been",
         "you", "me", "he", "she", "it", "we", "they",
         "what", "why", "how", "when", "where", "who",
+        "look", "listen", "wait", "stop", "come", "go", "see",
+        "nice", "cool", "good", "bad", "great", "awesome",
+
         // Common chat expressions
         "хаха", "хах", "лол", "кек", "ржу", "пон", "ясн", "оке", "окей", "окс",
-        "норм", "збс", "ору", "жиза", "база", "кринж", "имба", "рил", "факт",
-        // Short affirmatives
-        "не", "но", "аа", "оо", "ээ", "мм"
+        "норм", "збс", "ору", "жиза", "база", "кринж", "имба", "рил",
+        "прикол", "угар", "жесть", "капец", "ппц", "офигеть", "охренеть",
+        "сорян", "сори", "сорри", "извини", "извините", "простите",
+        "спасибо", "спс", "благодарю", "пасиб", "сенкс", "thanks",
+        "пожалуйста", "пжлст", "плиз", "please",
+
+        // Short affirmatives and fillers
+        "не", "но", "аа", "оо", "ээ", "мм", "ммм", "ааа", "эээ",
+        "ну-ка", "так-так", "ого", "вау", "воу", "упс", "опа"
     };
+
+    /// <summary>
+    /// Common verb endings to detect verbs in Russian (глагольные окончания).
+    /// </summary>
+    private static readonly string[] RussianVerbEndings =
+    [
+        "ть", "ться", "тся", "ите", "йте", "ишь", "ешь", "ёшь",
+        "ай", "уй", "ей", "ой" // imperative endings
+    ];
 
     /// <summary>
     /// Extract nickname from a reply message and associate with the reply target user.
@@ -166,6 +204,16 @@ public partial class NicknameExtractionService(
 
         // Should not be all uppercase (likely shouting, not addressing)
         if (nickname.Length > 3 && nickname.All(c => !char.IsLetter(c) || char.IsUpper(c)))
+            return false;
+
+        // Reject words that look like Russian verbs (end with verb suffixes)
+        var lowerNick = nickname.ToLowerInvariant();
+        if (RussianVerbEndings.Any(ending => lowerNick.EndsWith(ending) && lowerNick.Length > ending.Length + 2))
+            return false;
+
+        // Reject if it looks like a common adjective/adverb ending
+        if (lowerNick.EndsWith("но") || lowerNick.EndsWith("ло") ||
+            lowerNick.EndsWith("ко") || lowerNick.EndsWith("во"))
             return false;
 
         return true;
