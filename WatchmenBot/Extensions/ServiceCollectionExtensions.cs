@@ -22,6 +22,7 @@ using WatchmenBot.Infrastructure.Queue;
 using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Webhook.Services;
+using WatchmenBot.Features.Webhook.Jobs;
 using WatchmenBot.Features.Indexing.Services;
 using WatchmenBot.Features.Llm.Services;
 using WatchmenBot.Features.Memory.Services;
@@ -62,7 +63,8 @@ public static class ServiceCollectionExtensions
 
         // Health checks
         services.AddHealthChecks()
-            .AddCheck<DatabaseHealthCheck>("postgresql");
+            .AddCheck<DatabaseHealthCheck>("postgresql")
+            .AddCheck<TelegramWebhookHealthCheck>("telegram-webhook");
 
         // LLM Router with multiple providers
         services.AddSingleton<LlmProviderFactory>();
@@ -296,12 +298,18 @@ public static class ServiceCollectionExtensions
         // Hangfire for background job processing (replaces custom workers)
         services.AddHangfireServices(configuration);
 
+        // Hangfire Jobs (instantiated by Hangfire, need DI registration)
+        services.AddScoped<WebhookWatchdogJob>();
+
         // Processing Services (core logic, used by Hangfire jobs)
         services.AddScoped<SummaryProcessingService>();
         services.AddScoped<TruthProcessingService>();
 
         // Queue metrics (kept for admin dashboard)
         services.AddSingleton<QueueMetrics>();
+
+        // Telegram Webhook Service (centralized webhook management)
+        services.AddSingleton<TelegramWebhookService>();
 
         // Background Services
         services.AddHostedService<DailySummaryService>();

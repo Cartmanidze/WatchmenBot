@@ -1,5 +1,6 @@
 using Hangfire;
 using Hangfire.PostgreSql;
+using WatchmenBot.Features.Webhook.Jobs;
 
 namespace WatchmenBot.Infrastructure.Hangfire;
 
@@ -73,6 +74,27 @@ public static class HangfireExtensions
 
         app.UseHangfireDashboard(dashboardPath, dashboardOptions);
 
+        // Register recurring jobs
+        RegisterRecurringJobs();
+
         return app;
+    }
+
+    /// <summary>
+    /// Register all Hangfire recurring jobs.
+    /// </summary>
+    private static void RegisterRecurringJobs()
+    {
+        // Webhook Watchdog: Check every 5 minutes, auto-recover if webhook is broken
+        RecurringJob.AddOrUpdate<WebhookWatchdogJob>(
+            recurringJobId: "webhook-watchdog",
+            queue: "critical", // Fast execution priority
+            methodCall: job => job.ExecuteAsync(),
+            cronExpression: "*/5 * * * *", // Every 5 minutes
+            options: new RecurringJobOptions
+            {
+                TimeZone = TimeZoneInfo.Utc,
+                MisfireHandling = MisfireHandlingMode.Ignorable // Skip if missed, will run next interval
+            });
     }
 }

@@ -13,9 +13,13 @@ namespace WatchmenBot.Features.Webhook.Services;
 /// <summary>
 /// Polling service for local development (instead of webhooks).
 /// Enable by setting Telegram:UsePolling = true in appsettings.
+///
+/// IMPORTANT: Polling mode deletes the webhook! Do NOT use with production bot token
+/// unless you want to break the production deployment.
 /// </summary>
 public class TelegramPollingService(
     ITelegramBotClient bot,
+    TelegramWebhookService webhookService,
     IServiceProvider serviceProvider,
     LogCollector logCollector,
     ILogger<TelegramPollingService> logger,
@@ -31,15 +35,25 @@ public class TelegramPollingService(
         if (!usePolling)
         {
             // Webhook mode - ensure webhook is registered on startup
-            await EnsureWebhookRegisteredAsync(stoppingToken);
+            var registered = await webhookService.EnsureRegisteredAsync(stoppingToken);
+            if (registered)
+            {
+                var status = await webhookService.GetStatusAsync(stoppingToken);
+                if (status.PendingUpdateCount > 0)
+                    logger.LogInformation("[Telegram] Pending updates in queue: {Count}", status.PendingUpdateCount);
+            }
             logger.LogInformation("[Telegram] Polling DISABLED - using webhooks mode");
             return;
         }
 
         logger.LogInformation("[Telegram] Starting polling mode...");
 
-        // Delete webhook if exists (polling and webhook can't work together)
-        await bot.DeleteWebhook(cancellationToken: stoppingToken);
+        // Protected delete - will warn/block if production URL detected
+        var deleted = await webhookService.DeleteAsync(force: false, stoppingToken);
+        if (!deleted)
+        {
+            logger.LogError("[Telegram] Failed to delete webhook. Polling mode may conflict with production!");
+        }
 
         var me = await bot.GetMe(stoppingToken);
         logger.LogInformation("[Telegram] Bot ONLINE: @{Username} (ID: {Id})", me.Username, me.Id);
@@ -340,65 +354,4 @@ public class TelegramPollingService(
         }
     }
 
-    private async Task EnsureWebhookRegisteredAsync(CancellationToken ct)
-    {
-        var webhookUrl = configuration["Telegram:WebhookUrl"];
-        var secretToken = configuration["Telegram:WebhookSecret"];
-
-        if (string.IsNullOrWhiteSpace(webhookUrl))
-        {
-            logger.LogWarning("[Telegram] WebhookUrl not configured - webhook will not be registered");
-            return;
-        }
-
-        try
-        {
-            // Check current webhook status
-            var webhookInfo = await bot.GetWebhookInfo(ct);
-
-            // Log current state
-            if (webhookInfo.PendingUpdateCount > 0)
-            {
-                logger.LogInformation("[Telegram] Pending updates in queue: {Count}", webhookInfo.PendingUpdateCount);
-            }
-
-            if (!string.IsNullOrEmpty(webhookInfo.LastErrorMessage))
-            {
-                logger.LogWarning("[Telegram] Last webhook error: {Error} at {Date}",
-                    webhookInfo.LastErrorMessage, webhookInfo.LastErrorDate);
-            }
-
-            // ALWAYS re-register webhook on startup to ensure it's active
-            // Telegram may deactivate webhook after repeated errors (502, timeouts, etc.)
-            // Even if URL matches, the webhook might be in a broken state
-            if (webhookInfo.Url == webhookUrl && string.IsNullOrEmpty(webhookInfo.LastErrorMessage))
-            {
-                logger.LogInformation("[Telegram] Webhook already configured and healthy: {Url}", webhookUrl);
-            }
-            else
-            {
-                var reason = string.IsNullOrEmpty(webhookInfo.Url)
-                    ? "not set"
-                    : webhookInfo.Url != webhookUrl
-                        ? $"URL mismatch (current: {webhookInfo.Url})"
-                        : "recent errors detected";
-
-                logger.LogWarning("[Telegram] Re-registering webhook ({Reason})...", reason);
-            }
-
-            // Always set webhook to ensure it's active
-            await bot.SetWebhook(
-                url: webhookUrl,
-                allowedUpdates: [UpdateType.Message],
-                secretToken: string.IsNullOrWhiteSpace(secretToken) ? null : secretToken,
-                maxConnections: 40,
-                cancellationToken: ct);
-
-            logger.LogInformation("[Telegram] Webhook registered successfully: {Url}", webhookUrl);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Telegram] Failed to register webhook - bot may not receive messages!");
-        }
-    }
 }

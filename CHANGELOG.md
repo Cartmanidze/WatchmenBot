@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2026-01-21]
+
+### Added
+
+- **Webhook Watchdog** — автоматическое восстановление Telegram webhook:
+  - `WebhookWatchdogJob` — Hangfire recurring job каждые 5 минут проверяет статус webhook
+  - Автоматическая перерегистрация если webhook сброшен (URL пустой или изменился)
+  - Детектирует накопление pending updates (предупреждение при 100+, критическое при 500+)
+  - Уведомляет админа при обнаружении и исправлении проблем
+  - **Причина добавления**: Telegram может автоматически сбросить webhook после множественных ошибок 5xx
+
+- **Telegram Webhook Health Check** — мониторинг через `/health` endpoint:
+  - `TelegramWebhookHealthCheck` — ASP.NET Core Health Check для webhook
+  - Статусы: Healthy (всё OK), Degraded (есть ошибки/много pending), Unhealthy (URL пустой/критическое количество pending)
+  - Возвращает детальную информацию: URL, pending updates, last error, IP address
+
 ## [2026-01-18]
 
 ### Improved
