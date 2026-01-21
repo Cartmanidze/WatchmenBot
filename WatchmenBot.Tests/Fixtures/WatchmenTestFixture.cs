@@ -106,7 +106,6 @@ public class WatchmenTestFixture : IAsyncLifetime
                 string.Empty,
                 string.Empty,
                 0,
-                EmbeddingProvider.OpenAI,
                 NullLogger<EmbeddingClient>.Instance));
         }
 

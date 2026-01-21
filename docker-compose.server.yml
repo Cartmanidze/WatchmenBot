@@ -48,11 +48,11 @@ services:
       Llm__Providers__1__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__2__ApiKey: ${OPENROUTER_API_KEY}
       Llm__Providers__3__ApiKey: ${OPENROUTER_API_KEY}
-      # Embeddings (Jina AI - multilingual, task-specific)
-      Embeddings__Provider: ${EMBEDDINGS_PROVIDER:-jina}
+      # Embeddings (OpenRouter with OpenAI text-embedding-3-small)
+      Embeddings__Provider: openai
       Embeddings__ApiKey: ${EMBEDDINGS_API_KEY}
-      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://api.jina.ai/v1}
-      Embeddings__Model: ${EMBEDDINGS_MODEL:-jina-embeddings-v3}
+      Embeddings__BaseUrl: ${EMBEDDINGS_BASE_URL:-https://openrouter.ai/api/v1}
+      Embeddings__Model: ${EMBEDDINGS_MODEL:-openai/text-embedding-3-small}
       Embeddings__Dimensions: ${EMBEDDINGS_DIMENSIONS:-1024}
       DailySummary__TimeOfDay: ${DAILY_SUMMARY_TIME:-21:00}
       Admin__UserId: ${ADMIN_USER_ID}

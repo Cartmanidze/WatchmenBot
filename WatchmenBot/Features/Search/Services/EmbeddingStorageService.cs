@@ -31,7 +31,7 @@ public class EmbeddingStorageService(
             return false;
 
         var text = FormatMessageForEmbedding(message);
-        var embedding = await embeddingClient.GetEmbeddingAsync(text, EmbeddingTask.RetrievalPassage, ct);
+        var embedding = await embeddingClient.GetEmbeddingAsync(text, ct);
 
         if (embedding.Length == 0)
         {
@@ -88,13 +88,7 @@ public class EmbeddingStorageService(
 
             var texts = groups.Select(g => FormatGroupForEmbedding(g)).ToList();
 
-            // Use late chunking for better cross-chunk context preservation (Jina AI feature)
-            // Each text gets an embedding that "knows" about surrounding texts
-            var embeddings = await embeddingClient.GetEmbeddingsAsync(
-                texts,
-                EmbeddingTask.RetrievalPassage,
-                lateChunking: true,
-                ct);
+            var embeddings = await embeddingClient.GetEmbeddingsAsync(texts, ct);
 
             // Prepare batch data
             var batchData = new List<(long ChatId, long MessageId, int ChunkIndex, string ChunkText, float[] Embedding, string MetadataJson)>();

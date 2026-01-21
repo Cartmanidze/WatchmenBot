@@ -122,7 +122,7 @@ public class EmbeddingService(
                 return [];
             }
 
-            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, EmbeddingTask.RetrievalQuery, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
                 logger.LogWarning("[Search] Failed to get embedding for query: {Query}", query);
@@ -156,7 +156,7 @@ public class EmbeddingService(
     {
         try
         {
-            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, EmbeddingTask.RetrievalQuery, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
                 return [];
 
@@ -564,7 +564,7 @@ public class EmbeddingService(
         IEnumerable<string> queries,
         CancellationToken ct = default)
     {
-        return embeddingClient.GetEmbeddingsAsync(queries, EmbeddingTask.RetrievalQuery, ct);
+        return embeddingClient.GetEmbeddingsAsync(queries, ct);
     }
 
     #endregion

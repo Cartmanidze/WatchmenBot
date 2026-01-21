@@ -83,21 +83,12 @@ public class TestConfiguration : IDisposable
         if (!HasOpenAiKey)
             throw new InvalidOperationException("Embeddings API key not configured");
 
-        var providerStr = Configuration["Embeddings:Provider"] ?? "jina";
-        var provider = providerStr.ToLowerInvariant() switch
-        {
-            "jina" => EmbeddingProvider.Jina,
-            "huggingface" or "hf" => EmbeddingProvider.HuggingFace,
-            _ => EmbeddingProvider.OpenAI
-        };
-
         return new EmbeddingClient(
             _httpClient,
             OpenAiApiKey!,
             Configuration["Embeddings:BaseUrl"] ?? string.Empty,
             Configuration["Embeddings:Model"] ?? string.Empty,
             Configuration.GetValue<int>("Embeddings:Dimensions", 0),
-            provider,
             NullLogger<EmbeddingClient>.Instance);
     }
 

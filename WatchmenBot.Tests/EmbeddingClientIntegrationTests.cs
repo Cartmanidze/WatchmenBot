@@ -13,7 +13,6 @@ public class EmbeddingClientIntegrationTests
     public EmbeddingClientIntegrationTests(TestConfiguration config)
     {
         _config = config;
-        // Read expected dimensions from config (1024 for Jina, 1536 for OpenAI)
         _expectedDimensions = config.Configuration.GetValue("Embeddings:Dimensions", 1024);
     }
 

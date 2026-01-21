@@ -71,15 +71,10 @@ public class ContextEmbeddingService(
             logger.LogInformation("[ContextEmb] Processing {NewCount} new windows (skipping {ExistingCount} existing)",
                 newWindows.Count, windows.Count - newWindows.Count);
 
-            // Batch processing with late chunking for better context preservation
+            // Batch processing
             var windowTexts = newWindows.Select(FormatWindowForEmbedding).ToList();
 
-            // Use late chunking to preserve cross-window context (Jina AI feature)
-            var embeddings = await embeddingClient.GetEmbeddingsAsync(
-                windowTexts,
-                EmbeddingTask.RetrievalPassage,
-                lateChunking: true,
-                ct);
+            var embeddings = await embeddingClient.GetEmbeddingsAsync(windowTexts, ct);
 
             // Store all embeddings
             var processedCount = 0;
@@ -137,7 +132,7 @@ public class ContextEmbeddingService(
                 return [];
             }
 
-            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, EmbeddingTask.RetrievalQuery, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
                 logger.LogWarning("[ContextEmb] Failed to get embedding for query: {Query}", query);
@@ -210,7 +205,7 @@ public class ContextEmbeddingService(
         {
             using var connection = await connectionFactory.CreateConnectionAsync();
 
-            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, EmbeddingTask.RetrievalQuery, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
                 logger.LogWarning("[ContextEmb] Failed to get embedding for query: {Query}", query);

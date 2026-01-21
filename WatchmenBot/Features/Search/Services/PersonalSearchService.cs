@@ -287,7 +287,7 @@ public class PersonalSearchService(
 
         try
         {
-            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, EmbeddingTask.RetrievalQuery, ct);
+            var queryEmbedding = await embeddingClient.GetEmbeddingAsync(query, ct);
             if (queryEmbedding.Length == 0)
             {
                 logger.LogWarning("[Personal] Failed to get embedding for query: {Query}", query);

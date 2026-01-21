@@ -40,11 +40,7 @@ public class QuestionGenerationJob(
             }
 
             // Get embeddings for all questions at once
-            var embeddings = await embeddingClient.GetEmbeddingsAsync(
-                questions,
-                EmbeddingTask.RetrievalQuery, // Questions use query mode
-                lateChunking: false,
-                ct);
+            var embeddings = await embeddingClient.GetEmbeddingsAsync(questions, ct);
 
             // Store each question embedding
             var storedCount = 0;

@@ -110,20 +110,18 @@ public static class ServiceCollectionExtensions
             return router;
         });
 
-        // Embedding Client (OpenAI or HuggingFace)
+        // Embedding Client (OpenAI-compatible API via OpenRouter)
         services.AddHttpClient<EmbeddingClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
-                AutomaticDecompression = System.Net.DecompressionMethods.GZip |
-                                       System.Net.DecompressionMethods.Deflate,
-                // Aggressive connection refresh to prevent stale connections with Jina API
-                PooledConnectionLifetime = TimeSpan.FromSeconds(30), // Refresh connections every 30s
-                PooledConnectionIdleTimeout = TimeSpan.FromSeconds(15), // Close idle connections after 15s
-                ConnectTimeout = TimeSpan.FromSeconds(10) // Fast fail on connection issues
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                ConnectTimeout = TimeSpan.FromSeconds(10)
             })
             .ConfigureHttpClient(client =>
             {
-                client.Timeout = TimeSpan.FromSeconds(120); // Longer timeout for HuggingFace cold starts
+                client.Timeout = TimeSpan.FromSeconds(60);
             })
             .AddTypedClient<EmbeddingClient>((httpClient, serviceProvider) =>
             {
@@ -131,16 +129,7 @@ public static class ServiceCollectionExtensions
                 var baseUrl = configuration["Embeddings:BaseUrl"] ?? string.Empty;
                 var model = configuration["Embeddings:Model"] ?? string.Empty;
                 var dimensions = configuration.GetValue("Embeddings:Dimensions", 0);
-                var providerStr = configuration["Embeddings:Provider"] ?? "openai";
                 var logger = serviceProvider.GetRequiredService<ILogger<EmbeddingClient>>();
-
-                // Parse provider
-                var provider = providerStr.ToLowerInvariant() switch
-                {
-                    "jina" => EmbeddingProvider.Jina,
-                    "huggingface" or "hf" => EmbeddingProvider.HuggingFace,
-                    _ => EmbeddingProvider.OpenAI
-                };
 
                 // Embeddings are optional - if no API key, RAG will be disabled
                 if (string.IsNullOrWhiteSpace(apiKey))
@@ -148,31 +137,21 @@ public static class ServiceCollectionExtensions
                     logger.LogWarning("Embeddings:ApiKey not configured. RAG features will be disabled.");
                 }
 
-                return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, provider, logger);
+                return new EmbeddingClient(httpClient, apiKey, baseUrl, model, dimensions, logger);
             })
-            // Polly Resilience: Concurrency Limiter + Timeout + Retry + Circuit Breaker
-            .AddResilienceHandler("jina-resilience", builder =>
+            // Polly Resilience: Timeout + Retry for transient errors
+            .AddResilienceHandler("embedding-resilience", builder =>
             {
-                // 1. Concurrency Limiter — Jina allows max 2 concurrent, but we use 1 for safety
-                // Multiple callers (batch, questions, individual) compete for slots,
-                // so limit to 1 to guarantee no 429 errors
-                builder.AddConcurrencyLimiter(new ConcurrencyLimiterOptions
-                {
-                    PermitLimit = 1, // Only 1 concurrent request to avoid 429
-                    QueueLimit = 200, // Larger queue since we're slower now
-                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                });
-
-                // 2. Per-attempt timeout — fail fast and retry instead of waiting
+                // Per-attempt timeout
                 builder.AddTimeout(TimeSpan.FromSeconds(30));
 
-                // 3. Retry with exponential backoff for transient errors and rate limiting
+                // Retry with exponential backoff for transient errors
                 builder.AddRetry(new HttpRetryStrategyOptions
                 {
-                    MaxRetryAttempts = 5, // More retries since we fail faster now
+                    MaxRetryAttempts = 3,
                     BackoffType = DelayBackoffType.Exponential,
-                    UseJitter = true, // Add randomness to prevent thundering herd
-                    Delay = TimeSpan.FromSeconds(3), // Start with 3s delay, give Jina time to recover
+                    UseJitter = true,
+                    Delay = TimeSpan.FromSeconds(1),
                     ShouldHandle = args => ValueTask.FromResult(
                         args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
                         args.Outcome.Result?.StatusCode == HttpStatusCode.RequestTimeout ||
@@ -181,23 +160,6 @@ public static class ServiceCollectionExtensions
                         args.Outcome.Result?.StatusCode == HttpStatusCode.GatewayTimeout ||
                         args.Outcome.Exception is HttpRequestException or TaskCanceledException or TimeoutRejectedException)
                 });
-
-                // 4. Circuit Breaker — DISABLED for now to let retry handle rate limiting
-                // The 429 errors are expected during high load, retry with backoff handles them
-                // Circuit breaker was opening too aggressively and blocking all requests
-                // TODO: Re-enable with better tuning once rate limiting is stable
-                /*
-                builder.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
-                {
-                    SamplingDuration = TimeSpan.FromSeconds(60),
-                    FailureRatio = 0.8,
-                    MinimumThroughput = 10,
-                    BreakDuration = TimeSpan.FromSeconds(15),
-                    ShouldHandle = args => ValueTask.FromResult(
-                        args.Outcome.Result?.StatusCode == HttpStatusCode.TooManyRequests ||
-                        args.Outcome.Result?.StatusCode == HttpStatusCode.ServiceUnavailable)
-                });
-                */
             });
 
         // Q→A Semantic Bridge (question generation for better search)

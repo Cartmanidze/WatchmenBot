@@ -86,11 +86,7 @@ public class TestDataSeeder
 
         // Then create embeddings
         using var connection = await _connectionFactory.CreateConnectionAsync();
-        var embeddings = await _embeddingClient.GetEmbeddingsAsync(
-            texts,
-            EmbeddingTask.RetrievalPassage,
-            false,
-            CancellationToken.None);
+        var embeddings = await _embeddingClient.GetEmbeddingsAsync(texts, CancellationToken.None);
 
         var metadataJson = JsonSerializer.Serialize(new { Username = username });
 
