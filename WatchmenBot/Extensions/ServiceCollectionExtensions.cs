@@ -1,5 +1,4 @@
 using System.Net;
-using System.Threading.RateLimiting;
 using Microsoft.Extensions.Http.Resilience;
 using Microsoft.OpenApi.Models;
 using Polly;
@@ -59,6 +58,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<NicknameExtractionService>();
         services.AddScoped<RelationshipService>();
         services.AddScoped<RelationshipExtractionService>();
+        services.AddSingleton<RepeatedMessageFilter>();
         services.AddHostedService<DatabaseInitializer>();
 
         // Health checks
@@ -237,6 +237,7 @@ public static class ServiceCollectionExtensions
         // Admin Services
         services.AddSingleton<LogCollector>();
         services.AddSingleton<AdminSettingsStore>();
+        services.AddScoped<BannedUserService>();
         services.AddSingleton<PromptSettingsStore>();
         services.AddSingleton<ChatSettingsStore>();
         services.AddSingleton<DebugService>();
@@ -333,6 +334,11 @@ public static class ServiceCollectionExtensions
             registry.Register<NamesCommand>("names");
             registry.Register<RenameCommand>("rename");
 
+            // Ban management commands
+            registry.Register<BanCommand>("ban");
+            registry.Register<UnbanCommand>("unban");
+            registry.Register<BanlistCommand>("banlist");
+
             // Embedding management commands
             registry.Register<ReindexCommand>("reindex");
             registry.Register<ContextCommand>("context");
@@ -364,6 +370,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<PromptTagCommand>();
         services.AddScoped<NamesCommand>();
         services.AddScoped<RenameCommand>();
+        services.AddScoped<BanCommand>();
+        services.AddScoped<UnbanCommand>();
+        services.AddScoped<BanlistCommand>();
         services.AddScoped<ReindexCommand>();
         services.AddScoped<ContextCommand>();
         services.AddScoped<ContextReindexCommand>();

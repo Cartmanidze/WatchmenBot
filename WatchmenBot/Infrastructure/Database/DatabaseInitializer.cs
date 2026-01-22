@@ -35,6 +35,7 @@ public class DatabaseInitializer(
             await CreateChatSettingsTableAsync(connection);
             await CreateUserAliasesTableAsync(connection);
             await CreateUserRelationshipsTableAsync(connection);
+            await CreateBannedUsersTableAsync(connection);
 
             // Create indexes
             await CreateIndexesAsync(connection);
@@ -706,6 +707,28 @@ public class DatabaseInitializer(
 
             CREATE INDEX IF NOT EXISTS idx_relationships_related_user
             ON user_relationships (chat_id, related_user_id) WHERE related_user_id IS NOT NULL AND is_active = TRUE;
+            """;
+
+        await connection.ExecuteAsync(createTableSql);
+    }
+
+    private static async Task CreateBannedUsersTableAsync(System.Data.IDbConnection connection)
+    {
+        const string createTableSql = """
+            CREATE TABLE IF NOT EXISTS banned_users (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL UNIQUE,
+                reason TEXT,
+                banned_by_user_id BIGINT NOT NULL,
+                banned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                unbanned_at TIMESTAMPTZ,
+                unbanned_by_user_id BIGINT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_banned_users_active
+            ON banned_users (user_id) WHERE is_active = TRUE;
             """;
 
         await connection.ExecuteAsync(createTableSql);

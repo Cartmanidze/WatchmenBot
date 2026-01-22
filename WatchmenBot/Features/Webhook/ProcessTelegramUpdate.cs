@@ -12,6 +12,7 @@ using WatchmenBot.Features.Summary;
 using WatchmenBot.Features.Summary.Jobs;
 using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Admin.Services;
+using WatchmenBot.Features.Messages.Services;
 
 namespace WatchmenBot.Features.Webhook;
 
@@ -72,6 +73,29 @@ public class ProcessTelegramUpdateHandler(
         try
         {
             using var scope = serviceProvider.CreateScope();
+
+            // Check if user is banned (global ban check)
+            var userId = message.From?.Id ?? 0;
+            if (userId > 0)
+            {
+                var bannedUserService = scope.ServiceProvider.GetRequiredService<BannedUserService>();
+                if (await bannedUserService.IsUserBannedAsync(userId, cancellationToken))
+                {
+                    logger.LogDebug("[Webhook] Ignoring banned user {UserId}", userId);
+                    return ProcessTelegramUpdateResponse.Success();
+                }
+            }
+
+            // Check for repeated messages in groups (anti-spam)
+            if (message.Chat.Type == ChatType.Group || message.Chat.Type == ChatType.Supergroup)
+            {
+                var repeatedFilter = scope.ServiceProvider.GetRequiredService<RepeatedMessageFilter>();
+                if (repeatedFilter.IsRepeated(message.Chat.Id, userId, message.Text))
+                {
+                    logger.LogDebug("[Webhook] Ignoring repeated message from {UserId} in {ChatId}", userId, message.Chat.Id);
+                    return ProcessTelegramUpdateResponse.Success();
+                }
+            }
 
             // Handle private messages (for admin commands, /smart, and /start)
             if (message.Chat.Type == ChatType.Private)

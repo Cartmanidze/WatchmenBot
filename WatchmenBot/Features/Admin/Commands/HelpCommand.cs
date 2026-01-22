@@ -44,6 +44,11 @@ public class HelpCommand(ITelegramBotClient bot, ILogger<HelpCommand> logger) : 
                             /admin names &lt;chat_id&gt; — список имён в чате
                             /admin rename &lt;chat_id&gt; "Старое" "Новое" — переименовать
 
+                            <b>🚫 Баны:</b>
+                            /admin ban &lt;user_id&gt; [reason] [duration] — забанить
+                            /admin unban &lt;user_id&gt; — разбанить
+                            /admin banlist — список забаненных
+
                             <b>🔄 Переиндексация эмбеддингов:</b>
                             /admin reindex &lt;chat_id&gt; — инфо + подтверждение
                             /admin reindex all confirm — пересоздать ВСЕ
