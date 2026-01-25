@@ -1,8 +1,7 @@
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using Telegram.Bot;
 using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
+using WatchmenBot.Extensions;
 using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Admin.Services;
 
@@ -12,9 +11,10 @@ namespace WatchmenBot.Features.Summary.Services;
 /// Core processing service for /summary command.
 /// Extracted from BackgroundSummaryWorker to enable direct testing and Hangfire integration.
 /// </summary>
-public partial class SummaryProcessingService(
+public class SummaryProcessingService(
     MessageStore messageStore,
     SmartSummaryService smartSummary,
+    ChatStatusService chatStatusService,
     LogCollector logCollector,
     ITelegramBotClient bot,
     ILogger<SummaryProcessingService> logger)
@@ -32,15 +32,37 @@ public partial class SummaryProcessingService(
         var nowUtc = DateTimeOffset.UtcNow;
         var startUtc = nowUtc.AddHours(-item.Hours);
 
+        // Send typing action (safe: deactivates chat on 403)
+        if (!await bot.TrySendChatActionAsync(chatStatusService, item.ChatId, Telegram.Bot.Types.Enums.ChatAction.Typing, logger, ct))
+        {
+            // Chat was deactivated - no point continuing
+            sw.Stop();
+            return new SummaryProcessingResult
+            {
+                Success = false,
+                MessageCount = 0,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds
+            };
+        }
+
         var messages = await messageStore.GetMessagesAsync(item.ChatId, startUtc, nowUtc);
 
         if (messages.Count == 0)
         {
-            await bot.SendMessage(
-                chatId: item.ChatId,
-                text: $"За последние {item.Hours} часов сообщений не найдено.",
-                replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
-                cancellationToken: ct);
+            try
+            {
+                await bot.SendMessageSafeAsync(
+                    chatStatusService,
+                    item.ChatId,
+                    $"За последние {item.Hours} часов сообщений не найдено.",
+                    logger,
+                    replyToMessageId: item.ReplyToMessageId,
+                    ct: ct);
+            }
+            catch (ChatDeactivatedException)
+            {
+                // Chat deactivated - return without error
+            }
 
             sw.Stop();
             return new SummaryProcessingResult
@@ -56,8 +78,22 @@ public partial class SummaryProcessingService(
         var report = await smartSummary.GenerateSmartSummaryAsync(
             item.ChatId, messages, startUtc, nowUtc, periodText, ct);
 
-        // Send result
-        await SendSummaryResponseAsync(item.ChatId, item.ReplyToMessageId, report, ct);
+        // Send result (safe: handles 403 and HTML fallback)
+        try
+        {
+            await SendSummaryResponseAsync(item.ChatId, item.ReplyToMessageId, report, ct);
+        }
+        catch (ChatDeactivatedException)
+        {
+            // Chat was deactivated - job should not retry
+            sw.Stop();
+            return new SummaryProcessingResult
+            {
+                Success = false,
+                MessageCount = messages.Count,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds
+            };
+        }
 
         sw.Stop();
         logCollector.IncrementSummaries();
@@ -75,27 +111,14 @@ public partial class SummaryProcessingService(
 
     private async Task SendSummaryResponseAsync(long chatId, int replyToMessageId, string report, CancellationToken ct)
     {
-        try
-        {
-            await bot.SendMessage(
-                chatId: chatId,
-                text: report,
-                parseMode: ParseMode.Html,
-                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new ReplyParameters { MessageId = replyToMessageId },
-                cancellationToken: ct);
-        }
-        catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
-        {
-            logger.LogWarning("[SummaryProcessing] HTML parsing failed, sending as plain text");
-            var plainText = HtmlTagRegex().Replace(report, "");
-            await bot.SendMessage(
-                chatId: chatId,
-                text: plainText,
-                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new ReplyParameters { MessageId = replyToMessageId },
-                cancellationToken: ct);
-        }
+        // Use safe extension (handles 403 and HTML fallback)
+        await bot.SendHtmlMessageSafeAsync(
+            chatStatusService,
+            chatId,
+            report,
+            logger,
+            replyToMessageId: replyToMessageId,
+            ct: ct);
     }
 
     private static string GetPeriodText(int hours)
@@ -130,8 +153,6 @@ public partial class SummaryProcessingService(
         };
     }
 
-    [GeneratedRegex("<[^>]+>")]
-    private static partial Regex HtmlTagRegex();
 }
 
 /// <summary>

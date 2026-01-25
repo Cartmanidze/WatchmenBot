@@ -1,9 +1,8 @@
 using System.Diagnostics;
 using System.Text;
-using System.Text.RegularExpressions;
 using Telegram.Bot;
-using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Extensions;
 using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Messages.Services;
 using WatchmenBot.Features.Webhook.Services;
@@ -16,10 +15,11 @@ namespace WatchmenBot.Features.Search.Services;
 /// Core processing service for /truth fact-checking command.
 /// Extracted from BackgroundTruthWorker to enable direct testing and Hangfire integration.
 /// </summary>
-public partial class TruthProcessingService(
+public class TruthProcessingService(
     MessageStore messageStore,
     LlmRouter llmRouter,
     PromptSettingsStore promptSettings,
+    ChatStatusService chatStatusService,
     DebugService debugService,
     ITelegramBotClient bot,
     ILogger<TruthProcessingService> logger)
@@ -42,19 +42,38 @@ public partial class TruthProcessingService(
             Query = $"Fact-check last {item.MessageCount} messages"
         };
 
-        // Send typing action
-        await bot.SendChatAction(item.ChatId, ChatAction.Typing, cancellationToken: ct);
+        // Send typing action (safe: deactivates chat on 403)
+        if (!await bot.TrySendChatActionAsync(chatStatusService, item.ChatId, ChatAction.Typing, logger, ct))
+        {
+            // Chat was deactivated - no point continuing
+            sw.Stop();
+            return new TruthProcessingResult
+            {
+                Success = false,
+                MessageCount = 0,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds
+            };
+        }
 
         // Get latest messages
         var messages = await messageStore.GetLatestMessagesAsync(item.ChatId, item.MessageCount);
 
         if (messages.Count == 0)
         {
-            await bot.SendMessage(
-                chatId: item.ChatId,
-                text: "Не нашёл сообщений для проверки.",
-                replyParameters: new ReplyParameters { MessageId = item.ReplyToMessageId },
-                cancellationToken: ct);
+            try
+            {
+                await bot.SendMessageSafeAsync(
+                    chatStatusService,
+                    item.ChatId,
+                    "Не нашёл сообщений для проверки.",
+                    logger,
+                    replyToMessageId: item.ReplyToMessageId,
+                    ct: ct);
+            }
+            catch (ChatDeactivatedException)
+            {
+                // Chat deactivated - return without error
+            }
 
             sw.Stop();
             return new TruthProcessingResult
@@ -91,8 +110,18 @@ public partial class TruthProcessingService(
             Проанализируй и проверь факты.
             """;
 
-        // Send typing action again (long operation)
-        await bot.SendChatAction(item.ChatId, ChatAction.Typing, cancellationToken: ct);
+        // Send typing action again (safe: deactivates chat on 403)
+        if (!await bot.TrySendChatActionAsync(chatStatusService, item.ChatId, ChatAction.Typing, logger, ct))
+        {
+            // Chat was deactivated - no point continuing
+            sw.Stop();
+            return new TruthProcessingResult
+            {
+                Success = false,
+                MessageCount = messages.Count,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds
+            };
+        }
 
         var llmSw = Stopwatch.StartNew();
         var response = await llmRouter.CompleteWithFallbackAsync(
@@ -122,8 +151,28 @@ public partial class TruthProcessingService(
         // Sanitize HTML for Telegram
         var sanitizedResponse = TelegramHtmlSanitizer.Sanitize(response.Content);
 
-        // Send response
-        await SendTruthResponseAsync(item.ChatId, item.ReplyToMessageId, sanitizedResponse, ct);
+        // Send response (safe: handles 403 and HTML fallback)
+        try
+        {
+            await bot.SendHtmlMessageSafeAsync(
+                chatStatusService,
+                item.ChatId,
+                sanitizedResponse,
+                logger,
+                replyToMessageId: item.ReplyToMessageId,
+                ct: ct);
+        }
+        catch (ChatDeactivatedException)
+        {
+            // Chat was deactivated - job should not retry
+            sw.Stop();
+            return new TruthProcessingResult
+            {
+                Success = false,
+                MessageCount = messages.Count,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds
+            };
+        }
 
         sw.Stop();
         logger.LogInformation("[TruthProcessing] Fact-check completed in {Elapsed:F1}s for {Count} messages",
@@ -138,31 +187,6 @@ public partial class TruthProcessingService(
             MessageCount = messages.Count,
             ElapsedSeconds = sw.Elapsed.TotalSeconds
         };
-    }
-
-    private async Task SendTruthResponseAsync(long chatId, int replyToMessageId, string response, CancellationToken ct)
-    {
-        try
-        {
-            await bot.SendMessage(
-                chatId: chatId,
-                text: response,
-                parseMode: ParseMode.Html,
-                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new ReplyParameters { MessageId = replyToMessageId },
-                cancellationToken: ct);
-        }
-        catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
-        {
-            logger.LogWarning("[TruthProcessing] HTML parsing failed, sending as plain text");
-            var plainText = HtmlTagRegex().Replace(response, "");
-            await bot.SendMessage(
-                chatId: chatId,
-                text: plainText,
-                linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new ReplyParameters { MessageId = replyToMessageId },
-                cancellationToken: ct);
-        }
     }
 
     private static string BuildContext(List<WatchmenBot.Models.MessageRecord> messages)
@@ -242,8 +266,6 @@ public partial class TruthProcessingService(
         }
     }
 
-    [GeneratedRegex("<[^>]+>")]
-    private static partial Regex HtmlTagRegex();
 }
 
 /// <summary>

@@ -238,6 +238,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<LogCollector>();
         services.AddSingleton<AdminSettingsStore>();
         services.AddScoped<BannedUserService>();
+        services.AddScoped<ChatStatusService>();
         services.AddSingleton<PromptSettingsStore>();
         services.AddSingleton<ChatSettingsStore>();
         services.AddSingleton<DebugService>();

@@ -1,8 +1,10 @@
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Extensions;
 using WatchmenBot.Features.Summary.Services;
 using WatchmenBot.Features.Messages.Services;
+using WatchmenBot.Features.Admin.Services;
 
 namespace WatchmenBot.Features.Summary;
 
@@ -17,6 +19,7 @@ public class GenerateSummaryResponse
     public bool IsSuccess { get; init; }
     public string? ErrorMessage { get; init; }
     public int MessageCount { get; init; }
+    public bool ChatDeactivated { get; init; }
 
     public static GenerateSummaryResponse Success(int messageCount) => new()
     {
@@ -29,12 +32,25 @@ public class GenerateSummaryResponse
         IsSuccess = false,
         ErrorMessage = errorMessage
     };
+
+    public static GenerateSummaryResponse Deactivated() => new()
+    {
+        IsSuccess = false,
+        ChatDeactivated = true,
+        ErrorMessage = "Chat was deactivated"
+    };
 }
 
-public partial class GenerateSummaryHandler(
+/// <summary>
+/// Handler for /summary command.
+/// Generates chat summary for specified time period.
+/// Handles 403 errors by deactivating chat.
+/// </summary>
+public class GenerateSummaryHandler(
     ITelegramBotClient bot,
     MessageStore store,
     SmartSummaryService smartSummary,
+    ChatStatusService chatStatusService,
     ILogger<GenerateSummaryHandler> logger)
 {
     public async Task<GenerateSummaryResponse> HandleAsync(GenerateSummaryRequest request, CancellationToken ct)
@@ -45,8 +61,12 @@ public partial class GenerateSummaryHandler(
 
         try
         {
-            // Send "typing" indicator
-            await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+            // Send "typing" indicator (safe: deactivates chat on 403)
+            if (!await bot.TrySendChatActionAsync(chatStatusService, chatId, ChatAction.Typing, logger, ct))
+            {
+                // Chat was deactivated - no point continuing
+                return GenerateSummaryResponse.Deactivated();
+            }
 
             var nowUtc = DateTimeOffset.UtcNow;
             var startUtc = nowUtc.AddHours(-hours);
@@ -57,11 +77,20 @@ public partial class GenerateSummaryHandler(
 
             if (messages.Count == 0)
             {
-                await bot.SendMessage(
-                    chatId: chatId,
-                    text: $"За последние {hours} часов сообщений не найдено.",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-                    cancellationToken: ct);
+                try
+                {
+                    await bot.SendMessageSafeAsync(
+                        chatStatusService,
+                        chatId,
+                        $"За последние {hours} часов сообщений не найдено.",
+                        logger,
+                        replyToMessageId: message.MessageId,
+                        ct: ct);
+                }
+                catch (ChatDeactivatedException)
+                {
+                    return GenerateSummaryResponse.Deactivated();
+                }
 
                 return GenerateSummaryResponse.Success(0);
             }
@@ -71,33 +100,30 @@ public partial class GenerateSummaryHandler(
             var report = await smartSummary.GenerateSmartSummaryAsync(
                 chatId, messages, startUtc, nowUtc, periodText, ct);
 
-            // Try HTML first, fallback to plain text if parsing fails
+            // Send response (safe: handles 403 and HTML fallback)
             try
             {
-                await bot.SendMessage(
-                    chatId: chatId,
-                    text: report,
-                    parseMode: ParseMode.Html,
-                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-                    cancellationToken: ct);
+                await bot.SendHtmlMessageSafeAsync(
+                    chatStatusService,
+                    chatId,
+                    report,
+                    logger,
+                    replyToMessageId: message.MessageId,
+                    ct: ct);
             }
-            catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
+            catch (ChatDeactivatedException)
             {
-                logger.LogWarning("HTML parsing failed, sending as plain text");
-                // Strip HTML tags for plain text
-                var plainText = MyRegex().Replace(report, "");
-                await bot.SendMessage(
-                    chatId: chatId,
-                    text: plainText,
-                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-                    cancellationToken: ct);
+                return GenerateSummaryResponse.Deactivated();
             }
 
             logger.LogInformation("Sent summary to chat {ChatId} ({MessageCount} messages)", chatId, messages.Count);
 
             return GenerateSummaryResponse.Success(messages.Count);
+        }
+        catch (ChatDeactivatedException)
+        {
+            // Catch any other deactivation that might have been thrown
+            return GenerateSummaryResponse.Deactivated();
         }
         catch (Exception ex)
         {
@@ -105,11 +131,17 @@ public partial class GenerateSummaryHandler(
 
             try
             {
-                await bot.SendMessage(
-                    chatId: chatId,
-                    text: "Произошла ошибка при генерации выжимки. Попробуйте позже.",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-                    cancellationToken: ct);
+                await bot.SendMessageSafeAsync(
+                    chatStatusService,
+                    chatId,
+                    "Произошла ошибка при генерации выжимки. Попробуйте позже.",
+                    logger,
+                    replyToMessageId: message.MessageId,
+                    ct: ct);
+            }
+            catch (ChatDeactivatedException)
+            {
+                return GenerateSummaryResponse.Deactivated();
             }
             catch (Exception sendEx)
             {
@@ -186,7 +218,4 @@ public partial class GenerateSummaryHandler(
 
         return 24;
     }
-
-    [System.Text.RegularExpressions.GeneratedRegex("<[^>]+>")]
-    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

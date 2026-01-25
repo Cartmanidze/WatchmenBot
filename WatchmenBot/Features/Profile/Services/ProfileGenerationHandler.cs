@@ -2,6 +2,7 @@ using System.Data;
 using System.Diagnostics;
 using System.Text.Json;
 using Dapper;
+using Newtonsoft.Json;
 using WatchmenBot.Infrastructure.Database;
 using WatchmenBot.Features.Llm.Services;
 
@@ -194,10 +195,8 @@ public class ProfileGenerationHandler(
         try
         {
             var json = ExtractJson(response);
-            var profile = JsonSerializer.Deserialize<GeneratedProfile>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            // Use Newtonsoft.Json - it handles single quotes automatically
+            var profile = JsonConvert.DeserializeObject<GeneratedProfile>(json);
 
             if (profile != null)
             {
@@ -219,7 +218,7 @@ public class ProfileGenerationHandler(
 
         try
         {
-            var hours = JsonSerializer.Deserialize<Dictionary<string, int>>(activeHoursJson);
+            var hours = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(activeHoursJson);
             if (hours == null || hours.Count == 0)
                 return "нет данных";
 
@@ -238,6 +237,9 @@ public class ProfileGenerationHandler(
         }
     }
 
+    /// <summary>
+    /// Extracts JSON object from LLM response (strips markdown wrapper like ```json...```).
+    /// </summary>
     private static string ExtractJson(string response)
     {
         var start = response.IndexOf('{');
@@ -255,9 +257,9 @@ public class ProfileGenerationHandler(
         long userId,
         GeneratedProfile profile)
     {
-        var interestsJson = JsonSerializer.Serialize(profile.MainInterests ?? []);
-        var traitsJson = JsonSerializer.Serialize(profile.PersonalityTraits ?? []);
-        var roastJson = JsonSerializer.Serialize(profile.RoastMaterial ?? []);
+        var interestsJson = System.Text.Json.JsonSerializer.Serialize(profile.MainInterests ?? []);
+        var traitsJson = System.Text.Json.JsonSerializer.Serialize(profile.PersonalityTraits ?? []);
+        var roastJson = System.Text.Json.JsonSerializer.Serialize(profile.RoastMaterial ?? []);
 
         await connection.ExecuteAsync("""
             UPDATE user_profiles SET

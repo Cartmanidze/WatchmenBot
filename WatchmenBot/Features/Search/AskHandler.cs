@@ -2,6 +2,8 @@ using Hangfire;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Extensions;
+using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Search.Jobs;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Infrastructure.Queue;
@@ -15,6 +17,7 @@ namespace WatchmenBot.Features.Search;
 /// </summary>
 public class AskHandler(
     ITelegramBotClient bot,
+    ChatStatusService chatStatusService,
     IBackgroundJobClient jobClient,
     ILogger<AskHandler> logger)
 {
@@ -59,8 +62,8 @@ public class AskHandler(
         logger.LogInformation("[{Command}] Enqueued via Hangfire: {Question} in chat {ChatId}",
             command.ToUpper(), question, chatId);
 
-        // Send typing indicator - response will come from AskJob
-        await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+        // Send typing indicator (safe: ignores if chat deactivated)
+        await bot.TrySendChatActionAsync(chatStatusService, chatId, ChatAction.Typing, logger, ct);
     }
 
     private async Task SendHelpTextAsync(long chatId, string command, int messageId, CancellationToken ct)
@@ -87,11 +90,20 @@ public class AskHandler(
                 <i>Ищет в истории сообщений</i>
                 """;
 
-        await bot.SendMessage(
-            chatId: chatId,
-            text: helpText,
-            parseMode: ParseMode.Html,
-            replyParameters: new ReplyParameters { MessageId = messageId },
-            cancellationToken: ct);
+        // Send help (safe: handles 403 and HTML fallback)
+        try
+        {
+            await bot.SendHtmlMessageSafeAsync(
+                chatStatusService,
+                chatId,
+                helpText,
+                logger,
+                replyToMessageId: messageId,
+                ct: ct);
+        }
+        catch (ChatDeactivatedException)
+        {
+            // Chat was deactivated - silently ignore
+        }
     }
 }

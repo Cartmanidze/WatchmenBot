@@ -1,22 +1,23 @@
 using System.Diagnostics;
 using WatchmenBot.Features.Search.Services;
-using WatchmenBot.Features.Messages.Services;
+using WatchmenBot.Features.Admin.Services;
 
 namespace WatchmenBot.Features.Indexing.Services;
 
 /// <summary>
 /// Handler for context embeddings (sliding windows) indexing.
 /// Processes chats one at a time to build context windows.
+/// Only processes active chats (skips deactivated ones).
 /// </summary>
 public class ContextEmbeddingHandler(
-    MessageStore messageStore,
+    ChatStatusService chatStatusService,
     ContextEmbeddingService contextService,
     IConfiguration configuration,
     ILogger<ContextEmbeddingHandler> logger)
     : IEmbeddingHandler
 {
     // State: current chat index being processed
-    private List<long>? _chatIds;
+    private IReadOnlyList<long>? _chatIds;
     private int _currentChatIndex;
 
     public string Name => "context";
@@ -43,12 +44,12 @@ public class ContextEmbeddingHandler(
 
         try
         {
-            // Lazy load chat IDs on first call
+            // Lazy load active chat IDs on first call (skips deactivated chats)
             if (_chatIds == null)
             {
-                _chatIds = await messageStore.GetDistinctChatIdsAsync();
+                _chatIds = await chatStatusService.GetActiveChatIdsAsync(ct);
                 _currentChatIndex = 0;
-                logger.LogDebug("[ContextHandler] Loaded {Count} chats for processing", _chatIds.Count);
+                logger.LogDebug("[ContextHandler] Loaded {Count} active chats for processing", _chatIds.Count);
             }
 
             // No chats to process

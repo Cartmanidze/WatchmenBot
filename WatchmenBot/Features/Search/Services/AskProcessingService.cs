@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Extensions;
 using WatchmenBot.Features.Memory.Services;
 using WatchmenBot.Features.Search.Models;
 using WatchmenBot.Features.Admin.Services;
@@ -13,10 +14,11 @@ namespace WatchmenBot.Features.Search.Services;
 /// Core processing service for /ask and /smart commands.
 /// Extracted from BackgroundAskWorker to enable direct testing without queue.
 /// </summary>
-public partial class AskProcessingService(
+public class AskProcessingService(
     ITelegramBotClient bot,
     LlmMemoryService memoryService,
     DebugService debugService,
+    ChatStatusService chatStatusService,
     SearchStrategyService searchStrategy,
     AnswerGeneratorService answerGenerator,
     IntentClassifier intentClassifier,
@@ -47,8 +49,19 @@ public partial class AskProcessingService(
             Query = item.Question
         };
 
-        // Send typing action
-        await bot.SendChatAction(item.ChatId, ChatAction.Typing, cancellationToken: ct);
+        // Send typing action (safe: deactivates chat on 403)
+        if (!await bot.TrySendChatActionAsync(chatStatusService, item.ChatId, ChatAction.Typing, logger, ct))
+        {
+            // Chat was deactivated - no point continuing
+            sw.Stop();
+            return new AskProcessingResult
+            {
+                Success = false,
+                Confidence = SearchConfidence.None,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds,
+                ResponseSent = false
+            };
+        }
 
         var normalizedQuestion = QueryNormalizer.Normalize(item.Question);
         if (string.IsNullOrWhiteSpace(normalizedQuestion))
@@ -57,11 +70,20 @@ public partial class AskProcessingService(
             logger.LogWarning("[AskProcessing] Query normalized to empty: '{Original}'",
                 item.Question.Length > 60 ? item.Question[..60] + "..." : item.Question);
 
-            await bot.SendMessage(
-                chatId: item.ChatId,
-                text: "❌ Не удалось распознать вопрос. Попробуйте переформулировать.",
-                replyParameters: new Telegram.Bot.Types.ReplyParameters { MessageId = item.ReplyToMessageId },
-                cancellationToken: ct);
+            try
+            {
+                await bot.SendMessageSafeAsync(
+                    chatStatusService,
+                    item.ChatId,
+                    "❌ Не удалось распознать вопрос. Попробуйте переформулировать.",
+                    logger,
+                    replyToMessageId: item.ReplyToMessageId,
+                    ct: ct);
+            }
+            catch (ChatDeactivatedException)
+            {
+                // Chat deactivated - return without error
+            }
 
             sw.Stop();
             return new AskProcessingResult
@@ -179,8 +201,19 @@ public partial class AskProcessingService(
         debugCollector.CollectSearchDebugInfo(debugReport, searchResponse.Results, contextTracker, personalTarget);
         debugCollector.CollectContextDebugInfo(debugReport, context, contextTracker);
 
-        // Send typing action again (long operation)
-        await bot.SendChatAction(item.ChatId, ChatAction.Typing, cancellationToken: ct);
+        // Send typing action again (safe: deactivates chat on 403)
+        if (!await bot.TrySendChatActionAsync(chatStatusService, item.ChatId, ChatAction.Typing, logger, ct))
+        {
+            // Chat was deactivated - no point continuing
+            sw.Stop();
+            return new AskProcessingResult
+            {
+                Success = false,
+                Confidence = searchResponse.Confidence,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds,
+                ResponseSent = false
+            };
+        }
 
         // Generate answer (with chat mode support)
         var answer = await answerGenerator.GenerateAnswerWithDebugAsync(
@@ -189,27 +222,28 @@ public partial class AskProcessingService(
         var rawResponse = (confidenceWarning ?? "") + answer;
         var response = TelegramHtmlSanitizer.Sanitize(rawResponse);
 
-        // Send response
+        // Send response (safe: handles 403 and HTML fallback)
         try
         {
-            await bot.SendMessage(
-                chatId: item.ChatId,
-                text: response,
-                parseMode: ParseMode.Html,
-                linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new Telegram.Bot.Types.ReplyParameters { MessageId = item.ReplyToMessageId },
-                cancellationToken: ct);
+            await bot.SendHtmlMessageSafeAsync(
+                chatStatusService,
+                item.ChatId,
+                response,
+                logger,
+                replyToMessageId: item.ReplyToMessageId,
+                ct: ct);
         }
-        catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
+        catch (ChatDeactivatedException)
         {
-            logger.LogWarning("[AskProcessing] HTML parsing failed, sending as plain text");
-            var plainText = HtmlTagRegex().Replace(response, "");
-            await bot.SendMessage(
-                chatId: item.ChatId,
-                text: plainText,
-                linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true },
-                replyParameters: new Telegram.Bot.Types.ReplyParameters { MessageId = item.ReplyToMessageId },
-                cancellationToken: ct);
+            // Chat was deactivated - job should not retry
+            sw.Stop();
+            return new AskProcessingResult
+            {
+                Success = false,
+                Confidence = searchResponse.Confidence,
+                ElapsedSeconds = sw.Elapsed.TotalSeconds,
+                ResponseSent = false
+            };
         }
 
         sw.Stop();
@@ -328,8 +362,6 @@ public partial class AskProcessingService(
         });
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex("<[^>]+>")]
-    private static partial System.Text.RegularExpressions.Regex HtmlTagRegex();
 }
 
 /// <summary>

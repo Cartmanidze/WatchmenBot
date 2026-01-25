@@ -1,6 +1,8 @@
 using Hangfire;
 using Telegram.Bot;
 using Telegram.Bot.Types;
+using WatchmenBot.Extensions;
+using WatchmenBot.Features.Admin.Services;
 using WatchmenBot.Features.Search.Jobs;
 using WatchmenBot.Features.Search.Services;
 
@@ -12,6 +14,7 @@ namespace WatchmenBot.Features.Search;
 /// </summary>
 public class FactCheckHandler(
     ITelegramBotClient bot,
+    ChatStatusService chatStatusService,
     IBackgroundJobClient jobClient,
     ILogger<FactCheckHandler> logger)
 {
@@ -39,12 +42,21 @@ public class FactCheckHandler(
         // Enqueue for background processing via Hangfire
         jobClient.Enqueue<TruthJob>(job => job.ProcessAsync(item, CancellationToken.None));
 
-        // Send acknowledgment - response will come from TruthJob
-        await bot.SendMessage(
-            chatId: chatId,
-            text: $"🔍 Проверяю последние {count} сообщений на факты...",
-            replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-            cancellationToken: ct);
+        // Send acknowledgment (safe: handles 403)
+        try
+        {
+            await bot.SendMessageSafeAsync(
+                chatStatusService,
+                chatId,
+                $"🔍 Проверяю последние {count} сообщений на факты...",
+                logger,
+                replyToMessageId: message.MessageId,
+                ct: ct);
+        }
+        catch (ChatDeactivatedException)
+        {
+            // Chat was deactivated - job will handle it
+        }
     }
 
     private static int ParseCount(string? text, int defaultCount, int maxCount)

@@ -1,7 +1,8 @@
 using System.Diagnostics;
 using Telegram.Bot;
-using Telegram.Bot.Types;
+using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
+using WatchmenBot.Extensions;
 using WatchmenBot.Features.Search.Services;
 using WatchmenBot.Models;
 using WatchmenBot.Infrastructure.Settings;
@@ -101,9 +102,12 @@ public class DailySummaryService(
         var store = scope.ServiceProvider.GetRequiredService<MessageStore>();
         var smartSummary = scope.ServiceProvider.GetRequiredService<SmartSummaryService>();
         var embeddingService = scope.ServiceProvider.GetRequiredService<EmbeddingService>();
+        var chatStatusService = scope.ServiceProvider.GetRequiredService<ChatStatusService>();
 
         var sw = Stopwatch.StartNew();
-        var chatIds = await store.GetDistinctChatIdsAsync();
+
+        // Only process active chats (skip deactivated ones where bot was kicked)
+        var chatIds = await chatStatusService.GetActiveChatIdsAsync(ct);
 
         // Calculate "today" in the configured timezone (from midnight to now)
         var nowUtc = DateTimeOffset.UtcNow;
@@ -112,10 +116,11 @@ public class DailySummaryService(
             nowInTz.Year, nowInTz.Month, nowInTz.Day, 0, 0, 0, timezoneOffset);
         var startUtc = todayStart.ToUniversalTime();
 
-        logger.LogInformation("[DailySummary] Starting for {Date}, {ChatCount} chats to process",
+        logger.LogInformation("[DailySummary] Starting for {Date}, {ChatCount} active chats to process",
             todayStart.ToString("yyyy-MM-dd"), chatIds.Count);
 
         var successCount = 0;
+        var deactivatedCount = 0;
         var totalMessages = 0;
 
         foreach (var chatId in chatIds)
@@ -141,25 +146,20 @@ public class DailySummaryService(
                 var report = await smartSummary.GenerateSmartSummaryAsync(
                     chatId, messages, startUtc, nowUtc, "за сегодня", ct);
 
-                // Try HTML first, fallback to plain text if parsing fails
+                // Send summary (safe: handles 403 and HTML fallback)
                 try
                 {
-                    await bot.SendMessage(
-                        chatId: chatId,
-                        text: report,
-                        parseMode: ParseMode.Html,
-                        linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                        cancellationToken: ct);
+                    await bot.SendHtmlMessageSafeAsync(
+                        chatStatusService,
+                        chatId,
+                        report,
+                        logger,
+                        ct: ct);
                 }
-                catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.Message.Contains("can't parse entities"))
+                catch (ChatDeactivatedException)
                 {
-                    logger.LogWarning("[DailySummary] HTML parsing failed for chat {ChatId}, sending as plain text", chatId);
-                    var plainText = System.Text.RegularExpressions.Regex.Replace(report, "<[^>]+>", "");
-                    await bot.SendMessage(
-                        chatId: chatId,
-                        text: plainText,
-                        linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
-                        cancellationToken: ct);
+                    deactivatedCount++;
+                    continue;
                 }
 
                 successCount++;
@@ -167,6 +167,19 @@ public class DailySummaryService(
                 logCollector.IncrementSummaries();
                 logger.LogInformation("[DailySummary] Chat {ChatId}: summary SENT ({Count} messages)",
                     chatId, messages.Count);
+            }
+            catch (ChatDeactivatedException)
+            {
+                // Chat was deactivated during processing
+                deactivatedCount++;
+            }
+            catch (ApiRequestException ex) when (ex.ShouldDeactivateChat())
+            {
+                // Bot was kicked or chat no longer exists - deactivate to prevent future attempts
+                var reason = ex.GetDeactivationReason();
+                await chatStatusService.DeactivateChatAsync(chatId, reason, ct);
+                deactivatedCount++;
+                logger.LogWarning("[DailySummary] Chat {ChatId} deactivated: {Reason}", chatId, reason);
             }
             catch (Exception ex)
             {
@@ -176,8 +189,9 @@ public class DailySummaryService(
         }
 
         sw.Stop();
-        logger.LogInformation("[DailySummary] Complete: {Success}/{Total} chats, {Messages} messages, {Elapsed:F1}s",
-            successCount, chatIds.Count, totalMessages, sw.Elapsed.TotalSeconds);
+        var deactivatedMsg = deactivatedCount > 0 ? $", {deactivatedCount} deactivated" : "";
+        logger.LogInformation("[DailySummary] Complete: {Success}/{Total} chats, {Messages} messages{Deactivated}, {Elapsed:F1}s",
+            successCount, chatIds.Count, totalMessages, deactivatedMsg, sw.Elapsed.TotalSeconds);
     }
 
     private async Task StoreEmbeddingsForNewMessages(EmbeddingService embeddingService, long chatId, List<MessageRecord> messages, CancellationToken ct)

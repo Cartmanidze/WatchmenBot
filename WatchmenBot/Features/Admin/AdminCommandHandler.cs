@@ -1,8 +1,9 @@
 using Telegram.Bot;
 using Telegram.Bot.Types;
+using WatchmenBot.Extensions;
 using WatchmenBot.Features.Admin.Commands;
-using WatchmenBot.Infrastructure.Settings;
 using WatchmenBot.Features.Admin.Services;
+using WatchmenBot.Infrastructure.Settings;
 
 namespace WatchmenBot.Features.Admin;
 
@@ -12,6 +13,7 @@ namespace WatchmenBot.Features.Admin;
 /// </summary>
 public class AdminCommandHandler(
     ITelegramBotClient bot,
+    ChatStatusService chatStatusService,
     AdminSettingsStore settings,
     LogCollector logCollector,
     AdminCommandRegistry commandRegistry,
@@ -89,10 +91,20 @@ public class AdminCommandHandler(
             logger.LogError(ex, "[Admin] Error handling command: {Command}", text);
             logCollector.LogError("AdminCommand", $"Error: {text}", ex);
 
-            await bot.SendMessage(
-                chatId: message.Chat.Id,
-                text: $"❌ Ошибка: {ex.Message}",
-                cancellationToken: ct);
+            // Send error message (safe: handles 403)
+            try
+            {
+                await bot.SendMessageSafeAsync(
+                    chatStatusService,
+                    message.Chat.Id,
+                    $"❌ Ошибка: {ex.Message}",
+                    logger,
+                    ct: ct);
+            }
+            catch (ChatDeactivatedException)
+            {
+                // Chat was deactivated - silently ignore
+            }
             return true;
         }
     }

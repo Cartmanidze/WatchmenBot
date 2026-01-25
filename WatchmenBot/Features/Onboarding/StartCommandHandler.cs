@@ -2,6 +2,8 @@ using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using WatchmenBot.Extensions;
+using WatchmenBot.Features.Admin.Services;
 
 namespace WatchmenBot.Features.Onboarding;
 
@@ -11,6 +13,7 @@ namespace WatchmenBot.Features.Onboarding;
 /// </summary>
 public class StartCommandHandler(
     ITelegramBotClient bot,
+    ChatStatusService chatStatusService,
     IConfiguration configuration,
     ILogger<StartCommandHandler> logger)
 {
@@ -60,18 +63,24 @@ public class StartCommandHandler(
         // Short message for groups - don't spam
         var shortMessage = "👋 Я готов! Команды: /summary, /ask, /smart, /truth";
 
-        var sentMessage = await bot.SendMessage(
-            chatId: message.Chat.Id,
-            text: shortMessage,
-            replyParameters: new ReplyParameters
-            {
-                MessageId = message.MessageId,
-                AllowSendingWithoutReply = true
-            },
-            cancellationToken: ct);
+        // Send message (safe: handles 403 if bot was kicked)
+        try
+        {
+            var sentMessage = await bot.SendMessageSafeAsync(
+                chatStatusService,
+                message.Chat.Id,
+                shortMessage,
+                logger,
+                replyToMessageId: message.MessageId,
+                ct: ct);
 
-        // Auto-delete after delay to not clutter the chat
-        _ = DeleteMessageAfterDelayAsync(message.Chat.Id, sentMessage.MessageId, ct);
+            // Auto-delete after delay to not clutter the chat
+            _ = DeleteMessageAfterDelayAsync(message.Chat.Id, sentMessage.MessageId, ct);
+        }
+        catch (ChatDeactivatedException)
+        {
+            // Chat was deactivated - silently ignore
+        }
     }
 
     private static string BuildWelcomeMessage()

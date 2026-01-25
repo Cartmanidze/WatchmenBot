@@ -112,6 +112,22 @@ public class DatabaseInitializer(
             """;
 
         await connection.ExecuteAsync(createTableSql);
+
+        // Migration: add is_active flag for automatic chat deactivation (e.g., when bot is kicked)
+        const string addActiveColumnsSql = """
+            ALTER TABLE chats ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+            ALTER TABLE chats ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+            ALTER TABLE chats ADD COLUMN IF NOT EXISTS deactivation_reason VARCHAR(255);
+            """;
+
+        await connection.ExecuteAsync(addActiveColumnsSql);
+
+        // Partial index for fast lookup of active chats only
+        const string addActiveIndexSql = """
+            CREATE INDEX IF NOT EXISTS idx_chats_active ON chats (id) WHERE is_active = TRUE;
+            """;
+
+        await connection.ExecuteAsync(addActiveIndexSql);
     }
 
     private async Task CreateEmbeddingsTableAsync(System.Data.IDbConnection connection)

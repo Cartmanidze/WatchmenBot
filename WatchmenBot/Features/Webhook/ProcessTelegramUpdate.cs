@@ -37,6 +37,7 @@ public class ProcessTelegramUpdateHandler(
     IConfiguration configuration,
     IServiceProvider serviceProvider,
     ITelegramBotClient bot,
+    ChatStatusService chatStatusService,
     IBackgroundJobClient jobClient,
     LogCollector logCollector,
     ILogger<ProcessTelegramUpdateHandler> logger)
@@ -150,11 +151,21 @@ public class ProcessTelegramUpdateHandler(
 
                 // Сразу отвечаем пользователю и запускаем генерацию в фоне
                 // Это позволяет избежать nginx timeout (60 сек)
-                await bot.SendMessage(
-                    chatId: message.Chat.Id,
-                    text: "Генерирую выжимку, подождите...",
-                    replyParameters: new ReplyParameters { MessageId = message.MessageId, AllowSendingWithoutReply = true },
-                    cancellationToken: cancellationToken);
+                try
+                {
+                    await bot.SendMessageSafeAsync(
+                        chatStatusService,
+                        message.Chat.Id,
+                        "Генерирую выжимку, подождите...",
+                        logger,
+                        replyToMessageId: message.MessageId,
+                        ct: cancellationToken);
+                }
+                catch (ChatDeactivatedException)
+                {
+                    // Chat was deactivated - don't enqueue job
+                    return ProcessTelegramUpdateResponse.Success();
+                }
 
                 // Create queue item and enqueue via Hangfire
                 var summaryItem = new SummaryQueueItem

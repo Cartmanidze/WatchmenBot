@@ -4,6 +4,116 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2026-01-25]
+
+### Added
+
+- **Newtonsoft.Json 13.0.4** — добавлена зависимость для парсинга невалидного JSON от LLM (одинарные кавычки)
+
+- **Автоматическая деактивация чатов при ошибке 403** — предотвращает ежедневные ошибки когда бот исключён из чата:
+  - `ChatStatusService` — сервис управления статусом активности чатов (по образцу `BannedUserService`):
+    - In-memory кэш с TTL 5 минут для оптимизации горячих путей
+    - `DeactivateChatAsync(chatId, reason)` — деактивация с указанием причины
+    - `ReactivateChatAsync(chatId)` — реактивация (для админа)
+    - `IsChatActiveAsync(chatId)` — проверка с кэшем (fail-open стратегия)
+    - `GetActiveChatIdsAsync()` — список активных чатов для DailySummaryService
+    - `GetDeactivatedChatsAsync()` — список деактивированных чатов (для диагностики)
+  - `TelegramErrorExtensions` — extension методы для классификации Telegram ошибок:
+    - `IsBotKickedError()` — детектирует HTTP 403 (kicked/blocked/deactivated)
+    - `IsChatGoneError()` — детектирует HTTP 400 (chat not found/PEER_ID_INVALID)
+    - `ShouldDeactivateChat()` — комбинация обоих проверок
+    - `GetDeactivationReason()` — человекочитаемая причина деактивации (truncate до 255 символов)
+  - `TelegramBotSafeExtensions` — централизованные extension методы для безопасных Telegram вызовов:
+    - `TrySendChatActionAsync()` — отправка typing с автоматической обработкой 403 (возвращает bool)
+    - `SendMessageSafeAsync()` — отправка сообщения с обработкой 403 (бросает `ChatDeactivatedException`)
+    - `SendHtmlMessageSafeAsync()` — отправка HTML с fallback на plain text и обработкой 403
+    - `ChatDeactivatedException` — кастомное исключение для пробрасывания информации о деактивации
+
+### Changed
+
+- **DailySummaryService** — использует `ChatStatusService.GetActiveChatIdsAsync()` вместо `store.GetDistinctChatIdsAsync()`:
+  - Пропускает деактивированные чаты автоматически
+  - При ошибке 403 деактивирует чат и продолжает обработку остальных
+  - Логирует количество деактивированных чатов в итоговом отчёте
+  - **Fix:** HTML fallback теперь тоже обрабатывает 403 (вложенный try-catch)
+
+- **SummaryProcessingService**, **AskProcessingService**, **TruthProcessingService** — рефакторинг на safe extensions:
+  - Все `SendChatAction` заменены на `TrySendChatActionAsync()` с early return при деактивации
+  - Промежуточные сообщения об ошибках используют `SendMessageSafeAsync()`
+  - Финальные HTML ответы используют `SendHtmlMessageSafeAsync()` с автоматическим fallback
+  - Удалены дублированные `HtmlTagRegex()` и вложенные try-catch (вынесено в extensions)
+  - При `ChatDeactivatedException` возвращают `Success = false` без retry
+
+- **GenerateSummaryHandler** — полный рефакторинг на safe extensions:
+  - Добавлен `ChatStatusService` в конструктор
+  - Все Telegram вызовы используют safe extensions
+  - Новое свойство `GenerateSummaryResponse.ChatDeactivated` для индикации деактивации
+  - Удалён `MyRegex()` (логика вынесена в `TelegramBotSafeExtensions`)
+
+- **DailySummaryService** — рефакторинг на `SendHtmlMessageSafeAsync()`:
+  - Удалено дублирование кода для HTML fallback
+  - Используется централизованная логика из extensions
+
+- **ChatStatusService.GetActiveChatIdsAsync()** — исправлен SQL:
+  - Включает чаты из `messages`, которых нет в таблице `chats` (LEFT JOIN)
+  - Исключает только явно деактивированные чаты (`is_active = FALSE`)
+
+- **AskHandler** — добавлена защита от 403:
+  - `SendChatAction` заменён на `TrySendChatActionAsync()`
+  - Help-сообщение использует `SendHtmlMessageSafeAsync()` с обработкой `ChatDeactivatedException`
+
+- **FactCheckHandler** — добавлена защита от 403:
+  - Acknowledgment-сообщение использует `SendMessageSafeAsync()` с обработкой `ChatDeactivatedException`
+
+- **StartCommandHandler** — добавлена защита от 403:
+  - Group chat сообщение использует `SendMessageSafeAsync()`
+  - При деактивации чата auto-delete не вызывается
+
+- **AdminCommandHandler** — добавлена защита от 403:
+  - Error-сообщение использует `SendMessageSafeAsync()` с обработкой `ChatDeactivatedException`
+
+- **ProcessTelegramUpdateHandler** — добавлена защита от 403:
+  - Acknowledgment для `/summary` использует `SendMessageSafeAsync()`
+  - При деактивации чата job не ставится в очередь (early return)
+
+### Fixed
+
+- **ProfileGenerationHandler** — исправлен парсинг JSON от LLM:
+  - LLM иногда возвращает одинарные кавычки вместо двойных: `['text']` вместо `["text"]`
+  - `System.Text.Json` требует строго двойные кавычки и не поддерживает одинарные
+  - Решение: использовать `Newtonsoft.Json` (JsonConvert.DeserializeObject) для парсинга LLM output
+  - Newtonsoft.Json автоматически поддерживает одинарные кавычки, апострофы и другие edge cases
+  - System.Text.Json сохранён для сериализации (SaveProfileAsync, FormatActiveHours) — там данные валидны
+
+- **TelegramErrorExtensions.IsChatGoneError()** — убран `CHAT_NOT_MODIFIED`:
+  - Эта ошибка означает "настройки уже установлены", а не "чат удалён"
+  - Предотвращает ложную деактивацию рабочих чатов
+
+### Improved
+
+- **ChatStatusService** — добавлен автоматический pruning кэша:
+  - Ленивая очистка каждые 100 обновлений или при превышении 10K записей
+  - Удаляются записи старше 1 часа
+  - Метод `GetCacheStats()` для диагностики
+  - Предотвращает unbounded memory growth при долгой работе
+
+- **ContextEmbeddingHandler** — теперь использует `ChatStatusService.GetActiveChatIdsAsync()`:
+  - Пропускает деактивированные чаты при индексировании
+  - Не тратит ресурсы на индексирование мёртвых чатов
+  - Консистентность с DailySummaryService
+
+- **TelegramBotSafeExtensions** — оптимизация производительности:
+  - `HtmlTagRegex()` использует `[GeneratedRegex]` для компиляции на этапе билда
+  - Предотвращает повторную компиляцию regex на hot path
+
+### Database
+
+- **Миграция таблицы `chats`**:
+  - Новая колонка `is_active BOOLEAN NOT NULL DEFAULT TRUE`
+  - Новая колонка `deactivated_at TIMESTAMPTZ`
+  - Новая колонка `deactivation_reason VARCHAR(255)`
+  - Частичный индекс `idx_chats_active` для быстрого поиска активных чатов
+
 ## [2026-01-21]
 
 ### Added
